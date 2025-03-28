@@ -3,6 +3,7 @@ mod extensions;
 
 pub mod document;
 pub mod model;
+pub mod events;
 
 pub mod error {
     use thiserror::Error;
