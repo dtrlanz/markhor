@@ -24,14 +24,15 @@ This project is still very much in pre-alpha development. Assume all APIs are ex
 
 Additionally, these are non-goals *for the time being* though they may be desirable in the long term:
 
--   Executor-agnostic implmentation: We're unapologetically relying on `tokio` for now and awaiting further developments in the world of `async` Rust.
--   ...
+-   Runtime-agnostic libraries: We're unapologetically relying on `tokio` for now and awaiting further developments in the world of `async` Rust.
+-   Prefer native Rust implementations where possible: For now, we're happy to use APIs via Python or JavaScript when that's easiest.
 
 ## Packages
 
--   `core`: Core AI functionalities (models, embeddings, etc.).
--   `cli`: Command-line interface.
--   `util`: Utility functions and modules.
+-   `markhor_core`: Core AI functionalities (models, embeddings, etc.)
+-   `markhor_cli`: Command-line interface
+-   `markhor_gui`: GUI interface
+-   `markhor_util`: Utility functions and modules
 
 ## Getting Started
 
