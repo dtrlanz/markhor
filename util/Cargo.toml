@@ -1,5 +1,5 @@
 [package]
-name = "util"
+name = "markhor_util"
 edition = "2024"
 
 [dependencies]

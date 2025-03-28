@@ -1,6 +1,6 @@
 [package]
-name = "core"
+name = "markhor_core"
 edition = "2024"
 
 [dependencies]
-# thiserror = "1.0"
+thiserror = "1"

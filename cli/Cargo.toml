@@ -1,5 +1,5 @@
 [package]
-name = "cli"
+name = "markhor_cli"
 edition = "2024"
 
 [dependencies]
