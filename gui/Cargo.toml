@@ -1,0 +1,6 @@
+[package]
+name = "markhor_gui"
+edition = "2024"
+version.workspace = true
+
+[dependencies]
