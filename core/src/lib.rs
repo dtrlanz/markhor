@@ -1,9 +1,10 @@
 mod extensions;
 
 
-pub mod document;
+//pub mod document;
 pub mod model;
 pub mod events;
+pub mod storage;
 
 pub mod error {
     use thiserror::Error;
