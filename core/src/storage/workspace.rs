@@ -1,4 +1,4 @@
-use crate::storage::{Error, Result};
+use crate::storage::{Error, Result, MARKHOR_EXTENSION};
 use crate::storage::document::Document; // Adjust path as needed
 use crate::storage::folder::{self, Folder}; // Adjust path as needed
 use std::path::{Path, PathBuf};
@@ -130,8 +130,33 @@ impl Workspace {
     }
 
     /// Returns the path to the internal `.markhor` directory used for configuration and caching.
-    pub fn internal_dir_path(&self) -> &Path {
+    pub(crate) fn internal_dir_path(&self) -> &Path {
         &self.internal_dir
+    }
+
+    /// Creates a new document in this folder with the specified name.
+    /// 
+    /// The document name should not include the `.markhor` extension.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the document cannot be created or already exists.
+    #[instrument(skip(self), fields(folder_path = %self.path.display()))]
+    pub async fn create_document(&self, name: &str) -> Result<Document> {
+        let document_path = self.path.join(format!("{}.{}", name, MARKHOR_EXTENSION));
+        Document::create(document_path).await
+    }
+
+    /// Creates a new subfolder within this folder with the specified name.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the subfolder cannot be created or already exists.
+    #[instrument(skip(self), fields(folder_path = %self.path.display()))]
+    pub async fn create_subfolder(&self, name: &str) -> Result<Folder> {
+        let subfolder_path = self.path.join(name);
+        fs::create_dir_all(&subfolder_path).await.map_err(Error::Io)?;
+        Ok(Folder::new(subfolder_path))
     }
 
     /// Lists the documents directly contained within the workspace root (non-recursive).

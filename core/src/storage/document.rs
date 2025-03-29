@@ -24,7 +24,7 @@ impl Document {
     ///
     /// Checks if the file exists and is accessible.
     #[instrument(skip(path), fields(path = %path.display()))]
-    pub async fn open(path: PathBuf) -> Result<Self> {
+    pub(crate) async fn open(path: PathBuf) -> Result<Self> {
         validate_markhor_path(&path)?;
 
         // Ensure the file exists and we can read it (basic check)
@@ -52,7 +52,7 @@ impl Document {
     /// with existing files or documents in the target directory according
     /// to the defined ambiguity rules.
     #[instrument(skip(path), fields(path = %path.display()))]
-    pub async fn create(path: PathBuf) -> Result<Self> {
+    pub(crate) async fn create(path: PathBuf) -> Result<Self> {
         validate_markhor_path(&path)?;
         let (dir, basename) = get_dir_and_basename(&path)?;
 
@@ -83,7 +83,7 @@ impl Document {
 
     /// Reads and deserializes the document's metadata from its `.markhor` file.
     #[instrument(skip(self))]
-    pub async fn read_metadata(&self) -> Result<DocumentMetadata> {
+    pub(crate) async fn read_metadata(&self) -> Result<DocumentMetadata> {
         Self::read_metadata_internal(&self.markhor_path).await
     }
 
@@ -106,7 +106,7 @@ impl Document {
 
     /// Serializes and writes the provided metadata to the document's `.markhor` file.
     #[instrument(skip(self, metadata))]
-    pub async fn save_metadata(&self, metadata: &DocumentMetadata) -> Result<()> {
+    pub(crate) async fn save_metadata(&self, metadata: &DocumentMetadata) -> Result<()> {
         debug!("Saving metadata to {}", self.markhor_path.display());
         let content = serde_json::to_string_pretty(metadata)?;
         fs::write(&self.markhor_path, content)

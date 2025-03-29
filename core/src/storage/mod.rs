@@ -94,8 +94,7 @@
 //!     println!("Workspace created at: {}", ws.path().display());
 //!
 //!     // Create a new document within the workspace
-//!     let doc_path = ws.path().join("my_first_doc.markhor");
-//!     let doc = Document::create(doc_path).await?;
+//!     let doc = ws.create_document("my_doc").await?;
 //!     println!("Document created with ID: {}", doc.id());
 //!
 //!     // List documents in the workspace root
@@ -122,6 +121,10 @@ mod metadata;
 
 use std::path::PathBuf;
 use thiserror::Error;
+
+pub const MARKHOR_EXTENSION: &str = "markhor";
+pub const INTERNAL_DIR_NAME: &str = ".markhor";
+
 
 #[derive(Debug, Error)]
 pub enum ConflictError {

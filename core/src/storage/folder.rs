@@ -1,11 +1,8 @@
-use crate::storage::{Error, Result};
+use crate::storage::{Error, Result, MARKHOR_EXTENSION};
 use crate::storage::document::Document;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{debug, instrument, warn};
-
-const MARKHOR_EXTENSION: &str = "markhor";
-const INTERNAL_DIR_NAME: &str = ".markhor";
 
 /// Represents a directory within a Workspace or another Folder,
 /// which can contain Documents and other Folders.
@@ -31,6 +28,44 @@ impl Folder {
     /// Returns the name of the folder.
     pub fn name(&self) -> Option<&str> {
         self.path.file_name()?.to_str()
+    }
+
+    /// Opens the document with the specified name within this folder.
+    /// 
+    /// The document name should not include the `.markhor` extension.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the document cannot be opened or does not exist.
+    #[instrument(skip(self), fields(folder_path = %self.path.display()))]
+    pub async fn document_by_name(&self, name: &str) -> Result<Document> {
+        let document_path = self.path.join(format!("{}.{}", name, MARKHOR_EXTENSION));
+        Document::open(document_path).await
+    }
+
+    /// Creates a new document in this folder with the specified name.
+    /// 
+    /// The document name should not include the `.markhor` extension.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the document cannot be created or already exists.
+    #[instrument(skip(self), fields(folder_path = %self.path.display()))]
+    pub async fn create_document(&self, name: &str) -> Result<Document> {
+        let document_path = self.path.join(format!("{}.{}", name, MARKHOR_EXTENSION));
+        Document::create(document_path).await
+    }
+
+    /// Creates a new subfolder within this folder with the specified name.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the subfolder cannot be created or already exists.
+    #[instrument(skip(self), fields(folder_path = %self.path.display()))]
+    pub async fn create_subfolder(&self, name: &str) -> Result<Folder> {
+        let subfolder_path = self.path.join(name);
+        fs::create_dir_all(&subfolder_path).await.map_err(Error::Io)?;
+        Ok(Folder::new(subfolder_path))
     }
 
     /// Lists the documents directly contained within this folder (non-recursive).
@@ -60,7 +95,7 @@ pub(crate) async fn list_documents_in_dir(dir_path: &Path) -> Result<Vec<Documen
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // If the directory itself doesn't exist, return an empty list or error?
             // Let's return Ok([]) as the list of documents *in* a non-existent dir is empty.
-             debug!("Directory not found, returning empty document list.");
+            debug!("Directory not found, returning empty document list.");
             return Ok(Vec::new());
         }
         Err(e) => return Err(Error::Io(e)),
