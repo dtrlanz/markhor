@@ -3,14 +3,14 @@ use crate::storage::{Error, Result};
 
 /// Represents a file belonging to a Document (excluding the .markhor file).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DocumentFile {
+pub struct ContentFile {
     path: PathBuf,
 }
 
-impl DocumentFile {
+impl ContentFile {
     // Constructor is likely internal, created by Document methods
     pub(crate) fn new(path: PathBuf) -> Self {
-        DocumentFile { path }
+        ContentFile { path }
     }
 
     /// Returns the absolute path to the file.

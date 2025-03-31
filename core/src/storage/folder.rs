@@ -105,13 +105,13 @@ pub(crate) async fn list_documents_in_dir(dir_path: &Path) -> Result<Vec<Documen
         let path = entry.path();
         if path.is_file() {
             if path.extension().and_then(|ext| ext.to_str()) == Some(MARKHOR_EXTENSION) {
-                debug!("Found potential document file: {}", path.display());
+                debug!("Found potential content file: {}", path.display());
                 match Document::open(path.clone()).await {
                     Ok(doc) => documents.push(doc),
                     Err(e) => {
-                        // Log and skip invalid/inaccessible document files
+                        // Log and skip invalid/inaccessible content files
                         warn!(
-                            "Skipping invalid or inaccessible document file '{}': {}",
+                            "Skipping invalid or inaccessible content file '{}': {}",
                             path.display(),
                             e
                         );

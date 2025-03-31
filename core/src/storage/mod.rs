@@ -23,7 +23,7 @@
 //!         (e.g., `my_report.markhor`). This file contains metadata like a unique ID.
 //!     *   All other files belonging to that document reside in the *same directory* and
 //!         share the *same base name* as the `.markhor` file, but with different extensions.
-//! *   **[`DocumentFile`]:** Represents an individual file that is part of a [`Document`]
+//! *   **[`ContentFile`]:** Represents an individual file that is part of a [`Document`]
 //!     (excluding the `.markhor` metadata file itself). Instances are obtained via
 //!     [`Document::files`] or [`Document::files_by_extension`].
 //!
@@ -109,7 +109,7 @@
 //! ```
 
 pub use self::document::Document;
-pub use self::file::DocumentFile;
+pub use self::file::ContentFile;
 pub use self::folder::Folder;
 pub use self::workspace::Workspace;
 
@@ -128,7 +128,7 @@ pub const INTERNAL_DIR_NAME: &str = ".markhor";
 
 #[derive(Debug, Error)]
 pub enum ConflictError {
-    #[error("Target document file already exists: {0}")]
+    #[error("Target content file already exists: {0}")]
     MarkhorFileExists(PathBuf), // Rule 1
 
     #[error("Existing file would be ambiguously owned by the new document: {0}")]

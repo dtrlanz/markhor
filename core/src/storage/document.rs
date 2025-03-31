@@ -1,6 +1,6 @@
 use crate::storage::{metadata, ConflictError, Error, Result};
 use crate::storage::metadata::DocumentMetadata;
-use crate::storage::DocumentFile;
+use crate::storage::ContentFile;
 use regex::Regex;
 use uuid::Uuid;
 use std::ffi::OsStr;
@@ -213,22 +213,22 @@ impl Document {
     /// Returns a list of all files associated with this document
     /// (excluding the `.markhor` file itself).
     #[instrument(skip(self))]
-    pub async fn files(&self) -> Result<Vec<DocumentFile>> {
+    pub async fn files(&self) -> Result<Vec<ContentFile>> {
          self.list_doc_files_internal(None).await
     }
 
     /// Returns a list of associated files filtered by a specific extension.
     /// The extension should be provided *without* the leading dot (e.g., "pdf", "txt").
     #[instrument(skip(self))]
-    pub async fn files_by_extension(&self, extension: &str) -> Result<Vec<DocumentFile>> {
+    pub async fn files_by_extension(&self, extension: &str) -> Result<Vec<ContentFile>> {
         self.list_doc_files_internal(Some(extension)).await
     }
 
 
     // --- Internal Helpers ---
 
-    /// Lists DocumentFile instances, optionally filtering by extension.
-    async fn list_doc_files_internal(&self, extension_filter: Option<&str>) -> Result<Vec<DocumentFile>> {
+    /// Lists ContentFile instances, optionally filtering by extension.
+    async fn list_doc_files_internal(&self, extension_filter: Option<&str>) -> Result<Vec<ContentFile>> {
         let (dir, basename) = get_dir_and_basename(&self.markhor_path)?;
         let mut files = Vec::new();
         let mut read_dir = fs::read_dir(&dir).await.map_err(|e| {
@@ -248,15 +248,15 @@ impl Document {
                 }
 
                 if let Some(file_name) = path.file_name().and_then(OsStr::to_str) {
-                     if is_potential_document_file(file_name, &basename) {
+                     if is_potential_content_file(file_name, &basename) {
                         // Apply extension filter if provided
                         if let Some(filter_ext) = extension_filter {
                             if path.extension().and_then(OsStr::to_str) == Some(filter_ext) {
-                                files.push(DocumentFile::new(path));
+                                files.push(ContentFile::new(path));
                             }
                         } else {
                              // No filter, add the file
-                             files.push(DocumentFile::new(path));
+                             files.push(ContentFile::new(path));
                         }
                     }
                 }
@@ -276,7 +276,7 @@ impl Document {
             let path = entry.path();
             if path.is_file() && path != self.markhor_path { // Exclude markhor here
                  if let Some(file_name) = path.file_name().and_then(OsStr::to_str) {
-                     if is_potential_document_file(file_name, &basename) {
+                     if is_potential_content_file(file_name, &basename) {
                         paths.push(path);
                     }
                 }
@@ -341,7 +341,7 @@ fn parse_basename(stem: &str) -> Result<(String, Option<String>)> {
 
 /// Checks if a filename matches the pattern for belonging to a document
 /// with the given basename (`basename.*` or `basename.{hex}.*`).
-fn is_potential_document_file(filename: &str, doc_basename: &str) -> bool {
+fn is_potential_content_file(filename: &str, doc_basename: &str) -> bool {
     if !filename.starts_with(doc_basename) {
         return false;
     }
@@ -423,7 +423,7 @@ async fn check_for_conflicts(target_dir: &Path, target_basename: &str) -> Result
         // Rule 2 Check: Existing file would be adopted?
         // This check ensures *no* file would be implicitly "adopted" by the new document, 
         // potentially misrepresenting its origin.
-        if is_potential_document_file(file_name, target_basename) {
+        if is_potential_content_file(file_name, target_basename) {
             // Found a file (e.g., target_basename.txt or target_basename.a1.pdf)
             // that would match the *new* document's pattern.
             // This is disallowed to prevent accidental adoption.
@@ -674,28 +674,28 @@ mod tests {
     }
 
      #[tokio::test]
-    async fn test_is_potential_document_file_logic() {
+    async fn test_is_potential_content_file_logic() {
         // Base doc: "mydoc"
-        assert!(is_potential_document_file("mydoc.txt", "mydoc"));
-        assert!(is_potential_document_file("mydoc.pdf", "mydoc"));
-        assert!(is_potential_document_file("mydoc.a1.txt", "mydoc"));
-        assert!(is_potential_document_file("mydoc.00ff.dat", "mydoc"));
-        assert!(!is_potential_document_file("mydoc_extra.txt", "mydoc"));
-        assert!(!is_potential_document_file("otherdoc.txt", "mydoc"));
-        assert!(is_potential_document_file("mydoc.a1", "mydoc")); // "a1" is extension, not hex
-        assert!(!is_potential_document_file("mydoc", "mydoc")); // No extension
-        assert!(!is_potential_document_file("mydoc.markhor", "mydoc")); // Usually handled separately
-        assert!(!is_potential_document_file("mydoc.v1.txt", "mydoc")); // "v1" is not hex
+        assert!(is_potential_content_file("mydoc.txt", "mydoc"));
+        assert!(is_potential_content_file("mydoc.pdf", "mydoc"));
+        assert!(is_potential_content_file("mydoc.a1.txt", "mydoc"));
+        assert!(is_potential_content_file("mydoc.00ff.dat", "mydoc"));
+        assert!(!is_potential_content_file("mydoc_extra.txt", "mydoc"));
+        assert!(!is_potential_content_file("otherdoc.txt", "mydoc"));
+        assert!(is_potential_content_file("mydoc.a1", "mydoc")); // "a1" is extension, not hex
+        assert!(!is_potential_content_file("mydoc", "mydoc")); // No extension
+        assert!(!is_potential_content_file("mydoc.markhor", "mydoc")); // Usually handled separately
+        assert!(!is_potential_content_file("mydoc.v1.txt", "mydoc")); // "v1" is not hex
 
 
         // Suffixed doc: "report.v1.a0"
         let basename = "report.v1.a0";
-        assert!(is_potential_document_file("report.v1.a0.csv", basename));
-        assert!(is_potential_document_file("report.v1.a0.b1.json", basename)); // report.v1.a0.{hex}.json
-        assert!(!is_potential_document_file("report.v1.a0", basename));
-        assert!(!is_potential_document_file("report.v1.a0txt", basename)); // Needs dot separator
-        assert!(!is_potential_document_file("report.v1.csv", basename)); // Belongs to report.v1 potentially
-        assert!(!is_potential_document_file("report.v1.a0.markhor", basename));
+        assert!(is_potential_content_file("report.v1.a0.csv", basename));
+        assert!(is_potential_content_file("report.v1.a0.b1.json", basename)); // report.v1.a0.{hex}.json
+        assert!(!is_potential_content_file("report.v1.a0", basename));
+        assert!(!is_potential_content_file("report.v1.a0txt", basename)); // Needs dot separator
+        assert!(!is_potential_content_file("report.v1.csv", basename)); // Belongs to report.v1 potentially
+        assert!(!is_potential_content_file("report.v1.a0.markhor", basename));
 
     }
 }
