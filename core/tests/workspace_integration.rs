@@ -119,13 +119,13 @@ async fn integration_folders_and_nested_docs() {
     create_dummy(&folder2_path, true).await;
 
     // 2. List folders in workspace
-    let root_folders = ws.list_folders().await.unwrap();
+    let root_folders = ws.root().list_folders().await.unwrap();
     assert_eq!(root_folders.len(), 1);
     assert_eq!(root_folders[0].path(), folder1_path);
 
     // 3. List contents of FolderA
     // Get the Folder struct instance first
-    let folder_a = ws.list_folders().await.unwrap().into_iter()
+    let folder_a = ws.root().list_folders().await.unwrap().into_iter()
         .find(|f| f.path() == folder1_path)
         .expect("Could not find FolderA");
 
@@ -165,8 +165,8 @@ async fn integration_folders_and_nested_docs() {
 async fn integration_move_document_between_folders() {
     let dir = tempdir().unwrap();
     let ws = Workspace::create(dir.path().to_path_buf()).await.unwrap();
-    let folder_a = ws.create_subfolder("DirA").await.unwrap();
-    let folder_b = ws.create_subfolder("DirB").await.unwrap();
+    let folder_a = ws.root().create_subfolder("DirA").await.unwrap();
+    let folder_b = ws.root().create_subfolder("DirB").await.unwrap();
     let original_doc_path = folder_a.path().join("movable.markhor");
     let original_file_path = folder_a.path().join("movable.data");
     let target_doc_path = folder_b.path().join("moved_doc.markhor"); // Moving and renaming
@@ -194,7 +194,7 @@ async fn integration_move_document_between_folders() {
     assert_eq!(moved_doc.path(), target_doc_path, "Moved document internal path should be updated");
 
     // 4. Verify listing in new location
-    let folders = ws.list_folders().await.unwrap();
+    let folders = ws.root().list_folders().await.unwrap();
     let folder_b = folders.iter().find(|f| f.path() == folder_b.path()).unwrap();
     let docs_in_b = folder_b.list_documents().await.unwrap();
     assert_eq!(docs_in_b.len(), 1);
@@ -216,8 +216,8 @@ async fn integration_move_document_causes_conflict() {
     let conflicting_file_for_doc1 = ws.path().join("doc1.txt");
 
     // 1. Setup: doc1, doc2, and a file potentially belonging to doc1
-    let doc1 = ws.create_document("doc1").await.unwrap();
-    let doc2 = ws.create_document("doc2").await.unwrap();
+    let doc1 = ws.root().create_document("doc1").await.unwrap();
+    let doc2 = ws.root().create_document("doc2").await.unwrap();
     create_dummy(&conflicting_file_for_doc1, false).await;
 
     // 2. Attempt to move doc2 to doc1's name - should conflict (MarkhorFileExists)
@@ -245,7 +245,7 @@ async fn integration_move_adopts_orphan_conflict() {
     let orphan_file_path = ws.path().join("target.txt");   // File that WOULD belong to target
 
     // 1. Setup: Create source doc and the "orphan" file
-    let source_doc = ws.create_document("source").await.unwrap();
+    let source_doc = ws.root().create_document("source").await.unwrap();
     create_dummy(&orphan_file_path, false).await;
 
     assert!(source_doc_path.exists());
@@ -283,22 +283,22 @@ async fn integration_create_document_causes_conflict() {
 
     // 1. Create base.txt - this conflicts with creating base.markhor (Rule 2)
     create_dummy(&conflicting_file_path, false).await;
-    let create_result_1 = ws.create_document(base_doc_name).await;
+    let create_result_1 = ws.root().create_document(base_doc_name).await;
     assert!(matches!(create_result_1, Err(Error::Conflict(ConflictError::ExistingFileWouldBeAdopted(p))) if p == conflicting_file_path));
     fs::remove_file(&conflicting_file_path).await.unwrap(); // Clean up for next test
 
 
     // 2. Create base.markhor successfully now
-    let base_doc = ws.create_document(base_doc_name).await.unwrap();
+    let base_doc = ws.root().create_document(base_doc_name).await.unwrap();
 
     // 3. Attempt to create base.a1.markhor - conflicts with existing base.markhor (Rule 3)
-    let create_result_2 = ws.create_document(suffix_doc_name).await;
+    let create_result_2 = ws.root().create_document(suffix_doc_name).await;
      assert!(matches!(create_result_2, Err(Error::Conflict(ConflictError::SuffixBaseAmbiguity(b, s))) if b == "base" && s == "a1"));
 
     // 4. Delete base, create suffix, try creating base (Rule 4)
      base_doc.delete().await.unwrap();
-     let _suffix_doc = ws.create_document(suffix_doc_name).await;
-     let create_result_3 = ws.create_document(base_doc_name).await;
+     let _suffix_doc = ws.root().create_document(suffix_doc_name).await;
+     let create_result_3 = ws.root().create_document(base_doc_name).await;
      assert!(matches!(create_result_3, Err(Error::Conflict(ConflictError::BaseSuffixAmbiguity(b, s))) if b == "base" && s == "base.a1"));
 
 }

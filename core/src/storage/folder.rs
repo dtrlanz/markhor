@@ -1,4 +1,4 @@
-use crate::storage::{Error, Result, MARKHOR_EXTENSION};
+use crate::storage::{Error, Result, INTERNAL_DIR_NAME, MARKHOR_EXTENSION};
 use crate::storage::document::Document;
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -79,7 +79,30 @@ impl Folder {
     /// Lists the subfolders directly contained within this folder (non-recursive).
     #[instrument(skip(self), fields(folder_path = %self.path.display()))]
     pub async fn list_folders(&self) -> Result<Vec<Folder>> {
-        list_folders_in_dir(&self.path, None).await // No directory to exclude
+        debug!("Listing subfolders");
+        let mut folders = Vec::new();
+         let mut read_dir = match fs::read_dir(&self.path).await {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                debug!("Directory not found, returning empty folder list.");
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(Error::Io(e)),
+        };
+    
+        while let Some(entry) = read_dir.next_entry().await.map_err(Error::Io)? {
+            let path = entry.path();
+            if path.is_dir() {
+                if entry.file_name().to_str() == Some(INTERNAL_DIR_NAME) {
+                    debug!("Skipping excluded directory: {}", path.display());
+                    continue;
+                }
+                debug!("Found subfolder: {}", path.display());
+                folders.push(Folder::new(path));
+            }
+        }
+        debug!("Found {} subfolders", folders.len());
+        Ok(folders)
     }
 
     // Potential future methods: delete, rename, move_to, create_subfolder, etc.

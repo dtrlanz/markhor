@@ -94,11 +94,11 @@
 //!     println!("Workspace created at: {}", ws.path().display());
 //!
 //!     // Create a new document within the workspace
-//!     let doc = ws.create_document("my_doc").await?;
+//!     let doc = ws.root().create_document("my_doc").await?;
 //!     println!("Document created with ID: {}", doc.id());
 //!
 //!     // List documents in the workspace root
-//!     let root_docs = ws.list_documents().await?;
+//!     let root_docs = ws.root().list_documents().await?;
 //!     println!("Found {} documents in workspace root.", root_docs.len());
 //!     assert_eq!(root_docs.len(), 1);
 //!

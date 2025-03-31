@@ -129,49 +129,13 @@ impl Workspace {
         &self.path
     }
 
+    pub fn root(&self) -> Folder {
+        Folder::new(self.path.clone())
+    }
+
     /// Returns the path to the internal `.markhor` directory used for configuration and caching.
     pub(crate) fn internal_dir_path(&self) -> &Path {
         &self.internal_dir
-    }
-
-    /// Creates a new document in this folder with the specified name.
-    /// 
-    /// The document name should not include the `.markhor` extension.
-    /// 
-    /// # Errors
-    /// 
-    /// Returns an error if the document cannot be created or already exists.
-    #[instrument(skip(self), fields(folder_path = %self.path.display()))]
-    pub async fn create_document(&self, name: &str) -> Result<Document> {
-        let document_path = self.path.join(format!("{}.{}", name, MARKHOR_EXTENSION));
-        Document::create(document_path).await
-    }
-
-    /// Creates a new subfolder within this folder with the specified name.
-    /// 
-    /// # Errors
-    /// 
-    /// Returns an error if the subfolder cannot be created or already exists.
-    #[instrument(skip(self), fields(folder_path = %self.path.display()))]
-    pub async fn create_subfolder(&self, name: &str) -> Result<Folder> {
-        let subfolder_path = self.path.join(name);
-        fs::create_dir_all(&subfolder_path).await.map_err(Error::Io)?;
-        Ok(Folder::new(subfolder_path))
-    }
-
-    /// Lists the documents directly contained within the workspace root (non-recursive).
-    ///
-    /// Invalid `.markhor` files that fail to open will be skipped and logged as warnings.
-    #[instrument(skip(self), fields(workspace_path = %self.path.display()))]
-    pub async fn list_documents(&self) -> Result<Vec<Document>> {
-        folder::list_documents_in_dir(&self.path).await
-    }
-
-    /// Lists the subfolders directly contained within the workspace root (non-recursive),
-    /// excluding the internal `.markhor` directory.
-    #[instrument(skip(self), fields(workspace_path = %self.path.display()))]
-    pub async fn list_folders(&self) -> Result<Vec<Folder>> {
-        folder::list_folders_in_dir(&self.path, Some(INTERNAL_DIR_NAME)).await
     }
 
     // Potential future methods: close, sync, find_document_by_id, etc.
@@ -404,11 +368,12 @@ mod tests {
 
 
         // --- Test Workspace Listing ---
-        let root_docs = ws.list_documents().await.unwrap();
+        let root_docs = ws.root().list_documents().await.unwrap();
         assert_eq!(root_docs.len(), 1);
         assert_eq!(root_docs[0].path(), doc1_path); // Assumes Document has `markhor_path` field
 
-        let root_folders = ws.list_folders().await.unwrap();
+        let root_folders = ws.root().list_folders().await.unwrap();
+        println!("Root folders: {:?}", root_folders.iter().map(|f| f.path()).collect::<Vec<_>>());
         assert_eq!(root_folders.len(), 1);
         assert_eq!(root_folders[0].path(), folder1_path.as_path());
         assert_ne!(root_folders[0].path().file_name().unwrap(), INTERNAL_DIR_NAME); // Ensure .markhor excluded
@@ -450,7 +415,7 @@ mod tests {
         // let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).finish();
         // let _guard = tracing::subscriber::set_default(subscriber);
 
-        let docs = ws.list_documents().await.unwrap();
+        let docs = ws.root().list_documents().await.unwrap();
         assert_eq!(docs.len(), 1); // Only the valid document should be listed
         assert_eq!(docs[0].path(), valid_doc_path);
         // Check logs manually or via subscriber for warnings about invalid.markhor & not_json.markhor
