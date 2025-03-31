@@ -1,6 +1,6 @@
 use tempfile::tempdir;
 use tokio::fs;
-use std::path::Path;
+use std::path::{PathBuf, Path};
 
 // Replace 'your_library_name' with the actual name of your crate
 use markhor_core::storage::{
@@ -32,13 +32,14 @@ async fn integration_create_and_open_workspace() {
 
     // 1. Create workspace
     let created_ws = Workspace::create(ws_path.clone()).await.expect("Failed to create workspace");
-    assert_eq!(created_ws.path(), ws_path.as_path());
+    let absolute_path = fs::canonicalize(&ws_path).await.unwrap(); // Get the absolute path
+    assert_eq!(created_ws.path(), absolute_path, "Workspace path should match the canonicalized path");
     assert!(created_ws.path().join(INTERNAL_DIR_NAME).exists(), "Internal .markhor directory should exist after create");
     assert!(created_ws.path().join(INTERNAL_DIR_NAME).is_dir(), "Internal .markhor should be a directory");
 
     // 2. Open the created workspace
     let opened_ws = Workspace::open(ws_path.clone()).await.expect("Failed to open existing workspace");
-    assert_eq!(opened_ws.path(), ws_path.as_path());
+    assert_eq!(opened_ws.path(), absolute_path);
     assert!(opened_ws.path().join(INTERNAL_DIR_NAME).exists(), "Internal .markhor directory should exist after open");
 
     // 3. Try opening a non-existent path
@@ -111,8 +112,6 @@ async fn integration_folders_and_nested_docs() {
     let ws = Workspace::create(dir.path().to_path_buf()).await.unwrap();
     let folder1_path = ws.path().join("FolderA");
     let folder2_path = folder1_path.join("FolderB");
-    let doc1_path = folder1_path.join("doc_in_a.markhor");
-    let doc2_path = folder2_path.join("doc_in_b.markhor");
 
     // 1. Create folder structure
     create_dummy(&folder1_path, true).await;
@@ -121,12 +120,12 @@ async fn integration_folders_and_nested_docs() {
     // 2. List folders in workspace
     let root_folders = ws.root().list_folders().await.unwrap();
     assert_eq!(root_folders.len(), 1);
-    assert_eq!(root_folders[0].path(), folder1_path);
+    assert_eq!(root_folders[0].path(), PathBuf::from("FolderA"));
 
     // 3. List contents of FolderA
     // Get the Folder struct instance first
     let folder_a = ws.root().list_folders().await.unwrap().into_iter()
-        .find(|f| f.path() == folder1_path)
+        .find(|f| f.path() == PathBuf::from("FolderA"))
         .expect("Could not find FolderA");
 
     let docs_in_a = folder_a.list_documents().await.unwrap();
@@ -137,11 +136,11 @@ async fn integration_folders_and_nested_docs() {
 
     let docs_in_a = folder_a.list_documents().await.unwrap();
     assert_eq!(docs_in_a.len(), 1);
-    assert_eq!(docs_in_a[0].path(), doc1_path);
+    assert_eq!(docs_in_a[0].path(), PathBuf::from("FolderA").join("doc_in_a.markhor"));
 
     let folders_in_a = folder_a.list_folders().await.unwrap();
     assert_eq!(folders_in_a.len(), 1);
-    assert_eq!(folders_in_a[0].path(), folder2_path);
+    assert_eq!(folders_in_a[0].path(), PathBuf::from("FolderA").join("FolderB"));
 
     // 4. List contents of FolderB
     let folder_b = folders_in_a.into_iter().next().expect("Could not find FolderB");
@@ -154,7 +153,7 @@ async fn integration_folders_and_nested_docs() {
 
     let docs_in_b = folder_b.list_documents().await.unwrap();
     assert_eq!(docs_in_b.len(), 1);
-    assert_eq!(docs_in_b[0].path(), doc2_path);
+    assert_eq!(docs_in_b[0].path(), PathBuf::from("FolderA").join("FolderB").join("doc_in_b.markhor"));
 
     let folders_in_b = folder_b.list_folders().await.unwrap();
     assert!(folders_in_b.is_empty());
@@ -167,13 +166,14 @@ async fn integration_move_document_between_folders() {
     let ws = Workspace::create(dir.path().to_path_buf()).await.unwrap();
     let folder_a = ws.root().create_subfolder("DirA").await.unwrap();
     let folder_b = ws.root().create_subfolder("DirB").await.unwrap();
-    let original_doc_path = folder_a.path().join("movable.markhor");
-    let original_file_path = folder_a.path().join("movable.data");
-    let target_doc_path = folder_b.path().join("moved_doc.markhor"); // Moving and renaming
+    let original_doc_path = ws.path().join(folder_a.path()).join("movable.markhor");
+    let original_file_path = ws.path().join(folder_a.path()).join("movable.data");
+    let target_doc_path = ws.path().join(folder_b.path()).join("moved_doc.markhor"); // Moving and renaming
+    let target_file_path = ws.path().join(folder_b.path()).join("moved_doc.data"); // Target .data file
 
     // 1. Setup initial state
-    create_dummy(&folder_a.path(), true).await;
-    create_dummy(&folder_b.path(), true).await;
+    create_dummy(&ws.path().join(folder_a.path()), true).await;
+    create_dummy(&ws.path().join(folder_b.path()), true).await;
     let doc = folder_a.create_document("movable").await.unwrap();
     create_dummy(&original_file_path, false).await; // Associated file
 
@@ -190,15 +190,15 @@ async fn integration_move_document_between_folders() {
     assert!(!original_doc_path.exists(), "Original .markhor should be gone");
     assert!(!original_file_path.exists(), "Original .data file should be gone");
     assert!(target_doc_path.exists(), "Target .markhor should exist");
-    assert!(folder_b.path().join("moved_doc.data").exists(), "Target .data file should exist");
-    assert_eq!(moved_doc.path(), target_doc_path, "Moved document internal path should be updated");
+    assert!(target_file_path.exists(), "Target .data file should exist");
+    assert_eq!(moved_doc.path(), folder_b.path().join("moved_doc.markhor"), "Moved document internal path should be updated");
 
     // 4. Verify listing in new location
     let folders = ws.root().list_folders().await.unwrap();
     let folder_b = folders.iter().find(|f| f.path() == folder_b.path()).unwrap();
     let docs_in_b = folder_b.list_documents().await.unwrap();
     assert_eq!(docs_in_b.len(), 1);
-    assert_eq!(docs_in_b[0].path(), target_doc_path);
+    assert_eq!(docs_in_b[0].path(), folder_b.path().join("moved_doc.markhor"));
 
     // 5. Verify listing in old location
     let folder_a = folders.iter().find(|f| f.path() == folder_a.path()).unwrap();

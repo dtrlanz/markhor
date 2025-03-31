@@ -4,6 +4,7 @@ use crate::storage::ContentFile;
 use regex::Regex;
 use uuid::Uuid;
 use std::ffi::OsStr;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{debug, instrument, warn}; // Optional: for logging
@@ -14,8 +15,10 @@ const MARKHOR_EXTENSION: &str = "markhor";
 /// and consisting of associated files in the same directory.
 #[derive(Debug)]
 pub struct Document {
-    // Path to the .markhor file
-    markhor_path: PathBuf,
+    // Absolute path to the .markhor file
+    absolute_path: PathBuf,
+    // Absolute path to the workspace root
+    workspace_path: PathBuf,
     metadata: DocumentMetadata,
 }
 
@@ -23,27 +26,24 @@ impl Document {
     /// Opens an existing document by reading its `.markhor` file.
     ///
     /// Checks if the file exists and is accessible.
-    #[instrument(skip(path), fields(path = %path.display()))]
-    pub(crate) async fn open(path: PathBuf) -> Result<Self> {
-        validate_markhor_path(&path)?;
+    #[instrument(skip(absolute_path), fields(path = %absolute_path.display()))]
+    pub(crate) async fn open(absolute_path: PathBuf, workspace_path: PathBuf) -> Result<Self> {
+        validate_markhor_path(&absolute_path)?;
 
         // Ensure the file exists and we can read it (basic check)
         // `read_metadata` will perform the actual read.
-        if !fs::try_exists(&path).await.map_err(Error::Io)? {
-             return Err(Error::FileNotFound(path));
+        if !fs::try_exists(&absolute_path).await.map_err(Error::Io)? {
+            return Err(Error::FileNotFound(absolute_path));
         }
-        if !fs::metadata(&path).await.map_err(Error::Io)?.is_file() {
-             return Err(Error::InvalidPath(format!("Path is not a file: {}", path.display())));
+        if !fs::metadata(&absolute_path).await.map_err(Error::Io)?.is_file() {
+            return Err(Error::InvalidPath(format!("Path is not a file: {}", absolute_path.display())));
         }
 
         // Try reading metadata to confirm it's a valid document structure
-        let metadata = Self::read_metadata_internal(&path).await?;
+        let metadata = Self::read_metadata_internal(&absolute_path).await?;
 
         debug!("Document opened successfully");
-        Ok(Document { 
-            markhor_path: path,
-            metadata,
-        })
+        Ok(Document { absolute_path, workspace_path, metadata })
     }
 
     /// Creates a new document with a `.markhor` file at the specified path.
@@ -51,10 +51,10 @@ impl Document {
     /// Performs conflict checks to ensure the new document doesn't clash
     /// with existing files or documents in the target directory according
     /// to the defined ambiguity rules.
-    #[instrument(skip(path), fields(path = %path.display()))]
-    pub(crate) async fn create(path: PathBuf) -> Result<Self> {
-        validate_markhor_path(&path)?;
-        let (dir, basename) = get_dir_and_basename(&path)?;
+    #[instrument(skip(absolute_path), fields(path = %absolute_path.display()))]
+    pub(crate) async fn create(absolute_path: PathBuf, workspace_path: PathBuf) -> Result<Self> {
+        validate_markhor_path(&absolute_path)?;
+        let (dir, basename) = get_dir_and_basename(&absolute_path)?;
 
         // --- Conflict Detection ---
         check_for_conflicts(&dir, &basename).await?;
@@ -64,17 +64,18 @@ impl Document {
         let metadata = DocumentMetadata::new();
         let content = serde_json::to_string_pretty(&metadata)?;
 
-        fs::write(&path, content)
+        fs::write(&absolute_path, content)
             .await
             .map_err(Error::Io)?;
 
         debug!("Document metadata file created successfully.");
-        Ok(Document { markhor_path: path, metadata })
+        Ok(Document { absolute_path, workspace_path, metadata })
     }
 
-    /// Returns the path to the document's `.markhor` file.
+    /// Returns the relative path to the document's `.markhor` file within the workspace.
     pub fn path(&self) -> &Path {
-        &self.markhor_path
+        &self.absolute_path.strip_prefix(&self.workspace_path)
+            .expect("Internal error: Document is not in workspace")
     }
 
     pub fn id(&self) -> &Uuid {
@@ -84,7 +85,7 @@ impl Document {
     /// Reads and deserializes the document's metadata from its `.markhor` file.
     #[instrument(skip(self))]
     pub(crate) async fn read_metadata(&self) -> Result<DocumentMetadata> {
-        Self::read_metadata_internal(&self.markhor_path).await
+        Self::read_metadata_internal(&self.absolute_path).await
     }
 
     /// Internal helper for reading metadata
@@ -107,9 +108,9 @@ impl Document {
     /// Serializes and writes the provided metadata to the document's `.markhor` file.
     #[instrument(skip(self, metadata))]
     pub(crate) async fn save_metadata(&self, metadata: &DocumentMetadata) -> Result<()> {
-        debug!("Saving metadata to {}", self.markhor_path.display());
+        debug!("Saving metadata to {}", self.absolute_path.display());
         let content = serde_json::to_string_pretty(metadata)?;
-        fs::write(&self.markhor_path, content)
+        fs::write(&self.absolute_path, content)
             .await
             .map_err(Error::Io)?;
         debug!("Metadata saved successfully.");
@@ -125,10 +126,10 @@ impl Document {
     #[instrument(skip(self), fields(new_path = %new_markhor_path.display()))]
     pub async fn move_to(mut self, new_markhor_path: PathBuf) -> Result<Self> {
         validate_markhor_path(&new_markhor_path)?;
-        let (_old_dir, old_basename) = get_dir_and_basename(&self.markhor_path)?;
+        let (_old_dir, old_basename) = get_dir_and_basename(&self.absolute_path)?;
         let (new_dir, new_basename) = get_dir_and_basename(&new_markhor_path)?;
 
-        if self.markhor_path == new_markhor_path {
+        if self.absolute_path == new_markhor_path {
             debug!("Move target is the same as current path, no action needed.");
             return Ok(self); // No-op
         }
@@ -153,7 +154,7 @@ impl Document {
                  .file_name()
                  .ok_or_else(|| Error::InvalidPath(format!("Cannot get filename for {}", old_file_path.display())))?;
 
-             let new_file_path = if old_file_path == self.markhor_path {
+             let new_file_path = if old_file_path == self.absolute_path {
                  new_markhor_path.clone() // Handle the .markhor file itself
              } else {
                  // Construct new path based on new basename and original extension/suffix part
@@ -175,7 +176,7 @@ impl Document {
         }
 
         // Update the document's path internally
-        self.markhor_path = new_markhor_path;
+        self.absolute_path = new_markhor_path;
         debug!("Move operation completed.");
         Ok(self)
     }
@@ -186,7 +187,7 @@ impl Document {
     /// This operation is potentially destructive and irreversible.
     #[instrument(skip(self))]
     pub async fn delete(self) -> Result<()> {
-        debug!("Attempting to delete document: {}", self.markhor_path.display());
+        debug!("Attempting to delete document: {}", self.absolute_path.display());
         let files_to_delete = self.list_all_associated_files().await?;
 
         let mut errors = Vec::new();
@@ -229,7 +230,7 @@ impl Document {
 
     /// Lists ContentFile instances, optionally filtering by extension.
     async fn list_doc_files_internal(&self, extension_filter: Option<&str>) -> Result<Vec<ContentFile>> {
-        let (dir, basename) = get_dir_and_basename(&self.markhor_path)?;
+        let (dir, basename) = get_dir_and_basename(&self.absolute_path)?;
         let mut files = Vec::new();
         let mut read_dir = fs::read_dir(&dir).await.map_err(|e| {
              if e.kind() == std::io::ErrorKind::NotFound {
@@ -243,7 +244,7 @@ impl Document {
             let path = entry.path();
             if path.is_file() {
                 // Skip the .markhor file itself
-                if path == self.markhor_path {
+                if path == self.absolute_path {
                     continue;
                 }
 
@@ -268,13 +269,13 @@ impl Document {
     /// Lists all files belonging to the document, *including* the .markhor file.
     /// Used internally for move/delete operations.
     async fn list_all_associated_files(&self) -> Result<Vec<PathBuf>> {
-         let (dir, basename) = get_dir_and_basename(&self.markhor_path)?;
-         let mut paths = vec![self.markhor_path.clone()]; // Start with the metadata file
+         let (dir, basename) = get_dir_and_basename(&self.absolute_path)?;
+         let mut paths = vec![self.absolute_path.clone()]; // Start with the metadata file
          let mut read_dir = fs::read_dir(dir).await.map_err(Error::Io)?;
 
          while let Some(entry) = read_dir.next_entry().await.map_err(Error::Io)? {
             let path = entry.path();
-            if path.is_file() && path != self.markhor_path { // Exclude markhor here
+            if path.is_file() && path != self.absolute_path { // Exclude markhor here
                  if let Some(file_name) = path.file_name().and_then(OsStr::to_str) {
                      if is_potential_content_file(file_name, &basename) {
                         paths.push(path);
@@ -498,13 +499,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let doc_path = dir.path().join("mydoc.markhor");
 
-        let doc = Document::create(doc_path.clone()).await.unwrap();
+        let doc = Document::create(doc_path.clone(), dir.path().to_path_buf()).await.unwrap();
         assert!(doc_path.exists());
 
         let metadata = doc.read_metadata().await.unwrap();
         println!("Created doc with UUID: {}", metadata.id);
 
-        let opened_doc = Document::open(doc_path.clone()).await.unwrap();
+        let opened_doc = Document::open(doc_path.clone(), dir.path().to_path_buf()).await.unwrap();
         let opened_metadata = opened_doc.read_metadata().await.unwrap();
         assert_eq!(metadata.id, opened_metadata.id);
 
@@ -522,7 +523,7 @@ mod tests {
         let unrelated_path = dir.path().join("other.txt");
         let unrelated_hex_path = dir.path().join("testdoc_extra.txt"); // Doesn't match pattern
 
-        let doc = Document::create(doc_path.clone()).await.unwrap();
+        let doc = Document::create(doc_path.clone(), dir.path().to_path_buf()).await.unwrap();
         create_dummy_file(&pdf_path).await;
         create_dummy_file(&txt_path).await;
         create_dummy_file(&hex_txt_path).await;
@@ -558,7 +559,7 @@ mod tests {
         let doc_path = dir.path().join("conflict1.markhor");
         create_dummy_file(&doc_path).await; // Pre-create the file
 
-        let result = Document::create(doc_path.clone()).await;
+        let result = Document::create(doc_path.clone(), dir.path().to_path_buf()).await;
         assert!(matches!(result, Err(Error::Conflict(ConflictError::MarkhorFileExists(_)))));
     }
 
@@ -569,12 +570,12 @@ mod tests {
         let existing_file = dir.path().join("conflict2.txt"); // Would be adopted
         create_dummy_file(&existing_file).await;
 
-        let result = Document::create(doc_path.clone()).await;
+        let result = Document::create(doc_path.clone(), dir.path().to_path_buf()).await;
         assert!(matches!(result, Err(Error::Conflict(ConflictError::ExistingFileWouldBeAdopted(_)))));
 
         let existing_hex_file = dir.path().join("conflict2.a1.pdf"); // Would also be adopted
         create_dummy_file(&existing_hex_file).await;
-        let result2 = Document::create(doc_path.clone()).await;
+        let result2 = Document::create(doc_path.clone(), dir.path().to_path_buf()).await;
          assert!(matches!(result2, Err(Error::Conflict(ConflictError::ExistingFileWouldBeAdopted(_)))));
     }
 
@@ -585,10 +586,10 @@ mod tests {
         let suffix_doc_path = dir.path().join("conflict3.4a.markhor");
 
         // Create the base document first
-        Document::create(base_doc_path.clone()).await.unwrap();
+        Document::create(base_doc_path.clone(), dir.path().to_path_buf()).await.unwrap();
 
         // Now try to create the suffixed one - should conflict
-        let result = Document::create(suffix_doc_path.clone()).await;
+        let result = Document::create(suffix_doc_path.clone(), dir.path().to_path_buf()).await;
          println!("{:?}", result); // Debug print
         assert!(matches!(result, Err(Error::Conflict(ConflictError::SuffixBaseAmbiguity(b,s))) if b == "conflict3" && s == "4a"));
     }
@@ -600,10 +601,10 @@ mod tests {
         let suffix_doc_path = dir.path().join("conflict4.4a.markhor");
 
         // Create the suffixed document first
-        Document::create(suffix_doc_path.clone()).await.unwrap();
+        Document::create(suffix_doc_path.clone(), dir.path().to_path_buf()).await.unwrap();
 
         // Now try to create the base one - should conflict
-        let result = Document::create(base_doc_path.clone()).await;
+        let result = Document::create(base_doc_path.clone(), dir.path().to_path_buf()).await;
          println!("{:?}", result); // Debug print
         assert!(matches!(result, Err(Error::Conflict(ConflictError::BaseSuffixAmbiguity(b,s))) if b == "conflict4" && s == "conflict4.4a"));
     }
@@ -618,7 +619,7 @@ mod tests {
         // Create target subdir
         fs::create_dir(dir.path().join("subdir")).await.unwrap();
 
-        let doc = Document::create(old_doc_path.clone()).await.unwrap();
+        let doc = Document::create(old_doc_path.clone(), dir.path().to_path_buf()).await.unwrap();
         create_dummy_file(&old_file_path).await;
 
         assert!(old_doc_path.exists());
@@ -632,7 +633,7 @@ mod tests {
         assert!(dir.path().join("subdir/moved_doc.data").exists()); // Check associated file moved correctly
 
         // Check internal path updated
-        assert_eq!(moved_doc.markhor_path, new_doc_path);
+        assert_eq!(moved_doc.absolute_path, new_doc_path);
 
         // Clean up
         moved_doc.delete().await.unwrap();
@@ -647,8 +648,8 @@ mod tests {
         let doc2_path = dir.path().join("doc2.markhor");
         let conflicting_file = dir.path().join("doc1.txt"); // Will conflict if doc2 moves to doc1
 
-        let doc1 = Document::create(doc1_path.clone()).await.unwrap();
-        let doc2 = Document::create(doc2_path.clone()).await.unwrap();
+        let doc1 = Document::create(doc1_path.clone(), dir.path().to_path_buf()).await.unwrap();
+        let doc2 = Document::create(doc2_path.clone(), dir.path().to_path_buf()).await.unwrap();
         create_dummy_file(&conflicting_file).await; // Create file potentially owned by doc1
 
          // Try moving doc2 to doc1 -> Conflict Rule 1 (MarkhorFileExists) takes precedence here
@@ -656,7 +657,7 @@ mod tests {
         assert!(matches!(move_result, Err(Error::Conflict(ConflictError::MarkhorFileExists(p))) if p == doc1_path));
 
         // Need to reload doc2 as it was consumed by the failed move attempt
-        let doc2_reloaded = Document::open(doc2_path).await.unwrap();
+        let doc2_reloaded = Document::open(doc2_path, dir.path().to_path_buf()).await.unwrap();
         doc1.delete().await.unwrap();
         doc2_reloaded.delete().await.unwrap();
     }

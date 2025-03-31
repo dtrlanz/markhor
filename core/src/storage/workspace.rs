@@ -13,7 +13,7 @@ const INTERNAL_DIR_NAME: &str = ".markhor";
 /// along with internal configuration storage.
 #[derive(Debug, Clone)]
 pub struct Workspace {
-    path: PathBuf,
+    absolute_path: PathBuf,
     internal_dir: PathBuf,
 }
 
@@ -37,17 +37,20 @@ impl Workspace {
             return Err(Error::NotADirectory(path));
         }
 
-        let internal_dir = path.join(INTERNAL_DIR_NAME);
+        let absolute_path = fs::canonicalize(path).await.map_err(Error::Io)?;
+        debug!("Canonicalized workspace path: {}", absolute_path.display());
+
+        let internal_dir = absolute_path.join(INTERNAL_DIR_NAME);
         let internal_meta = fs::metadata(&internal_dir).await.map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                Error::NotAWorkspace(path.clone()) // .markhor dir missing means not a workspace
+                Error::NotAWorkspace(absolute_path.clone()) // .markhor dir missing means not a workspace
             } else {
                 Error::Io(e)
             }
         })?;
 
         if !internal_meta.is_dir() {
-            return Err(Error::NotAWorkspace(path)); // .markhor exists but isn't a directory
+            return Err(Error::NotAWorkspace(absolute_path)); // .markhor exists but isn't a directory
         }
 
         // Read and validate workspace metadata config file
@@ -57,7 +60,7 @@ impl Workspace {
         debug!("Successfully validated workspace metadata file.");        
 
         debug!("Workspace opened successfully");
-        Ok(Workspace { path, internal_dir })
+        Ok(Workspace { absolute_path, internal_dir })
     }
 
     /// Creates a new workspace at the specified path.
@@ -81,16 +84,16 @@ impl Workspace {
                 }
 
                 // Path exists and is a directory, check if empty and if .markhor exists
-                 if fs::metadata(&internal_dir).await.is_ok() {
-                     debug!("Workspace creation failed: '.markhor' directory already exists");
-                     return Err(Error::WorkspaceCreationConflict(path));
-                 }
+                if fs::metadata(&internal_dir).await.is_ok() {
+                    debug!("Workspace creation failed: '.markhor' directory already exists");
+                    return Err(Error::WorkspaceCreationConflict(path));
+                }
 
-                // Check if directory is empty (excluding the potential future .markhor)
+                // Check if directory is empty
                 let mut read_dir = fs::read_dir(&path).await.map_err(Error::Io)?;
                 if read_dir.next_entry().await.map_err(Error::Io)?.is_some() {
-                     debug!("Workspace creation failed: directory is not empty");
-                     return Err(Error::WorkspaceCreationConflict(path));
+                    debug!("Workspace creation failed: directory is not empty");
+                    return Err(Error::WorkspaceCreationConflict(path));
                 }
 
                 // Directory exists and is empty, proceed to create internal dir
@@ -100,8 +103,7 @@ impl Workspace {
                 // Create and write initial workspace metadata
                 let metadata = WorkspaceMetadata::new();
                 let metadata_path = internal_dir.join(WORKSPACE_CONFIG_FILENAME);
-                write_workspace_metadata(&metadata_path, &metadata).await?;                
-
+                write_workspace_metadata(&metadata_path, &metadata).await?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // Path does not exist, create both dirs
@@ -119,18 +121,21 @@ impl Workspace {
                 return Err(Error::Io(e));
             }
         }
-
         debug!("Workspace created successfully");
-        Ok(Workspace { path, internal_dir })
+
+        let absolute_path = fs::canonicalize(path).await.map_err(Error::Io)?;
+        debug!("Canonicalized workspace path: {}", absolute_path.display());
+
+        Ok(Workspace { absolute_path, internal_dir })
     }
 
     /// Returns the root path of the workspace.
     pub fn path(&self) -> &Path {
-        &self.path
+        &self.absolute_path
     }
 
     pub fn root(&self) -> Folder {
-        Folder::new(self.path.clone())
+        Folder::new(self.absolute_path.clone(), self.absolute_path.clone())
     }
 
     /// Returns the path to the internal `.markhor` directory used for configuration and caching.
@@ -280,7 +285,7 @@ mod tests {
 
         // Now open it
         let ws = Workspace::open(ws_path.clone()).await.unwrap();
-        assert_eq!(ws.path(), ws_path.as_path());
+        assert_eq!(ws.path(), fs::canonicalize(ws_path.as_path()).await.unwrap());
         assert!(ws.internal_dir_path().exists());
     }
 
@@ -356,13 +361,13 @@ mod tests {
         let doc1_path = ws_path.join("root_doc.markhor");
         let folder1_path = ws_path.join("folder1");
         create_dummy(&ws_path.join("ignored.txt"), false).await;
-        let _doc1 = Document::create(doc1_path.clone()).await.unwrap();
+        let _doc1 = Document::create(doc1_path.clone(), ws.path().to_path_buf()).await.unwrap();
         create_dummy(&folder1_path, true).await;
 
         // Items in folder1
         let doc2_path = folder1_path.join("nested_doc.markhor");
         let folder2_path = folder1_path.join("folder2");
-        let _doc2 = Document::create(doc2_path.clone()).await.unwrap();
+        let _doc2 = Document::create(doc2_path.clone(), ws.path().to_path_buf()).await.unwrap();
         create_dummy(&folder2_path, true).await;
         create_dummy(&folder1_path.join("another.file"), false).await;
 
@@ -370,24 +375,24 @@ mod tests {
         // --- Test Workspace Listing ---
         let root_docs = ws.root().list_documents().await.unwrap();
         assert_eq!(root_docs.len(), 1);
-        assert_eq!(root_docs[0].path(), doc1_path); // Assumes Document has `markhor_path` field
+        assert_eq!(root_docs[0].path(), PathBuf::from("root_doc.markhor"));
 
         let root_folders = ws.root().list_folders().await.unwrap();
         println!("Root folders: {:?}", root_folders.iter().map(|f| f.path()).collect::<Vec<_>>());
         assert_eq!(root_folders.len(), 1);
-        assert_eq!(root_folders[0].path(), folder1_path.as_path());
+        assert_eq!(root_folders[0].path(), PathBuf::from("folder1"));
         assert_ne!(root_folders[0].path().file_name().unwrap(), INTERNAL_DIR_NAME); // Ensure .markhor excluded
 
 
         // --- Test Folder Listing ---
         let folder1 = root_folders.into_iter().next().unwrap();
         let folder1_docs = folder1.list_documents().await.unwrap();
-         assert_eq!(folder1_docs.len(), 1);
-        assert_eq!(folder1_docs[0].path(), doc2_path);
+        assert_eq!(folder1_docs.len(), 1);
+        assert_eq!(folder1_docs[0].path(), PathBuf::from("folder1/nested_doc.markhor"));
 
         let folder1_folders = folder1.list_folders().await.unwrap();
-         assert_eq!(folder1_folders.len(), 1);
-        assert_eq!(folder1_folders[0].path(), folder2_path.as_path());
+        assert_eq!(folder1_folders.len(), 1);
+        assert_eq!(folder1_folders[0].path(), PathBuf::from("folder1/folder2"));
 
          // --- Test Empty Folder Listing ---
          let folder2 = folder1_folders.into_iter().next().unwrap();
@@ -407,7 +412,7 @@ mod tests {
         let invalid_doc_path = ws_path.join("invalid.markhor"); // Will be empty, causing JSON error
         let not_json_path = ws_path.join("not_json.markhor");
 
-        let _valid_doc = Document::create(valid_doc_path.clone()).await.unwrap();
+        let _valid_doc = Document::create(valid_doc_path.clone(), ws.path().to_path_buf()).await.unwrap();
         create_dummy(&invalid_doc_path, false).await; // Empty file
         fs::write(&not_json_path, "this is not json").await.unwrap();
 
@@ -417,7 +422,7 @@ mod tests {
 
         let docs = ws.root().list_documents().await.unwrap();
         assert_eq!(docs.len(), 1); // Only the valid document should be listed
-        assert_eq!(docs[0].path(), valid_doc_path);
+        assert_eq!(docs[0].path(), PathBuf::from("valid.markhor"));
         // Check logs manually or via subscriber for warnings about invalid.markhor & not_json.markhor
     }
 }
