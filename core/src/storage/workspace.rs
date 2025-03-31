@@ -1,4 +1,5 @@
-use crate::storage::{Error, Result, MARKHOR_EXTENSION};
+use crate::event::define_event_listeners;
+use crate::storage::{Error, Result, MARKHOR_EXTENSION, DocumentMoved};
 use crate::storage::document::Document; // Adjust path as needed
 use crate::storage::folder::{self, Folder}; // Adjust path as needed
 use std::path::{Path, PathBuf};
@@ -11,11 +12,17 @@ const INTERNAL_DIR_NAME: &str = ".markhor";
 
 /// Represents the root workspace directory containing documents and folders,
 /// along with internal configuration storage.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Workspace {
     absolute_path: PathBuf,
     internal_dir: PathBuf,
+    on: WorkspaceEvents,
 }
+
+// Proof of concept for now, will be expanded later
+define_event_listeners!{ WorkspaceEvents {
+    document_moved: DocumentMoved,
+}}
 
 impl Workspace {
     /// Opens an existing workspace directory.
@@ -60,7 +67,11 @@ impl Workspace {
         debug!("Successfully validated workspace metadata file.");        
 
         debug!("Workspace opened successfully");
-        Ok(Workspace { absolute_path, internal_dir })
+        Ok(Workspace { 
+            absolute_path, 
+            internal_dir,
+            on: WorkspaceEvents::new(),
+        })
     }
 
     /// Creates a new workspace at the specified path.
@@ -126,7 +137,11 @@ impl Workspace {
         let absolute_path = fs::canonicalize(path).await.map_err(Error::Io)?;
         debug!("Canonicalized workspace path: {}", absolute_path.display());
 
-        Ok(Workspace { absolute_path, internal_dir })
+        Ok(Workspace { 
+            absolute_path, 
+            internal_dir,
+            on: WorkspaceEvents::new(),
+        })
     }
 
     /// Returns the root path of the workspace.

@@ -108,6 +108,8 @@
 //! }
 //! ```
 
+use crate::event::Event;
+
 pub use self::document::Document;
 pub use self::file::ContentFile;
 pub use self::folder::Folder;
@@ -197,3 +199,28 @@ pub enum Error {
 
 // Define a standard Result type for the library
 pub type Result<T> = std::result::Result<T, Error>;
+
+
+#[derive(Debug)]
+pub struct DocumentMoved {
+    document: Document,
+    from: PathBuf,
+}
+
+impl DocumentMoved {
+    pub(crate) fn new(document: Document, from: PathBuf) -> Self {
+        Self { document, from }
+    }
+
+    pub fn document(&self) -> &Document {
+        &self.document
+    }
+
+    pub fn from(&self) -> &PathBuf {
+        &self.from
+    }
+}
+
+impl Event for DocumentMoved {
+    type HandlerReturnType = ();
+}
