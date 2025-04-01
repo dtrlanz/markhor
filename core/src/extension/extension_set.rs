@@ -1,8 +1,8 @@
-use std::{ops::Deref, process::ExitStatus, sync::Arc};
+use std::{ops::Deref, sync::Arc};
 
-use crate::chat::{ChatError, Message, ChatModel, DynChatModel};
+use crate::chat::DynChatModel;
 
-use super::Extension;
+use super::{Extension, UseExtensionError};
 
 
 
@@ -19,16 +19,16 @@ impl ExtensionSet {
         self.extensions.push(extension);
     }
 
-    pub fn chat_model(&self) -> Option<ChatModelRef> {
+    pub fn chat_model(&self) -> Result<ChatModelRef, UseExtensionError> {
         for extension in &self.extensions {
             if let Some(model) = extension.chat_model() {
-                return Some(ChatModelRef {
+                return Ok(ChatModelRef {
                     extension: extension.as_ref(),
                     target: model,
                 });
             }
         }
-        None
+        Err(UseExtensionError::ChatModelNotAvailable)
     }
 }
 
@@ -58,12 +58,6 @@ impl<'a> ChatModelRef<'a> {
         self.extension.description()
     }
 }
-
-// impl<'a> ChatModel for ChatModelRef<'a> {
-//     async fn generate(&self, messages: Vec<ChatMessage>) -> Result<String, ChatError> {
-//         self.functionality.generate(messages).await
-//     }
-// }
 
 impl<'a> Deref for ChatModelRef<'a> {
     type Target = DynChatModel<'a>;

@@ -18,8 +18,8 @@ use thiserror::Error;
 use std::fmt;
 
 #[dynosaur::dynosaur(pub DynChatModel)]
-pub trait ChatModel {
-    async fn generate(&self, messages: &Vec<Message>) -> Result<String, ChatError>;
+pub trait ChatModel: Send + Sync {
+    fn generate(&self, messages: &Vec<Message>) -> impl Future<Output = Result<String, ChatError>> + Send;
 }
 
 pub struct Message {
