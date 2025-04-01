@@ -1,10 +1,11 @@
-mod extensions;
-
-
-//pub mod document;
-pub mod model;
+pub mod extension;
+pub mod chat;
+pub mod embedding;
 pub mod event;
 pub mod storage;
+pub mod job;
+pub mod convert;
+pub mod tool;
 
 pub mod error {
     use thiserror::Error;

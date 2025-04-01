@@ -13,3 +13,8 @@ impl DocumentMetadata {
         DocumentMetadata { id: Uuid::new_v4() }
     }
 }
+
+
+pub(crate) struct ChunkMetadata {
+    
+}

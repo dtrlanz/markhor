@@ -17,6 +17,7 @@
 use thiserror::Error;
 use std::fmt;
 
+#[dynosaur::dynosaur(pub DynChatModel)]
 pub trait ChatModel {
     async fn generate(&self, messages: Vec<ChatMessage>) -> Result<String, ChatError>;
 }

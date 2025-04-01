@@ -1,4 +1,6 @@
 use std::path::{Path, PathBuf};
+use tokio::fs::File;
+
 use crate::storage::{Error, Result};
 
 /// Represents a file belonging to a Document (excluding the .markhor file).
@@ -52,4 +54,12 @@ impl ContentFile {
     pub fn extension(&self) -> Option<&str> {
         self.path.extension()?.to_str()
     }
+}
+
+pub struct Content {
+    file: File,
+}
+
+pub struct ContentBuilder {
+    file: File,
 }
