@@ -1,6 +1,6 @@
-use std::sync::Arc;
+use std::{ops::Deref, process::ExitStatus, sync::Arc};
 
-use crate::chat::{ChatError, ChatMessage, ChatModel};
+use crate::chat::{ChatError, Message, ChatModel, DynChatModel};
 
 use super::Extension;
 
@@ -11,8 +11,12 @@ pub struct ExtensionSet {
 }
 
 impl ExtensionSet {
-    pub fn new(extensions: Vec<Arc<dyn Extension>>) -> Self {
-        Self { extensions }
+    pub fn new() -> Self {
+        Self { extensions: vec![] }
+    }
+
+    pub fn add(&mut self, extension: Arc<dyn Extension>) {
+        self.extensions.push(extension);
     }
 
     pub fn chat_model(&self) -> Option<ChatModelRef> {
@@ -20,7 +24,7 @@ impl ExtensionSet {
             if let Some(model) = extension.chat_model() {
                 return Some(ChatModelRef {
                     extension: extension.as_ref(),
-                    functionality: model,
+                    target: model,
                 });
             }
         }
@@ -28,9 +32,19 @@ impl ExtensionSet {
     }
 }
 
+impl<T: IntoIterator<Item = Arc<E>>, E: Extension + 'static> From<T> for ExtensionSet {
+    fn from(extensions: T) -> Self {
+        let mut vec: Vec<Arc<dyn Extension>> = Vec::<_>::new();
+        for e in extensions {
+            vec.push(e);
+        };
+        Self { extensions: vec }
+    }
+}
+
 pub struct ChatModelRef<'a> {
     extension: &'a dyn Extension,
-    functionality: &'a crate::chat::DynChatModel<'a>,
+    target: &'a crate::chat::DynChatModel<'a>,
 }
 
 impl<'a> ChatModelRef<'a> {
@@ -45,8 +59,16 @@ impl<'a> ChatModelRef<'a> {
     }
 }
 
-impl<'a> ChatModel for ChatModelRef<'a> {
-    async fn generate(&self, messages: Vec<ChatMessage>) -> Result<String, ChatError> {
-        self.functionality.generate(messages).await
+// impl<'a> ChatModel for ChatModelRef<'a> {
+//     async fn generate(&self, messages: Vec<ChatMessage>) -> Result<String, ChatError> {
+//         self.functionality.generate(messages).await
+//     }
+// }
+
+impl<'a> Deref for ChatModelRef<'a> {
+    type Target = DynChatModel<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        self.target
     }
 }

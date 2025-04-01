@@ -19,16 +19,37 @@ use std::fmt;
 
 #[dynosaur::dynosaur(pub DynChatModel)]
 pub trait ChatModel {
-    async fn generate(&self, messages: Vec<ChatMessage>) -> Result<String, ChatError>;
+    async fn generate(&self, messages: &Vec<Message>) -> Result<String, ChatError>;
 }
 
-pub struct ChatMessage {
+pub struct Message {
     pub role: ChatMessageRole,
     pub content: String,
 }
 
+impl Message {
+    pub fn developer<T: Into<String>>(content: T) -> Self {
+        Self {
+            role: ChatMessageRole::Developer,
+            content: content.into(),
+        }
+    }
+    pub fn user<T: Into<String>>(content: T) -> Self {
+        Self {
+            role: ChatMessageRole::User,
+            content: content.into(),
+        }
+    }
+    pub fn assistant<T: Into<String>>(content: T) -> Self {
+        Self {
+            role: ChatMessageRole::Assistant,
+            content: content.into(),
+        }
+    }
+}
+
 pub enum ChatMessageRole {
-    System,
+    Developer,
     User,
     Assistant,
 }
