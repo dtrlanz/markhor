@@ -1,4 +1,4 @@
-use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
+use std::{collections::HashMap, sync::{atomic::{AtomicUsize, Ordering}, Arc}};
 
 use markhor_core::{chat::{ChatError, ChatModel, DynChatModel, Message}, extension::{Extension, ExtensionSet}};
 
@@ -37,6 +37,22 @@ impl ChatModel for ShakespeareChatModel {
         }
         let idx = self.idx.fetch_add(1, Ordering::SeqCst);
         Ok(String::from(SONNET_18[idx]))
+    }
+
+    async fn chat(
+        &self,
+        messages: &[Message],
+        _model: Option<&str>,
+        _config: Option<HashMap<String, serde_json::Value>>,
+    ) -> Result<markhor_core::chat::Completion, ChatError> {
+        if self.idx.load(Ordering::SeqCst) >= SONNET_18.len() {
+            return Err(ChatError::ModelError(String::from("Out of lines")));
+        }
+        let idx = self.idx.fetch_add(1, Ordering::SeqCst);
+        Ok(markhor_core::chat::Completion {
+            message: Message::assistant(SONNET_18[idx].to_string()),
+            usage: None,
+        })
     }
 }
 

@@ -3,7 +3,8 @@ members = [
     "core",
     "cli",
     "util", 
-    "gui",
+    "gui", 
+    "extensions",
 ]
 resolver = "3" # Use the edition 2024 resolver
 

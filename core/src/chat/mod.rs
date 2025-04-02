@@ -15,54 +15,87 @@
 //         Use asynchronous streams (e.g., tokio::stream::Stream) to represent streaming responses.
 
 use thiserror::Error;
-use std::fmt;
+use std::{collections::HashMap, fmt};
+use serde::{Deserialize, Serialize};
 
 #[dynosaur::dynosaur(pub DynChatModel)]
 pub trait ChatModel: Send + Sync {
-    fn generate(&self, messages: &Vec<Message>) -> impl Future<Output = Result<String, ChatError>> + Send;
+    fn generate(&self, messages: &Vec<Message>) -> impl Future<Output = Result<String, ChatError>> + Send {
+        async move { 
+            self.chat(messages, None, None).await.map(|completion| {
+                completion.message.content
+            })
+        }
+    }
+
+
+    fn chat(
+        &self,
+        messages: &[Message],
+        model: Option<&str>,
+        config: Option<HashMap<String, serde_json::Value>>,
+    ) -> impl Future<Output = Result<Completion, ChatError>> + Send;
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Message {
-    pub role: ChatMessageRole,
+    pub role: MessageRole,
     pub content: String,
 }
 
 impl Message {
     pub fn developer<T: Into<String>>(content: T) -> Self {
         Self {
-            role: ChatMessageRole::Developer,
+            role: MessageRole::Developer,
             content: content.into(),
         }
     }
     pub fn user<T: Into<String>>(content: T) -> Self {
         Self {
-            role: ChatMessageRole::User,
+            role: MessageRole::User,
             content: content.into(),
         }
     }
     pub fn assistant<T: Into<String>>(content: T) -> Self {
         Self {
-            role: ChatMessageRole::Assistant,
+            role: MessageRole::Assistant,
             content: content.into(),
         }
     }
 }
 
-pub enum ChatMessageRole {
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MessageRole {
     Developer,
     User,
     Assistant,
 }
 
-#[derive(Debug, Error)]
-pub enum ChatError {
-    InvalidMessageFormat,
-    ModelError(String),
-    // Add other error types as needed
+// Represents the final successful output of a chat operation
+#[derive(Debug, Clone)]
+pub struct Completion {
+    pub message: Message,
+    pub usage: Option<UsageData>,
+    // Add other metadata like finish reason, model name, etc. if needed
 }
 
-impl fmt::Display for ChatError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct UsageData {
+    pub prompt_token_count: Option<u32>,
+    pub candidates_token_count: Option<u32>,
+    pub total_token_count: Option<u32>,
+    // Add other usage fields if needed
+}
+
+
+#[derive(Debug, Error)]
+pub enum ChatError {
+    #[error("Invalid message format")]
+    InvalidMessageFormat,
+
+    #[error("Model error: {0}")]
+    ModelError(String),
+
+    #[error("Error while using plugin: {0}")]
+    PluginError(Box<dyn std::error::Error + Send + Sync>),
 }

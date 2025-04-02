@@ -13,6 +13,17 @@ Cargo.lock
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 
+# Exclude .env files
+**/.env
+
+# Exclude Python cache files and directories
+__pycache__/
+*.py[cod]
+
+# Exclude virtual environment directories
+venv/
+env/
+*.venv/
 
 # Added by cargo
 

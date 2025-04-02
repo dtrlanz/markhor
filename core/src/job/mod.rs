@@ -203,6 +203,14 @@ mod tests {
             let idx = self.idx.fetch_add(1, Ordering::SeqCst);
             Ok(format!("Test Chat Model {}", idx))
         }
+
+        async  fn chat(&self,messages: &[Message],model:Option< &str> ,config:Option<std::collections::HashMap<String,serde_json::Value> > ,) -> Result<crate::chat::Completion,ChatError> {
+            let idx = self.idx.fetch_add(1, Ordering::SeqCst);
+            Ok(crate::chat::Completion {
+                message: Message::assistant(format!("Test Chat Model {}", idx)),
+                usage: None,
+            })
+        }
     }
 
     struct TestExtension {
