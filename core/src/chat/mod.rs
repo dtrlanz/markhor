@@ -20,6 +20,11 @@ use serde::{Deserialize, Serialize};
 
 #[dynosaur::dynosaur(pub DynChatModel)]
 pub trait ChatModel: Send + Sync {
+    // We have temporariliy ended up with two overlapping methods in this trait because it made
+    // sense to return more than just a string result (e.g., usage data) but I didn't want to
+    // update existing tests immediately.
+    // Todo: Resolve/consolidate when the API is a bit more settled.
+
     fn generate(&self, messages: &Vec<Message>) -> impl Future<Output = Result<String, ChatError>> + Send {
         async move { 
             self.chat(messages, None, None).await.map(|completion| {

@@ -1,4 +1,9 @@
-# gemini_plugin.py
+# Gemini Chat API plugin example
+#
+# This is not the best (or easist) way of interacting with chat completion APIs. It's just a
+# convenient way to test the plugin system. And something like this could be a viable solution
+# for situations where you need specific functionality provided by a Python SDK.
+
 import os
 import logging
 from typing import Dict, Any, Callable
