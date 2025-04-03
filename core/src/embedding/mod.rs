@@ -1,7 +1,9 @@
 use std::ops::Range;
 
+use crate::extension::Functionality;
 
-pub trait EmbeddingModel {
+
+pub trait EmbeddingModel: Functionality {
     fn embed(&self, text: &str) -> Result<Vec<f32>, EmbeddingError>;
     fn embed_batch(&self, texts: Vec<&str>) -> Result<Vec<Vec<f32>>, EmbeddingError>;
 }
@@ -18,7 +20,7 @@ pub enum EmbeddingError {
 
 
 /// A trait for chunking text into smaller segments for embedding.
-pub trait Chunker {
+pub trait Chunker: Functionality {
     /// Chunk the input text into a range of indices.
     fn chunk(&self, text: &str) -> Result<Range<usize>, EmbeddingError>;
 

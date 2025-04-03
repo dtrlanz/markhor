@@ -17,29 +17,30 @@
 use thiserror::Error;
 use std::{collections::HashMap, fmt};
 use serde::{Deserialize, Serialize};
+use async_trait::async_trait;
 
-#[dynosaur::dynosaur(pub DynChatModel)]
-pub trait ChatModel: Send + Sync {
+use crate::extension::Functionality;
+
+#[async_trait]
+pub trait ChatModel: Functionality + Send + Sync {
     // We have temporariliy ended up with two overlapping methods in this trait because it made
     // sense to return more than just a string result (e.g., usage data) but I didn't want to
     // update existing tests immediately.
     // Todo: Resolve/consolidate when the API is a bit more settled.
 
-    fn generate(&self, messages: &Vec<Message>) -> impl Future<Output = Result<String, ChatError>> + Send {
-        async move { 
-            self.chat(messages, None, None).await.map(|completion| {
-                completion.message.content
-            })
-        }
+    async fn generate(&self, messages: &Vec<Message>) -> Result<String, ChatError> {
+        self.chat(messages, None, None).await.map(|completion| {
+            completion.message.content
+        })
     }
 
 
-    fn chat(
+    async fn chat(
         &self,
         messages: &[Message],
         model: Option<&str>,
         config: Option<HashMap<String, serde_json::Value>>,
-    ) -> impl Future<Output = Result<Completion, ChatError>> + Send;
+    ) -> Result<Completion, ChatError>;
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

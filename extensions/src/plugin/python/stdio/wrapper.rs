@@ -39,6 +39,7 @@ use tokio::sync::Mutex; // Mutex needed if initialization modifies shared state
 ///   the implementation falls back to returning `PluginError::ProcessFailed`, including
 ///   the exit status and the captured content of `stderr`.
 pub struct StdioWrapper {
+    pub(crate) plugin_uri: String,      // stored here for logging
     pub(crate) plugin_name: String,     // stored here for logging
     plugin_dir: PathBuf,
     script_name: String, // e.g., "gemini_plugin.py"
@@ -53,14 +54,16 @@ pub struct StdioWrapper {
 
 impl StdioWrapper {
     pub fn new(
-        id: String,
+        plugin_uri: String,
+        plugin_name: String,
         plugin_dir: PathBuf,
         script_name: String,
         python_executable: Option<String>, // Allow overriding default python
         env_vars: HashMap<String, String>,
     ) -> Self {
         StdioWrapper {
-            plugin_name: id,
+            plugin_uri,
+            plugin_name,
             plugin_dir,
             script_name,
             python_exec: python_executable.unwrap_or_else(|| "python3".to_string()),
@@ -72,6 +75,8 @@ impl StdioWrapper {
 
     // Lazy Initializer function - finds python, ensures venv, installs deps
     async fn initialize(&self) -> Result<InitializedState, PluginError> {
+        tracing::info!("Initializing plugin '{}' ({})", self.plugin_name, self.plugin_uri);
+
         // Acquire mutex to prevent concurrent initialization attempts
         let _guard = self.init_mutex.lock().await;
 

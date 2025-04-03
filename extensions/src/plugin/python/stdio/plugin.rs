@@ -1,12 +1,11 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
-use markhor_core::{chat::DynChatModel, extension::Extension};
+use markhor_core::{chat::ChatModel, extension::Extension};
 use super::{chat::PythonStdioChatModel, wrapper::StdioWrapper};
 
 pub struct PythonStdioPlugin {
-    uri: String,
     description: String,
     stdio_wrapper: Arc<StdioWrapper>,
-    chat_models: Vec<Box<DynChatModel<'static>>>,
+    chat_models: Vec<Arc<PythonStdioChatModel>>,
 }
 
 impl PythonStdioPlugin {
@@ -20,13 +19,12 @@ impl PythonStdioPlugin {
         env_vars: HashMap<String, String>,
     ) -> Self {
         let stdio_wrapper = Arc::new(
-            StdioWrapper::new(name, directory, script_name, python_executable, env_vars)
+            StdioWrapper::new(uri, name, directory, script_name, python_executable, env_vars)
         );
         let chat_models = vec![
-            DynChatModel::boxed(PythonStdioChatModel::new(&stdio_wrapper))
+            Arc::new(PythonStdioChatModel::new(&stdio_wrapper))
         ];
         Self {
-            uri,
             description,
             stdio_wrapper,
             chat_models
@@ -36,7 +34,7 @@ impl PythonStdioPlugin {
 
 impl Extension for PythonStdioPlugin {
     fn uri(&self) -> &str {
-        &self.uri
+        &self.stdio_wrapper.plugin_uri
     }
     fn name(&self) -> &str {
         &self.stdio_wrapper.plugin_name
@@ -44,7 +42,7 @@ impl Extension for PythonStdioPlugin {
     fn description(&self) -> &str {
         &self.description
     }
-    fn chat_model(&self) -> Option<&markhor_core::chat::DynChatModel> {
-        self.chat_models.first().map(Box::as_ref)
+    fn chat_model(&self) -> Option<Arc<dyn ChatModel>> {
+        Some(self.chat_models.first().unwrap().clone())
     }
 }

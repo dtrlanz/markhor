@@ -1,8 +1,9 @@
-use crate::storage::{Content, ContentBuilder};
+use crate::{extension::Functionality, storage::{Content, ContentBuilder}};
+use async_trait::async_trait;
 use mime::Mime;
 
-#[dynosaur::dynosaur(pub DynConverter)]
-pub trait Converter {
+#[async_trait]
+pub trait Converter: Functionality {
     async fn convert(&self, input: Content, output_type: Mime) -> Result<ContentBuilder, ConversionError>;
 }
 

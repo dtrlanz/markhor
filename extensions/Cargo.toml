@@ -13,6 +13,7 @@ thiserror = "1"
 async-once-cell = "0.5.4"
 tracing = "0.1.41"
 dotenv = "0.15.0"
+async-trait = "0.1.88"
 
 [dev-dependencies]
 tracing-subscriber = "0.3.19"

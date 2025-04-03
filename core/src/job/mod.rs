@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{chat::ChatError, extension::{Extension, ExtensionSet, UseExtensionError}, storage::{Document, Folder}};
+use crate::{chat::ChatError, extension::{Extension, UseExtensionError}, storage::{Document, Folder}};
 use thiserror::Error;
 use tokio::sync::mpsc::{error::SendError, UnboundedReceiver, UnboundedSender};
 
@@ -23,7 +23,7 @@ impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> 
             assets: Assets {
                 documents: Vec::new(),
                 folders: Vec::new(),
-                extensions: ExtensionSet::new(),
+                extensions: Vec::new(),
                 receiver: None,
             },
             asset_sender: None,
@@ -44,7 +44,7 @@ impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> 
 
     /// Add an extension to the job's assets.
     pub fn add_extension(&mut self, extension: Arc<dyn Extension>) -> &mut Self {
-        self.assets.extensions.add(extension);
+        self.assets.extensions.push(extension);
         self
     }
 
@@ -88,7 +88,7 @@ impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> 
 pub struct Assets {
     documents: Vec<Document>,
     folders: Vec<Folder>,
-    extensions: ExtensionSet,
+    extensions: Vec<Arc<dyn Extension>>,
     receiver: Option<UnboundedReceiver<AssetItem>>,
 }
 
@@ -100,7 +100,7 @@ impl Assets {
                 match item {
                     AssetItem::Document(document) => self.documents.push(document),
                     AssetItem::Folder(folder) => self.folders.push(folder),
-                    AssetItem::Extension(extension) => self.extensions.add(extension),
+                    AssetItem::Extension(extension) => self.extensions.push(extension),
                 }
             }
         }
@@ -117,9 +117,10 @@ impl Assets {
     }
 
     /// Get the extensions available to the job.
-    pub fn extensions(&self) -> &ExtensionSet {
+    pub fn extensions(&self) -> &Vec<Arc<dyn Extension>> {
         &self.extensions
     }
+    
 }
 
 /// A sender for assets that can be used to send documents, folders, and extensions to a job.
@@ -184,8 +185,10 @@ pub enum RunJobError {
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
+
     use super::*;
-    use crate::{chat::{ChatModel, Message}, extension::Extension};
+    use crate::{chat::{ChatModel, Message}, extension::{Extension, Functionality}};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct TestChatModel {
@@ -198,13 +201,25 @@ mod tests {
         }
     }
 
+    impl Functionality for TestChatModel {
+        fn extension_uri(&self) -> &str { "test" }
+        fn id(&self) -> &str { "test" }
+        fn name(&self) -> &str { "Test Chat Model" }
+    }
+
+    #[async_trait]
     impl ChatModel for TestChatModel {
         async fn generate(&self, _messages: &Vec<Message>) -> Result<String, crate::chat::ChatError> {
             let idx = self.idx.fetch_add(1, Ordering::SeqCst);
             Ok(format!("Test Chat Model {}", idx))
         }
 
-        async  fn chat(&self,messages: &[Message],model:Option< &str> ,config:Option<std::collections::HashMap<String,serde_json::Value> > ,) -> Result<crate::chat::Completion,ChatError> {
+        async fn chat(
+            &self,
+            messages: &[Message],
+            model:Option<&str>,
+            config:Option<std::collections::HashMap<String,serde_json::Value>>,
+        ) -> Result<crate::chat::Completion, ChatError> {
             let idx = self.idx.fetch_add(1, Ordering::SeqCst);
             Ok(crate::chat::Completion {
                 message: Message::assistant(format!("Test Chat Model {}", idx)),
@@ -214,12 +229,12 @@ mod tests {
     }
 
     struct TestExtension {
-        model: TestChatModel,
+        model: Arc<TestChatModel>,
     }
 
     impl TestExtension {
         fn new() -> Self {
-            Self { model: TestChatModel::new() }
+            Self { model: Arc::from(TestChatModel::new()) }
         }
     }
 
@@ -233,15 +248,15 @@ mod tests {
         fn description(&self) -> &str {
             "Test Extension"
         }
-        fn chat_model(&self) -> Option<&crate::chat::DynChatModel> {
-            Some(crate::chat::DynChatModel::from_ref(&self.model))
+        fn chat_model(&self) -> Option<Arc<dyn ChatModel>> {
+            Some(self.model.clone())
         }
     }
 
     #[tokio::test]
     async fn test_job_run() {
         let mut job = Job::new(async |assets: &mut Assets| {
-            let model = assets.extensions().chat_model()?;
+            let model = assets.extensions().first().unwrap().chat_model().unwrap();
             let messages = vec![Message::user("Hello")];
             let response = model.generate(&messages).await?;
             Ok(response)
@@ -259,7 +274,7 @@ mod tests {
 
         // Create a new job depending on an extension
         let mut job = Job::new(async |assets: &mut Assets| {
-            let model = assets.extensions().chat_model()?;
+            let model = assets.extensions().first().unwrap().chat_model().unwrap();
             let messages = vec![Message::user("Hello")];
             let response = model.generate(&messages).await?;
             Ok(response)
@@ -277,7 +292,7 @@ mod tests {
             // Refresh the assets to include any newly sent extensions
             assets.refresh();
             // Now we can use the extension
-            let model = assets.extensions().chat_model()?;
+            let model = assets.extensions().first().unwrap().chat_model().unwrap();
             let messages = vec![Message::user("Hello")];
             let response = model.generate(&messages).await?;
             Ok(response)

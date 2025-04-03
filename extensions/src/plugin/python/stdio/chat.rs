@@ -1,4 +1,5 @@
-use markhor_core::chat::{Message, MessageRole, UsageData};
+use async_trait::async_trait;
+use markhor_core::{chat::{Message, MessageRole, UsageData}, extension::Functionality};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc}; // For using arbitrary config/usage fields
 
@@ -60,8 +61,20 @@ impl PythonStdioChatModel {
     }
 }
 
+impl Functionality for PythonStdioChatModel {
+    fn extension_uri(&self) -> &str {
+        &self.stdio_wrapper.plugin_uri
+    }
+    // Right now, this is not a problem because an extension can only return a single chat model
+    // Once the Python plugin base class is farther along, it'll be used to retrieve model names
+    // dynamically, so we'll fix it then.
+    fn id(&self) -> &str {
+        "chat functionality"
+    }
+    
+}
 
-
+#[async_trait]
 impl ChatModel for PythonStdioChatModel {
     async fn chat(
         &self,

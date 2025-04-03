@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::{atomic::{AtomicUsize, Ordering}, Arc}};
 
-use markhor_core::{chat::{ChatError, ChatModel, DynChatModel, Message}, extension::{Extension, ExtensionSet}};
+use async_trait::async_trait;
+use markhor_core::{chat::{ChatError, ChatModel, Message}, extension::{Extension, Functionality}};
 
 
 const SONNET_18: [&str; 14] = [
@@ -30,6 +31,13 @@ impl ShakespeareChatModel {
     }
 }
 
+impl Functionality for ShakespeareChatModel {
+    fn extension_uri(&self) -> &str { "test" }
+    fn id(&self) -> &str { "shakespeare" }
+    fn name(&self) -> &str { "William Shakespeare" }
+}
+
+#[async_trait]
 impl ChatModel for ShakespeareChatModel {
     async fn generate(&self, _messages: &Vec<Message>) -> Result<String, ChatError> {
         if self.idx.load(Ordering::SeqCst) >= SONNET_18.len() {
@@ -57,12 +65,14 @@ impl ChatModel for ShakespeareChatModel {
 }
 
 struct ShakespeareChatExtension {
-    model: ShakespeareChatModel,
+    model: Arc<ShakespeareChatModel>,
 }
 
 impl ShakespeareChatExtension {
     fn new() -> Self {
-        Self { model: ShakespeareChatModel::new() }
+        Self { 
+            model: Arc::new(ShakespeareChatModel::new())
+        }
     }
 }
 
@@ -76,8 +86,8 @@ impl Extension for ShakespeareChatExtension {
     fn description(&self) -> &str {
         "Chat with Shakespeare"
     }
-    fn chat_model(&self) -> Option<&DynChatModel> {
-        Some(DynChatModel::from_ref(&self.model))
+    fn chat_model(&self) -> Option<Arc<dyn ChatModel>> {
+        Some(self.model.clone())
     }
 }
 
@@ -105,14 +115,3 @@ async fn shakespeare_extension() {
     assert_eq!(response, "Shall I compare thee to a summer’s day?");
 }
 
-#[tokio::test]
-async fn shakespeare_extension_set() {
-    let extension = ShakespeareChatExtension::new();
-    let extension_set = ExtensionSet::from(vec![Arc::new(extension)]);
-    let model = extension_set.chat_model().unwrap();
-    let messages = vec![
-        Message::user("Tell me a sonnet"),
-    ];
-    let response = model.generate(&messages).await.unwrap();
-    assert_eq!(response, "Shall I compare thee to a summer’s day?");
-}
