@@ -1,4 +1,4 @@
-use markhor_extensions::plugin::python::stdio::wrapper::StdioWrapper;
+use markhor_extensions::plugin::python::stdio::plugin::PythonStdioPlugin;
 use markhor_core::{chat::ChatModel, extension::Extension};
 
 use std::collections::HashMap;
@@ -20,8 +20,10 @@ async fn test_stdio_plugin() {
 
     let api_key = std::env::var("GOOGLE_API_KEY").expect("GOOGLE_API_KEY must be stored in .env");
 
-    let plugin = StdioWrapper::new(
-        "python-stdio-chat-plugin-gemini".into(),
+    let plugin = PythonStdioPlugin::new(
+        "(uri)".into(),
+        "Gemini via Stdio".into(),
+        "Uses Gemini chat completion model via stdio".into(),
         "tests/python-chat-plugin".into(),
         "chat_gemini.py".into(),
         None,

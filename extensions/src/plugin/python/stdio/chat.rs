@@ -1,4 +1,4 @@
-use markhor_core::{chat::{Message, MessageRole, UsageData}, extension::Extension};
+use markhor_core::chat::{Message, MessageRole, UsageData};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc}; // For using arbitrary config/usage fields
 
@@ -50,14 +50,12 @@ use super::wrapper::StdioWrapper;
 
 pub struct PythonStdioChatModel {
     stdio_wrapper: Arc<StdioWrapper>,
-    model_name: String,
 }
 
 impl PythonStdioChatModel {
-    pub fn new(stdio_manager: &Arc<StdioWrapper>, model_name: String) -> Self {
+    pub fn new(stdio_manager: &Arc<StdioWrapper>) -> Self {
         Self { 
             stdio_wrapper: stdio_manager.clone(),
-            model_name,
         }
     }
 }
@@ -71,7 +69,7 @@ impl ChatModel for PythonStdioChatModel {
         model: Option<&str>,
         config: Option<HashMap<String, serde_json::Value>>,
     ) -> Result<Completion, ChatError> {
-        tracing::debug!("Calling chat method on plugin '{}'", self.stdio_wrapper.uri());
+        tracing::debug!("Calling chat method on plugin '{}'", self.stdio_wrapper.plugin_name);
         let converted_messages: Vec<ChatMessage> = messages.iter().map(|m| m.into()).collect();
         let params = ChatParams {
             messages: &*converted_messages,

@@ -1,14 +1,10 @@
-use markhor_core::chat::DynChatModel;
-use markhor_core::extension::Extension;
 use serde::{Deserialize, Serialize};
-use super::chat::PythonStdioChatModel;
 use super::error::PluginError;
 use super::{PluginRequest, PluginResponse};
-use async_once_cell::OnceCell; // Use sync::OnceCell for async initialization
+use async_once_cell::OnceCell; // Use OnceCell for async initialization
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::Mutex; // Mutex needed if initialization modifies shared state
@@ -43,18 +39,16 @@ use tokio::sync::Mutex; // Mutex needed if initialization modifies shared state
 ///   the implementation falls back to returning `PluginError::ProcessFailed`, including
 ///   the exit status and the captured content of `stderr`.
 pub struct StdioWrapper {
-    uri: String,
+    pub(crate) plugin_name: String,     // stored here for logging
     plugin_dir: PathBuf,
     script_name: String, // e.g., "gemini_plugin.py"
-    default_python_exec: String, // e.g., "python3" or configured path
+    python_exec: String, // e.g., "python3" or configured path
     init_state: OnceCell<Result<InitializedState, PluginError>>,
     // Env vars to be provided to the python script
     env_vars: HashMap<String, String>,
     // Use Mutex for initialization coordination if multiple threads might trigger it
     // (Though OnceCell handles the "once" part, Mutex protects the init logic itself)
     init_mutex: Mutex<()>,
-
-    chat_models: std::sync::OnceLock<Vec<Box<DynChatModel<'static>>>>,
 }
 
 impl StdioWrapper {
@@ -64,23 +58,16 @@ impl StdioWrapper {
         script_name: String,
         python_executable: Option<String>, // Allow overriding default python
         env_vars: HashMap<String, String>,
-    ) -> Arc<Self> {
-        let extension = StdioWrapper {
-            uri: id,
+    ) -> Self {
+        StdioWrapper {
+            plugin_name: id,
             plugin_dir,
             script_name,
-            default_python_exec: python_executable.unwrap_or_else(|| "python3".to_string()),
+            python_exec: python_executable.unwrap_or_else(|| "python3".to_string()),
             init_state: OnceCell::new(),
             env_vars,
             init_mutex: Mutex::new(()),
-            chat_models: std::sync::OnceLock::new(),
-        };
-        let arc = Arc::new(extension);
-        let chat_models = vec![
-            DynChatModel::boxed(PythonStdioChatModel::new(&arc, String::from("gemini-2.0-flash-lite")))
-        ];
-        arc.chat_models.get_or_init(|| chat_models );
-        arc
+        }
     }
 
     // Lazy Initializer function - finds python, ensures venv, installs deps
@@ -107,13 +94,13 @@ impl StdioWrapper {
 
         // --- 2. Ensure Python Interpreter ---
         // For simplicity, check if default_python_exec works. A real impl might search PATH.
-        let python_status = Command::new(&self.default_python_exec)
+        let python_status = Command::new(&self.python_exec)
             .arg("--version")
             .output()
             .await;
         let python_exec = match python_status {
-            Ok(output) if output.status.success() => self.default_python_exec.clone(),
-            _ => return Err(PluginError::PythonNotFound(self.default_python_exec.clone())),
+            Ok(output) if output.status.success() => self.python_exec.clone(),
+            _ => return Err(PluginError::PythonNotFound(self.python_exec.clone())),
         };
         tracing::info!("Using Python interpreter: {}", python_exec);
 
@@ -136,7 +123,7 @@ impl StdioWrapper {
         self.install_dependencies(&venv_path, &requirements_path).await?;
 
 
-        tracing::info!("Plugin '{}' initialized successfully.", self.uri);
+        tracing::info!("Plugin '{}' initialized successfully.", self.plugin_name);
         Ok(InitializedState {
             venv_python_path,
             plugin_script_path,
@@ -307,9 +294,9 @@ impl StdioWrapper {
         if !stderr_str.trim().is_empty() {
             // Use DEBUG level for successful runs, WARN for failures
             if status.success() {
-                tracing::debug!("Plugin '{}' stderr: {}", self.uri, stderr_str.trim_end());
+                tracing::debug!("Plugin '{}' stderr: {}", self.plugin_name, stderr_str.trim_end());
             } else {
-                tracing::warn!("Plugin '{}' stderr: {}", self.uri, stderr_str.trim_end());
+                tracing::warn!("Plugin '{}' stderr: {}", self.plugin_name, stderr_str.trim_end());
             }
         }
 
@@ -332,7 +319,7 @@ impl StdioWrapper {
                         // Successfully parsed a structured error from stdout! Use this.
                         tracing::warn!(
                             "Plugin '{}' exited non-zero and reported error: {}",
-                            self.uri, message
+                            self.plugin_name, message
                         );
                         return Err(PluginError::PluginReportedError(message));
                     }
@@ -340,7 +327,7 @@ impl StdioWrapper {
                         // This is weird: non-zero exit but success JSON? Log it.
                         tracing::error!(
                             "Plugin '{}' exited non-zero ({}) but produced success JSON on stdout. Falling back to ProcessFailed.",
-                            self.uri, status
+                            self.plugin_name, status
                         );
                         // Fall through to return ProcessFailed below
                     }
@@ -349,13 +336,13 @@ impl StdioWrapper {
                         let stdout_preview = String::from_utf8_lossy(&stdout_buf);
                         tracing::warn!(
                             "Plugin '{}' exited non-zero ({}) and stdout was not a valid PluginResponse JSON ({}). Stdout preview: '{}'",
-                            self.uri, status, parse_err, stdout_preview.chars().take(100).collect::<String>()
+                            self.plugin_name, status, parse_err, stdout_preview.chars().take(100).collect::<String>()
                         );
                         // Fall through to return ProcessFailed below
                     }
                 }
             } else {
-                tracing::warn!("Plugin '{}' exited non-zero ({}) and stdout was empty.", self.uri, status);
+                tracing::warn!("Plugin '{}' exited non-zero ({}) and stdout was empty.", self.plugin_name, status);
                 // Fall through to return ProcessFailed below
             }
 
@@ -373,7 +360,7 @@ impl StdioWrapper {
 
             match response {
                 PluginResponse::Success { result } => {
-                    tracing::debug!("Plugin '{}' returned success.", self.uri);
+                    tracing::debug!("Plugin '{}' returned success.", self.plugin_name);
                     Ok(result)
                 },
                 PluginResponse::Error { message, .. } => {
@@ -381,7 +368,7 @@ impl StdioWrapper {
                     // but handle defensively in case it doesn't.
                     tracing::warn!(
                         "Plugin '{}' exited successfully (0) but reported error: {}",
-                        self.uri, message
+                        self.plugin_name, message
                     );
                     Err(PluginError::PluginReportedError(message))
                 }
@@ -390,20 +377,20 @@ impl StdioWrapper {
     }
 }
 
-impl Extension for StdioWrapper {
-    fn uri(&self) -> &str {
-        &self.uri
-    }
-    fn name(&self) -> &str {
-        "Python via stdio"
-    }
-    fn description(&self) -> &str {
-        "Plugins implemented in Python"
-    }
-    fn chat_model(&self) -> Option<&markhor_core::chat::DynChatModel> {
-        self.chat_models.get().unwrap().first().map(Box::as_ref)
-    }
-}
+// impl Extension for StdioWrapper {
+//     fn uri(&self) -> &str {
+//         &self.uri
+//     }
+//     fn name(&self) -> &str {
+//         "Python via stdio"
+//     }
+//     fn description(&self) -> &str {
+//         "Plugins implemented in Python"
+//     }
+//     fn chat_model(&self) -> Option<&markhor_core::chat::DynChatModel> {
+//         self.chat_models.get().unwrap().first().map(Box::as_ref)
+//     }
+// }
 
 // Structure to hold the state after successful initialization
 #[derive(Debug, Clone)]
