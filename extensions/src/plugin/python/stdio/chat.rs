@@ -1,6 +1,6 @@
-use markhor_core::chat::{Message, MessageRole, UsageData};
+use markhor_core::{chat::{Message, MessageRole, UsageData}, extension::Extension};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap; // For using arbitrary config/usage fields
+use std::{collections::HashMap, sync::Arc}; // For using arbitrary config/usage fields
 
 // --- Data structures specific to chat functionality ---
 
@@ -38,5 +38,61 @@ impl From<&Message> for ChatMessage {
             },
             content: msg.content.clone(),
         }
+    }
+}
+
+
+
+use markhor_core::chat::{ChatError, ChatModel, Completion};
+use crate::plugin::python::stdio::error::PluginError;
+use super::wrapper::StdioWrapper;
+
+
+pub struct PythonStdioChatModel {
+    stdio_wrapper: Arc<StdioWrapper>,
+    model_name: String,
+}
+
+impl PythonStdioChatModel {
+    pub fn new(stdio_manager: &Arc<StdioWrapper>, model_name: String) -> Self {
+        Self { 
+            stdio_wrapper: stdio_manager.clone(),
+            model_name,
+        }
+    }
+}
+
+
+
+impl ChatModel for PythonStdioChatModel {
+    async fn chat(
+        &self,
+        messages: &[Message],
+        model: Option<&str>,
+        config: Option<HashMap<String, serde_json::Value>>,
+    ) -> Result<Completion, ChatError> {
+        tracing::debug!("Calling chat method on plugin '{}'", self.stdio_wrapper.uri());
+        let converted_messages: Vec<ChatMessage> = messages.iter().map(|m| m.into()).collect();
+        let params = ChatParams {
+            messages: &*converted_messages,
+            model,
+            config: config.unwrap_or_default(),
+        };
+
+        let result: ChatResult = self.stdio_wrapper.run_method("chat", params).await.map_err(|e| e.into())?;
+        let result_message = Message {
+            role: match result.response.role.as_str() {
+                "user" => MessageRole::User,
+                "model" => MessageRole::Assistant,
+                "system" => MessageRole::Developer,
+                _ => Err(PluginError::ResponseInvalid(format!("Unknown role: {}", result.response.role)).into())?,
+            },
+            content: result.response.content,
+        };
+
+        Ok(Completion {
+            message: result_message,
+            usage: Some(result.usage),
+        })
     }
 }

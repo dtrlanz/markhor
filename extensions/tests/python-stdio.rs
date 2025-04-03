@@ -1,5 +1,5 @@
-use markhor_extensions::plugin::python::stdio::StdioPythonPlugin;
-use markhor_core::chat::ChatModel;
+use markhor_extensions::plugin::python::stdio::wrapper::StdioWrapper;
+use markhor_core::{chat::ChatModel, extension::Extension};
 
 use std::collections::HashMap;
 use tracing_subscriber::FmtSubscriber;
@@ -20,7 +20,7 @@ async fn test_stdio_plugin() {
 
     let api_key = std::env::var("GOOGLE_API_KEY").expect("GOOGLE_API_KEY must be stored in .env");
 
-    let plugin = StdioPythonPlugin::new(
+    let plugin = StdioWrapper::new(
         "python-stdio-chat-plugin-gemini".into(),
         "tests/python-chat-plugin".into(),
         "chat_gemini.py".into(),
@@ -28,7 +28,9 @@ async fn test_stdio_plugin() {
         // Default::default(), 
         HashMap::from([("GOOGLE_API_KEY".into(), api_key)]),
     );
-    let result = plugin.chat(
+    
+    let model = plugin.chat_model().unwrap();
+    let result = model.chat(
         &vec![
             markhor_core::chat::Message::user("What is tha capital of France?"),
         ],
