@@ -69,6 +69,15 @@ pub enum ContentPart {
     },
 }
 
+impl ContentPart {
+    pub fn into_text(self) -> Option<String> {
+        match self {
+            ContentPart::Text(text) => Some(text),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolResult {
     /// An id for matching tool requests to results. 
@@ -80,7 +89,7 @@ pub struct ToolResult {
     pub name: String,
 
     /// The result of the function call.
-    pub content: String,
+    pub content: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] // Removed Eq due to ToolCallRequest -> JsonValue
@@ -147,11 +156,11 @@ pub struct ToolDefinition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolChoice {
-    /// The model decides whether to call tools and which ones.
+    /// The model decides whether to call tools and which ones.FF
     Auto,
     /// The model will not call any tools.
     None,
-    /// The model *must* call the specified tool.
+    /// The model *must* call one or more tools.
     Required, // Some APIs (like OpenAI) support forcing *any* tool call
     /// The model *must* call the specific tool named.
     Tool { name: String },

@@ -152,7 +152,8 @@ use markhor_extensions::chat::gemini::{create_default_http_client, GeminiClient}
             let response_1 = result_1.unwrap(); // This is the ChatResponse
             info!(response = ?response_1, "Received response 1 (expecting tool call)");
 
-            assert!(response_1.finish_reason == Some(FinishReason::ToolCalls));
+            // Not accurate - value is usually STOP
+            //assert!(response_1.finish_reason == Some(FinishReason::ToolCalls));
             assert!(!response_1.tool_calls.is_empty());
             // response_1.content might be empty or contain text like "Okay, I can check..."
 
@@ -180,7 +181,7 @@ use markhor_extensions::chat::gemini::{create_default_http_client, GeminiClient}
                 "temperature": "30",
                 "unit": "celsius",
                 "description": "Sunny"
-            }).to_string(); // ToolResult content is still string
+            });
 
             // 3. Create the Tool message with the result
             let tool_result = ToolResult {

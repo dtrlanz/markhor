@@ -1,11 +1,12 @@
 
+use base64::Engine;
 use markhor_core::chat::chat::{
     ApiError, ChatApi, ChatOptions, ChatResponse, ChatStream, ContentPart, FinishReason,
-    Message, ModelInfo, ToolCallRequest, ToolChoice, ToolDefinition, ToolParameterSchema, ToolResult,
+    Message, ModelInfo, ToolCallRequest, ToolChoice, ToolParameterSchema,
     UsageInfo,
 };
 use async_trait::async_trait;
-use futures::stream::Stream;
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{debug, error, instrument, trace, warn};
@@ -36,17 +37,81 @@ struct GeminiContent {
     parts: Vec<GeminiPart>,
 }
 
+impl From<Message> for GeminiContent {
+    fn from(message: Message) -> Self {
+        match message {
+            Message::System(parts) => {
+                // We only handle text system prompts for now
+                let combined_text = parts.into_iter()
+                    .filter_map(|p| p.into_text())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                GeminiContent {
+                    role: "system".to_string(), // Role is ignored by API but struct needs it
+                    parts: vec![GeminiPart::Text{ text: combined_text }]
+                }
+            }
+            Message::User(parts) => {
+                let gemini_parts = parts.into_iter().map(|p| p.into()).collect();
+                GeminiContent { 
+                    role: "user".to_string(), 
+                    parts: gemini_parts 
+                }
+            }
+            Message::Assistant { content: parts, tool_calls } => {
+                // Convert standard content parts (Text, Image)
+                let mut gemini_parts: Vec<_> = parts.into_iter().map(|p| p.into()).collect();
+
+                // Convert requested tool calls into Gemini FunctionCall parts
+                for call_request in tool_calls {
+                    gemini_parts.push(GeminiPart::FunctionCall {
+                        function_call: GeminiFunctionCall {
+                            // The 'name' here is the function the assistant *wants* to call
+                            name: call_request.name,
+                            // 'args' is the structured JSON arguments - directly use the value
+                            args: call_request.arguments,
+                        }
+                    });
+                }
+
+                GeminiContent {
+                    role: "model".to_string(), // Assistant role maps to "model"
+                    parts: gemini_parts,
+                }
+            }
+            Message::Tool(tool_results) => {
+                // Each ToolResult needs to be converted into a FunctionResponse part
+                let function_response_parts: Vec<GeminiPart> = tool_results.into_iter()
+                    .map(|result| {
+                        GeminiPart::FunctionResponse {
+                            function_response: GeminiFunctionResponse {
+                                name: result.name,
+                                response: result.content,
+                            }
+                        }
+                    }).collect();
+
+                GeminiContent {
+                    role: "function".to_string(), // Role for providing tool results back (Todo: verify)
+                    parts: function_response_parts,
+                }
+            }
+        }        
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 //#[serde(rename_all = "camelCase")] // No longer needed, but harmless
 #[serde(untagged)] // Allows parts to be text OR function call OR function response etc.
 enum GeminiPart {
+    // Todo: consider using tuple instead of struct members
     Text {
         text: String,
     },
-    // We will need this if we add multimodal support later
-    // InlineData {
-    //     inline_data: GeminiBlob,
-    // },
+    InlineData {
+        inline_data: GeminiBlob,
+    },
     FunctionCall {
         #[serde(rename = "functionCall")]
         function_call: GeminiFunctionCall,
@@ -58,12 +123,32 @@ enum GeminiPart {
     // FileData{ file_data: GeminiFileData } // For file uploads if needed
 }
 
-// #[derive(Serialize, Deserialize, Debug, Clone)]
-// #[serde(rename_all = "camelCase")]
-// struct GeminiBlob {
-//     mime_type: String,
-//     data: String, // Base64 encoded
-// }
+impl From<ContentPart> for GeminiPart {
+    fn from(part: ContentPart) -> Self {
+        match part {
+            ContentPart::Text(text) => {
+                GeminiPart::Text { text }
+            }
+            ContentPart::Image { mime_type, data } => {
+                // Base64 encode data for inlineData
+                let encoded_data = base64::engine::general_purpose::STANDARD.encode(data);
+                GeminiPart::InlineData {
+                    inline_data: GeminiBlob {
+                        mime_type: mime_type,
+                        data: encoded_data,
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct GeminiBlob {
+    mime_type: String,
+    data: String, // Base64 encoded
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -128,6 +213,20 @@ enum GeminiFunctionCallingMode {
     None,
 }
 
+impl From<ToolChoice> for GeminiFunctionCallingMode {
+    fn from(choice: ToolChoice) -> Self {
+        match choice {
+            ToolChoice::Auto => GeminiFunctionCallingMode::Auto,
+            ToolChoice::Required => GeminiFunctionCallingMode::Any,
+            ToolChoice::None => GeminiFunctionCallingMode::None,
+            ToolChoice::Tool { name } => {
+                warn!("Forcing use of a specific tool is not supported for Gemini (tool: '{}'). Using ANY", name);
+                GeminiFunctionCallingMode::Any
+            },
+        }
+    }
+}
+
 #[derive(Serialize, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 struct GeminiGenerationConfig {
@@ -146,6 +245,8 @@ struct GeminiGenerationConfig {
 }
 
 // --- Response Structs ---
+// 
+// https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference#response
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -156,6 +257,83 @@ struct GeminiGenerateResponse {
     usage_metadata: Option<GeminiUsageMetadata>,
 }
 
+impl GeminiGenerateResponse {
+    /// Converts Gemini response to Markhor's internal ChatResponse.
+    pub fn into_chat_response(self, request_model_id: &str) -> Result<ChatResponse, ApiError> {
+        // Take the first candidate if available
+        let first_candidate = self.candidates.and_then(|mut c| c.pop());
+
+        // let mut content_parts = Vec::new();
+        // let mut tool_calls = Vec::new();
+        // let mut finish_reason = FinishReason::Other("No candidate received".to_string());
+        // let mut assistant_role_present = false;
+
+        if let Some(cand) = first_candidate {
+            let mut content_parts = Vec::new();
+            let mut tool_calls = Vec::new();
+            let finish_reason = cand.finish_reason.map(Into::into)
+                .unwrap_or(FinishReason::Other("Unknown".to_string()));
+
+            if let Some(content) = cand.content {
+                // Expecting role "model" for assistant response
+                if content.role == "model" {
+                    for part in content.parts {
+                        match part {
+                            GeminiPart::Text { text } => {
+                                content_parts.push(ContentPart::Text(text.clone()));
+                            }
+                            GeminiPart::InlineData { inline_data } => {
+                                content_parts.push(ContentPart::Image {
+                                    mime_type: inline_data.mime_type,
+                                    data: base64::engine::general_purpose::STANDARD.decode(inline_data.data).unwrap(),
+                                })
+                            }
+                            GeminiPart::FunctionCall { function_call } => {
+                                tool_calls.push(ToolCallRequest {
+                                    // Gemini doesn't provide a unique ID per call in the response.
+                                    // Generate one: name + random suffix might be best.
+                                    // Using name + UUID for now.
+                                    id: format!("gemini-{}", Uuid::new_v4()),
+                                    name: function_call.name.clone(),
+                                    arguments: function_call.args.clone(),
+                                });
+                            }
+                            GeminiPart::FunctionResponse { .. } => {
+                                // This shouldn't happen in the 'model' response content
+                                warn!("Unexpected FunctionResponse part in model content.");
+                            }
+                        }
+                    }
+                } else {
+                    warn!(role = %content.role, "Unexpected role in Gemini candidate content.");
+                }
+            }
+
+            if content_parts.is_empty() && tool_calls.is_empty() {
+                // Note cases where no content AND no tool calls were returned.
+                // This might be due to safety filters, or just an empty response.
+                debug!("Received response with no text content or tool calls.");
+            } 
+
+            Ok(ChatResponse {
+                content: content_parts,
+                tool_calls,
+                usage: self.usage_metadata.map(Into::into),
+                finish_reason: Some(finish_reason),
+                model_id: Some(request_model_id.to_string()), // Return the model used for the request
+            })
+        } else {
+            Ok(ChatResponse {
+                content: vec![],
+                tool_calls: vec![],
+                usage: self.usage_metadata.map(Into::into),
+                finish_reason: Some(FinishReason::Other("No candidate received".to_string())),
+                model_id: Some(request_model_id.to_string()), // Return the model used for the request
+            })
+        }
+    }    
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct GeminiCandidate {
@@ -163,18 +341,32 @@ struct GeminiCandidate {
     finish_reason: Option<GeminiFinishReason>,
     // safety_ratings: Option<Vec<GeminiSafetyRating>>, // Add if needed
     // citation_metadata: Option<GeminiCitationMetadata>, // Add if needed
-    token_count: Option<u32>, // Sometimes provided per candidate
+    // ...
 }
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 enum GeminiFinishReason {
+    // Todo: Add remaining
     Stop,
     MaxTokens,
     Safety,
     Recitation,
     FunctionCall, // Our trigger for ToolCalls
     Other,        // Catch-all
+}
+
+impl Into<FinishReason> for GeminiFinishReason {
+    fn into(self) -> FinishReason {
+        match self {
+            GeminiFinishReason::Stop => FinishReason::Stop,
+            GeminiFinishReason::MaxTokens => FinishReason::Length,
+            GeminiFinishReason::FunctionCall => FinishReason::ToolCalls,
+            GeminiFinishReason::Safety => FinishReason::ContentFilter,
+            GeminiFinishReason::Recitation => FinishReason::Other("Recitation".to_string()),
+            GeminiFinishReason::Other => FinishReason::Other("Unknown".to_string()),
+        }
+    }
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -188,9 +380,33 @@ struct GeminiUsageMetadata {
     total_token_count: Option<u32>,
 }
 
+impl Into<UsageInfo> for GeminiUsageMetadata {
+    fn into(self) -> UsageInfo {
+        UsageInfo {
+            prompt_tokens: self.prompt_token_count,
+            completion_tokens: self.candidates_token_count, // Note: Gemini sums *all* candidates if > 1
+            total_tokens: self.total_token_count,
+        }        
+    }
+}
+
 #[derive(Deserialize, Debug)]
 struct GeminiErrorResponse {
     error: GeminiErrorDetail,
+}
+
+impl GeminiErrorResponse {
+    fn into_api_error(self, response_status: StatusCode) -> ApiError {
+        let msg = format!("{} (Status: {}, Code: {})", self.error.message, self.error.status, self.error.code);
+        match response_status.as_u16() {
+            400 => ApiError::InvalidRequest(msg),
+            401 | 403 => ApiError::Authentication(msg),
+            404 => ApiError::ModelNotFound(msg), // Or potentially other 404 reasons
+            429 => ApiError::RateLimited,
+            500..=599 => ApiError::Api { status: response_status.as_u16(), message: msg },
+            _ => ApiError::Api { status: response_status.as_u16(), message: msg },
+        }
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -225,7 +441,7 @@ struct GeminiModelInfo {
 // ============== Gemini Client Implementation ==============
 
 const DEFAULT_GEMINI_API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
-const DEFAULT_GEMINI_MODEL: &str = "gemini-1.5-flash-latest"; // A reasonable default
+const DEFAULT_GEMINI_MODEL: &str = "gemini-2.0-flash-lite"; //"gemini-1.5-flash-latest"; // A reasonable default
 
 #[derive(Debug, Clone)]
 pub struct GeminiClient {
@@ -269,156 +485,53 @@ impl GeminiClient {
         match error_text_result {
             Ok(error_text) => {
                 trace!(status = %status, error_body = %error_text, "Gemini API error response body");
-                 // Try parsing Gemini's specific error format
-                 match serde_json::from_str::<GeminiErrorResponse>(&error_text) {
+                // Try parsing Gemini's specific error format
+                match serde_json::from_str::<GeminiErrorResponse>(&error_text) {
                     Ok(gemini_error) => {
-                         let msg = format!("{} (Status: {}, Code: {})", gemini_error.error.message, gemini_error.error.status, gemini_error.error.code);
-                         match status.as_u16() {
-                             400 => ApiError::InvalidRequest(msg),
-                             401 | 403 => ApiError::Authentication(msg),
-                             404 => ApiError::ModelNotFound(msg), // Or potentially other 404 reasons
-                             429 => ApiError::RateLimited,
-                             500..=599 => ApiError::Api { status: status.as_u16(), message: msg },
-                             _ => ApiError::Api { status: status.as_u16(), message: msg },
-                         }
+                        gemini_error.into_api_error(status)
                     }
                     Err(parse_err) => {
-                         // Couldn't parse the specific error format, return generic API error
-                         warn!(parse_error = %parse_err, body = %error_text, "Failed to parse Gemini error response JSON");
-                         ApiError::Api { status: status.as_u16(), message: error_text }
+                        // Couldn't parse the specific error format, return generic API error
+                        warn!(parse_error = %parse_err, body = %error_text, "Failed to parse Gemini error response JSON");
+                        ApiError::Api { status: status.as_u16(), message: error_text }
                     }
                 }
             },
             Err(text_err) => {
-                 // Failed even to read the error body text
-                 error!(status = %status, text_error = %text_err, "Failed to read Gemini error response body text");
-                 ApiError::Api { status: status.as_u16(), message: format!("Failed to read error response body: {}", text_err)}
+                // Failed even to read the error body text
+                error!(status = %status, text_error = %text_err, "Failed to read Gemini error response body text");
+                ApiError::Api { status: status.as_u16(), message: format!("Failed to read error response body: {}", text_err)}
             }
         }
-
     }
 
-    /// Converts our internal Message format to Gemini's Content format.
+    /// Converts Markhor's internal message format to Gemini's Content format.
     fn convert_messages(
         messages: &[Message],
     ) -> Result<(Option<GeminiContent>, Vec<GeminiContent>), ApiError> {
-        let mut gemini_contents: Vec<GeminiContent> = Vec::new();
-        let mut system_instruction: Option<GeminiContent> = None;
-
-        for message in messages {
-            match message {
-                Message::System(parts) => {
+        let mut system_instruction: Result<Option<GeminiContent>, ApiError> = Ok(None);
+        let gemini_contents: Vec<GeminiContent> = messages.iter()
+            .filter(|&m| match m {
+                Message::System(_) => {
                     // Gemini uses a dedicated 'system_instruction' field.
-                    // We only support one currently. Error if multiple are present?
-                    if system_instruction.is_some() {
-                        return Err(ApiError::InvalidRequest(
+                    // We only support one currently. Error if multiple are present.
+                    if !system_instruction.as_ref().is_ok_and(|v| v.is_none()) {
+                        system_instruction = Err(ApiError::InvalidRequest(
                             "Multiple System messages are not supported by Gemini; use 'system_instruction'.".to_string()
                         ));
+                        return false;
                     }
-                    // We only handle text system prompts for now
-                    let text_parts: Vec<GeminiPart> = parts.iter().filter_map(|part| match part {
-                        ContentPart::Text(text) => Some(GeminiPart::Text { text: text.clone() }),
-                        ContentPart::Image { .. } => {
-                             warn!("Ignoring image part in System message for Gemini.");
-                             None
-                        }
-                    }).collect();
-
-                    if !text_parts.is_empty() {
-                        let combined_text = text_parts.into_iter().map(|p| match p {
-                            GeminiPart::Text{ text } => text,
-                            _ => String::new(), // Should not happen based on filter_map
-                        }).collect::<Vec<_>>().join("\n");
-
-                        system_instruction = Some(GeminiContent {
-                        role: "system".to_string(), // Role might be ignored by API but struct needs it
-                        parts: vec![GeminiPart::Text{ text: combined_text }]
-                        });
-                    }
+                    // Use first system message as system instruction
+                    system_instruction = Ok(Some(m.clone().into()));
+                    // Do not include system message in contents
+                    false
                 }
-                Message::User(parts) => {
-                    let gemini_parts = Self::convert_parts(parts)?;
-                    if !gemini_parts.is_empty() {
-                        gemini_contents.push(GeminiContent { role: "user".to_string(), parts: gemini_parts });
-                    }
-                }
-                Message::Assistant { content, tool_calls } => {
-                    // Convert standard content parts (Text, Image)
-                    let mut gemini_parts = Self::convert_parts(content)?; // Handles text, ignores images for now
+                _ => true
+            })
+            .map(|m| m.clone().into())
+            .collect();
 
-                    // Convert requested tool calls into Gemini FunctionCall parts
-                    for call_request in tool_calls {
-                        gemini_parts.push(GeminiPart::FunctionCall {
-                            function_call: GeminiFunctionCall {
-                                // The 'name' here is the function the assistant *wants* to call
-                                name: call_request.name.clone(),
-                                // 'args' is the structured JSON arguments - directly use/clone the value
-                                args: call_request.arguments.clone(), // Clone the JsonValue
-                            }
-                        });
-                    }
-
-                    // Only add the message to history if it contains any parts
-                    // (either text content or function calls)
-                    if !gemini_parts.is_empty() {
-                        gemini_contents.push(GeminiContent {
-                            role: "model".to_string(), // Assistant role maps to "model"
-                            parts: gemini_parts,
-                        });
-                    }
-                }
-                Message::Tool(tool_results) => {
-                    // Each ToolResult needs to be converted into a FunctionResponse part
-                    let function_response_parts: Vec<GeminiPart> = tool_results.iter().map(|result| {
-                         // Attempt to parse the content as JSON, otherwise treat as string
-                         let response_value = serde_json::from_str::<serde_json::Value>(&result.content)
-                            .unwrap_or_else(|_| json!({ "result": result.content })); // Fallback to simple structure
-
-                        GeminiPart::FunctionResponse {
-                            function_response: GeminiFunctionResponse {
-                                name: result.name.clone(),
-                                response: response_value,
-                            }
-                        }
-                    }).collect();
-
-                    if !function_response_parts.is_empty() {
-                        // Add a single 'function' role message containing all tool results for this turn
-                        gemini_contents.push(GeminiContent {
-                             role: "function".to_string(), // Role for providing tool results back
-                             parts: function_response_parts,
-                        });
-                    }
-                }
-            }
-        }
-        Ok((system_instruction, gemini_contents))
-    }
-
-    /// Converts ContentParts to GeminiParts (currently only Text).
-    fn convert_parts(parts: &[ContentPart]) -> Result<Vec<GeminiPart>, ApiError> {
-        let mut gemini_parts = Vec::new();
-        for part in parts {
-            match part {
-                ContentPart::Text(text) => {
-                    gemini_parts.push(GeminiPart::Text { text: text.clone() });
-                }
-                ContentPart::Image { mime_type, data } => {
-                    // Base64 encode data for inlineData
-                    // let encoded_data = base64::engine::general_purpose::STANDARD.encode(data);
-                    // gemini_parts.push(GeminiPart::InlineData {
-                    //     inline_data: GeminiBlob {
-                    //         mime_type: mime_type.clone(),
-                    //         data: encoded_data,
-                    //     }
-                    // });
-                    warn!("Image parts are not yet supported for Gemini and will be ignored.");
-                    // Return error if strict handling is needed:
-                    // return Err(ApiError::NotSupported("Image content is not yet supported for Gemini.".to_string()));
-                }
-            }
-        }
-        Ok(gemini_parts)
+        system_instruction.map(|sys| (sys, gemini_contents))
     }
 
     /// Converts ChatOptions tool settings to Gemini format.
@@ -455,111 +568,6 @@ impl GeminiClient {
 
         (tools, tool_config)
     }
-
-     /// Converts Gemini response to our ChatResponse.
-    fn convert_response(
-        gemini_resp: GeminiGenerateResponse,
-        request_model_id: &str,
-    ) -> Result<ChatResponse, ApiError> {
-        let candidate = gemini_resp.candidates.and_then(|mut c| c.pop()); // Take the first candidate if available
-
-        let mut content_parts = Vec::new();
-        let mut tool_calls = Vec::new();
-        let mut finish_reason = FinishReason::Other("No candidate received".to_string());
-        let mut assistant_role_present = false;
-
-        if let Some(cand) = &candidate {
-             finish_reason = match cand.finish_reason {
-                 Some(GeminiFinishReason::Stop) => FinishReason::Stop,
-                 Some(GeminiFinishReason::MaxTokens) => FinishReason::Length,
-                 Some(GeminiFinishReason::FunctionCall) => FinishReason::ToolCalls,
-                 Some(GeminiFinishReason::Safety) => FinishReason::ContentFilter,
-                 Some(GeminiFinishReason::Recitation) => FinishReason::Other("Recitation".to_string()),
-                 Some(GeminiFinishReason::Other) | None => FinishReason::Other("Unknown".to_string()),
-             };
-
-            if let Some(content) = &cand.content {
-                 // Expecting role "model" for assistant response
-                 if content.role == "model" {
-                     assistant_role_present = true;
-                     for part in &content.parts {
-                         match part {
-                             GeminiPart::Text { text } => {
-                                 content_parts.push(ContentPart::Text(text.clone()));
-                             }
-                             GeminiPart::FunctionCall { function_call } => {
-                                // Need to serialize args back to string for our ToolCallRequest
-                                let arguments_str = match serde_json::to_string(&function_call.args) {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                         warn!(error = %e, args = ?function_call.args, "Failed to serialize function call arguments to string");
-                                         // Provide a fallback or error? Let's provide empty JSON string.
-                                         "{}".to_string()
-                                    }
-                                };
-                                tool_calls.push(ToolCallRequest {
-                                    // Gemini doesn't provide a unique ID per call in the response.
-                                    // Generate one: name + random suffix might be best.
-                                    // Using name + index within this response turn for simplicity now.
-                                    // Using UUID is better for uniqueness.
-                                    id: format!("gemini-{}", Uuid::new_v4()),
-                                    name: function_call.name.clone(),
-                                    arguments: function_call.args.clone(),
-                                });
-                             }
-                             GeminiPart::FunctionResponse { .. } => {
-                                 // This shouldn't happen in the 'model' response content
-                                 warn!("Unexpected FunctionResponse part in model content.");
-                             }
-                            //  GeminiPart::InlineData { .. } => {
-                            //      warn!("InlineData parts are not yet supported for Gemini response.");
-                            //      // Handle if needed later
-                            //  }
-                         }
-                     }
-                 } else {
-                      warn!(role = %content.role, "Unexpected role in Gemini candidate content.");
-                 }
-            }
-        } else if finish_reason == FinishReason::ToolCalls {
-             // Sometimes, if only tool calls are made, the candidate might have the calls
-             // but not typical 'model' content. We might need further checks or adjustments
-             // based on real API behavior. The current loop handles calls regardless of role.
-             debug!("Candidate finished with FunctionCall but no 'model' role content found (may be expected).");
-        } else if content_parts.is_empty() && tool_calls.is_empty() {
-            // Handle cases where no content AND no tool calls were returned.
-            // This might be due to safety filters, or just an empty response.
-            debug!("Received response with no text content or tool calls.");
-             // If finish reason was SAFETY, map it properly
-             if let Some(cand) = &candidate {
-                  if cand.finish_reason == Some(GeminiFinishReason::Safety) {
-                       finish_reason = FinishReason::ContentFilter;
-                  }
-             }
-        }
-
-
-        // If we have tool calls, the finish reason *must* be ToolCalls
-        if !tool_calls.is_empty() {
-            finish_reason = FinishReason::ToolCalls;
-        }
-
-        let usage = gemini_resp.usage_metadata.map(|m| UsageInfo {
-             prompt_tokens: m.prompt_token_count,
-             completion_tokens: m.candidates_token_count, // Note: Gemini sums *all* candidates if > 1
-             total_tokens: m.total_token_count,
-        });
-
-
-        Ok(ChatResponse {
-            content: content_parts,
-            tool_calls,
-            usage,
-            finish_reason: Some(finish_reason),
-            model_id: Some(request_model_id.to_string()), // Return the model used for the request
-        })
-    }
-
 }
 
 
@@ -668,7 +676,7 @@ impl ChatApi for GeminiClient {
             })?;
 
         debug!("Successfully parsed Gemini response");
-        Self::convert_response(gemini_response, model_id)
+        gemini_response.into_chat_response(model_id)
 
     }
 
@@ -705,7 +713,7 @@ pub fn create_default_http_client() -> Result<reqwest::Client, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use markhor_core::chat::chat::{Message, ToolParameterSchema}; // Bring trait types into scope
+    use markhor_core::chat::chat::{Message, ToolDefinition, ToolParameterSchema, ToolResult}; // Bring trait types into scope
     use std::env; // To read API key from environment
 
     // Helper to initialize tracing subscriber
@@ -742,7 +750,10 @@ mod tests {
              Message::tool(vec![ToolResult {
                  call_id: "123".to_string(),
                  name: "get_weather".to_string(), // Matched by name in Gemini
-                 content: "{\"temp\": 25, \"unit\": \"C\"}".to_string(),
+                 content: serde_json::json!({
+                     "temp": 25,
+                     "unit": "C",
+                 }),
              }]),
          ];
          let (_system_instr, contents) = GeminiClient::convert_messages(&messages).unwrap();
