@@ -1,3 +1,5 @@
+pub mod chat;
+pub mod error;
 
 // Implementation Notes:
 
