@@ -12,13 +12,30 @@ fn init_tracing() {
     tracing::subscriber::set_global_default(subscriber).unwrap();
 }
 
+// Helper function to get API key or skip test
+fn get_api_key(test_name: &str) -> Option<String> {
+    dotenv::dotenv().ok(); // Load .env file if present
+
+    // Check for GOOGLE_API_KEY in environment variables
+    match std::env::var("GOOGLE_API_KEY") {
+        Ok(key) if !key.is_empty() => Some(key),
+        _ => {
+            println!("Skipping integration test {} - GOOGLE_API_KEY environment variable not set.", test_name);
+            None // Signal to skip
+        }
+    }
+}
+
 
 #[tokio::test]
 async fn test_stdio_plugin() {
     dotenv::dotenv().ok();
     //init_tracing();
 
-    let api_key = std::env::var("GOOGLE_API_KEY").expect("GOOGLE_API_KEY must be stored in .env");
+    let api_key = match get_api_key("test_stdio_plugin") {
+        Some(key) => key,
+        None => return, // Skip test
+    };
 
     let plugin = PythonStdioPlugin::new(
         "(uri)".into(),
