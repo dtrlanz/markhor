@@ -1,10 +1,14 @@
 # Markhor
 
-**Intelligent, Markdown-based knowledge management:** Markhor is a platform for connecting AI models, documents, and workflows for knowledge work.
+***Intelligent, Markdown-based knowledge management*** 
+
+Markhor is a platform connecting AI models, documents, and workflows for knowledge work.
 
 ## Project Status
 
-This project is still very much in pre-alpha development. Assume all APIs are experimental.
+This project is still pre-alpha. Assume all APIs are experimental.
+
+**Version:** 0.1.0-alpha.0
 
 ## Project Goals
 
@@ -18,18 +22,20 @@ This project is still very much in pre-alpha development. Assume all APIs are ex
 ## Non-Goals
 
 -   Create an entire AI application framework (like LangChain): Instead, focus on core use cases related to local knowledge management, integrate with existing frameworks, and avoid excessive abstraction while maintaining extensibility.
--   Create a general-purpose AI agent: Instead, offer a system that facilitates integration and/or creation of various AI agents.
+-   Create a general-purpose AI agent: Instead, offer a system that facilitates integration of various agents or agentic workflows.
 -   Offer a fully integrated, feature-rich document editor or IDE: Instead, follow a road map that would allow for some of this functionality to be implemented via extensions.
 -   Offer synchronization and collaboration features: Instead, aim for enough compatibility and extensibility that would allow other software (e.g., file sync) and extensions to meet this need.
+-   Support non-text media types as first-class citizens: Instead support them via conversion to/from plain text and for specific use cases (e.g., multimodal chat, image generation).
 
-Additionally, these are non-goals *for the time being* though they may be desirable in the long term:
+In terms of implementation strategy, the following items are currently non-goals. That may change when this project or the Rust/AI ecosystem is more mature. The point is simply to avoid premature optimization and abstraction.
 
 -   Runtime-agnostic libraries: We're unapologetically relying on `tokio` for now and awaiting further developments in the world of `async` Rust.
--   Prefer native Rust implementations where possible: For now, we're happy to use APIs via Python or JavaScript when that's easiest.
+-   Prefer native Rust implementations: For now, we're happy to use APIs via Python or JavaScript when that's easiest.
 
 ## Packages
 
 -   `markhor_core`: Core AI functionalities (models, embeddings, etc.)
+-   `markhor_extensions`: Various extensions
 -   `markhor_cli`: Command-line interface
 -   `markhor_gui`: GUI interface
 -   `markhor_util`: Utility functions and modules
