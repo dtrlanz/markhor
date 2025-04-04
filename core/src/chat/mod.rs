@@ -1,6 +1,9 @@
 pub mod chat;
 pub mod error;
 
+pub use error::ApiError;
+
+
 // Implementation Notes:
 
 //     Model Adapters:

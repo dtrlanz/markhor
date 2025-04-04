@@ -1,7 +1,8 @@
 
 use base64::Engine;
+use markhor_core::chat::ApiError;
 use markhor_core::chat::chat::{
-    ApiError, ChatApi, ChatOptions, ChatResponse, ChatStream, ContentPart, FinishReason,
+    ChatApi, ChatOptions, ChatResponse, ChatStream, ContentPart, FinishReason,
     Message, ModelInfo, ToolCallRequest, ToolChoice, ToolParameterSchema,
     UsageInfo,
 };
