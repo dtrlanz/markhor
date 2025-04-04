@@ -5,7 +5,7 @@ use std::sync::Arc;
 //pub use extension_set::ExtensionSet;
 use thiserror::Error;
 
-use crate::{chat::ChatModel, convert::Converter, embedding::{Chunker, EmbeddingModel}};
+use crate::{chat::ChatModel, convert::Converter, embedding::{Chunker, Embedder}};
 
 pub trait Extension: Send + Sync {
     fn uri(&self) -> &str;
@@ -13,7 +13,7 @@ pub trait Extension: Send + Sync {
     fn description(&self) -> &str;
 
     fn chat_model(&self) -> Option<Arc<dyn ChatModel>> { None }
-    fn embedding_model(&self) -> Option<Arc<dyn EmbeddingModel>> { None }
+    fn embedding_model(&self) -> Option<Arc<dyn Embedder>> { None }
     fn chunker(&self) -> Option<Arc<dyn Chunker>> { None }
     fn converter(&self) -> Option<Arc<dyn Converter>> { None }
     fn tools(&self) -> Vec<Arc<dyn crate::tool::Tool>> { vec![] }
