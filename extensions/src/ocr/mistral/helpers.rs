@@ -273,39 +273,6 @@ pub struct HttpValidationErrorResponse {
 }
 
 
-/// Represents errors that can occur during file upload.
-#[derive(Debug, thiserror::Error)]
-pub enum FileUploadError {
-    #[error("Invalid file path: {0}")]
-    InvalidPath(PathBuf),
-
-    #[error("Failed to access or read file: {0}")]
-    IoError(#[from] std::io::Error),
-
-    #[error("Network or request error: {0}")]
-    RequestFailed(#[from] reqwest::Error),
-
-    #[error("API Validation Error (422): {details:?}")]
-    ValidationError {
-        status: u16, // Should always be 422
-        details: Vec<ValidationErrorDetail>,
-    },
-
-    #[error("API Error: Status={status}, Code={code:?}, Message='{message}'")]
-    ApiError {
-        status: u16,
-        code: Option<String>,
-        message: String,
-    },
-
-    #[error("Failed to deserialize API error response (Status={status}): {source}")]
-    ErrorDeserializationFailed {
-        status: u16,
-        source: reqwest::Error,
-    },
-     #[error("Failed to extract filename from path: {0}")]
-     FileNameError(PathBuf),
-}
 
 
 /// Represents the successful response containing the signed URL.

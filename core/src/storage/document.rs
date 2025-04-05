@@ -16,10 +16,10 @@ const MARKHOR_EXTENSION: &str = "markhor";
 
 /// Represents a Markhor document, defined by a `.markhor` metadata file
 /// and consisting of associated files in the same directory.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Document {
     // Absolute path to the .markhor file
-    absolute_path: PathBuf,
+    pub(crate) absolute_path: PathBuf,
     // Workspace owning this document
     workspace: Arc<Workspace>,
     metadata: DocumentMetadata,
@@ -79,6 +79,11 @@ impl Document {
     pub fn path(&self) -> &Path {
         &self.absolute_path.strip_prefix(&self.workspace.absolute_path)
             .expect("Internal error: Document is not in workspace")
+    }
+
+    pub fn name(&self) -> &str {
+        self.absolute_path.file_stem()
+            .and_then(OsStr::to_str).unwrap()
     }
 
     pub fn id(&self) -> &Uuid {
@@ -218,21 +223,21 @@ impl Document {
     /// (excluding the `.markhor` file itself).
     #[instrument(skip(self))]
     pub async fn files(&self) -> Result<Vec<ContentFile>> {
-         self.list_doc_files_internal(None).await
+         self.list_content_files_internal(None).await
     }
 
     /// Returns a list of associated files filtered by a specific extension.
     /// The extension should be provided *without* the leading dot (e.g., "pdf", "txt").
     #[instrument(skip(self))]
     pub async fn files_by_extension(&self, extension: &str) -> Result<Vec<ContentFile>> {
-        self.list_doc_files_internal(Some(extension)).await
+        self.list_content_files_internal(Some(extension)).await
     }
 
 
     // --- Internal Helpers ---
 
     /// Lists ContentFile instances, optionally filtering by extension.
-    async fn list_doc_files_internal(&self, extension_filter: Option<&str>) -> Result<Vec<ContentFile>> {
+    async fn list_content_files_internal(&self, extension_filter: Option<&str>) -> Result<Vec<ContentFile>> {
         let (dir, basename) = get_dir_and_basename(&self.absolute_path)?;
         let mut files = Vec::new();
         let mut read_dir = fs::read_dir(&dir).await.map_err(|e| {
@@ -256,11 +261,11 @@ impl Document {
                         // Apply extension filter if provided
                         if let Some(filter_ext) = extension_filter {
                             if path.extension().and_then(OsStr::to_str) == Some(filter_ext) {
-                                files.push(ContentFile::new(path));
+                                files.push(ContentFile::new(path, self));
                             }
                         } else {
                              // No filter, add the file
-                             files.push(ContentFile::new(path));
+                             files.push(ContentFile::new(path, self));
                         }
                     }
                 }

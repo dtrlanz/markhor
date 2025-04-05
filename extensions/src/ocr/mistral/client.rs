@@ -1,18 +1,25 @@
 use std::path::Path;
 
+use async_trait::async_trait;
+use markhor_core::convert::{ConversionError, Converter};
+use markhor_core::extension::Functionality;
+use markhor_core::storage::{Content, ContentBuilder, ContentFile};
+use mime::Mime;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::multipart::{Form, Part};
 use reqwest::{Client, Response, StatusCode};
-use tokio::fs::File;
-use tracing::{debug, error, instrument, warn};
+use tokio::fs::{self, File};
+use tracing::{debug, error, info, instrument, warn};
 use url::Url;
+use base64::{engine::general_purpose::STANDARD as Base64Standard, Engine as _}; // For saving images
+
 
 
 use crate::ocr::mistral::error::MistralApiErrorResponse;
-use crate::ocr::mistral::helpers::HttpValidationErrorResponse;
+use crate::ocr::mistral::helpers::{DocumentInput, HttpValidationErrorResponse};
 
-use super::error::{OcrError, SignedUrlError};
-use super::helpers::{FileUploadError, FileUploadResponse, OcrRequest, OcrResponse, SignedUrlResponse}; // Added instrument for tracing
+use super::error::{FileUploadError, OcrError, OcrToFileError, SignedUrlError};
+use super::helpers::{FileUploadResponse, OcrRequest, OcrResponse, SignedUrlResponse}; // Added instrument for tracing
 
 const MISTRAL_API_BASE: &str = "https://api.mistral.ai/v1";
 
@@ -32,6 +39,8 @@ impl MistralClient {
             api_key,
         }
     }
+
+
 
     /// Processes a document using the Mistral OCR API.
     ///
@@ -382,6 +391,190 @@ impl MistralClient {
                 }
             }
         }
-    }    
+    }
+
+    /// Performs OCR on a local source file (PDF or Image) and saves the result.
+    ///
+    /// Saves the extracted Markdown content to `target_md_path`.
+    /// Saves any extracted images into an `images` subdirectory within the
+    /// parent directory of `target_md_path`.
+    ///
+    /// # Arguments
+    ///
+    /// * `source_path` - Path to the local source file (e.g., "input/report.pdf", "input/receipt.png").
+    /// * `target_md_path` - Path where the output Markdown file should be saved (e.g., "output/report.md").
+    ///                      Must end with ".md".
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` on success, or an `OcrToFileError` on failure.
+    #[instrument(skip(self, source_path, target_md_path), fields(
+        source = %source_path.as_ref().display(),
+        target = %target_md_path.as_ref().display()
+    ))]
+    pub async fn ocr_file_to_markdown(
+        &self,
+        source_path: impl AsRef<Path>,
+        target_md_path: impl AsRef<Path>,
+    ) -> Result<(), OcrToFileError> {
+        let source_path = source_path.as_ref();
+        let target_md_path = target_md_path.as_ref();
+
+        // --- Input Validation ---
+        if !source_path.is_file() {
+            return Err(OcrToFileError::InvalidSourcePath(format!(
+                "Source path does not exist or is not a file: {}",
+                source_path.display()
+            )));
+        }
+        if !target_md_path.to_string_lossy().ends_with(".md") {
+            return Err(OcrToFileError::InvalidTargetPath(
+                "Target path must end with .md".to_string()
+            ));
+        }
+        let output_base_dir = target_md_path.parent().ok_or_else(|| OcrToFileError::NoParentDirectory(target_md_path.to_path_buf()))?;
+
+
+        // --- Determine Input Type from Extension ---
+        let extension = source_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|s| s.to_lowercase())
+            .unwrap_or_default();
+
+        let document_input_type = match extension.as_str() {
+            "pdf" => "document",
+            "png" | "jpg" | "jpeg" | "webp" | "bmp" // Add other supported image types if known
+            => "image",
+            _ => {
+                warn!(target: "mistral_api::convenience", "Unknown source extension '{}', attempting as 'document'", extension);
+                "document" // Default to document, or return UnsupportedFileType error
+                // return Err(OcrToFileError::UnsupportedFileType(extension));
+            }
+        };
+        debug!(target: "mistral_api::convenience", %document_input_type, "Determined input type");
+
+
+        // --- Step 1: Upload File ---
+        debug!(target: "mistral_api::convenience", "Step 1: Uploading source file...");
+        let upload_response = self.upload_file(source_path, "ocr").await?; // Propagates FileUploadError via From
+        let file_id = upload_response.id;
+        debug!(target: "mistral_api::convenience", %file_id, "Upload successful");
+
+
+        // --- Step 2: Get Signed URL ---
+        debug!(target: "mistral_api::convenience", "Step 2: Getting signed URL...");
+        let expiry_hours = Some(1u32); // 1 hour expiry seems reasonable
+        let signed_url_response = self.get_signed_url(&file_id, expiry_hours).await?; // Propagates SignedUrlError via From
+        let usable_url = signed_url_response.url;
+        debug!(target: "mistral_api::convenience", "Signed URL obtained");
+
+
+        // --- Step 3: Process Document/Image (OCR) ---
+        debug!(target: "mistral_api::convenience", "Step 3: Calling OCR endpoint...");
+        let document_input = match document_input_type {
+            "document" => DocumentInput::DocumentUrl { document_url: usable_url },
+            "image" => DocumentInput::ImageUrl { image_url: usable_url },
+            _ => unreachable!(), // Should have been handled above
+        };
+
+        let ocr_request = OcrRequest {
+            model: "mistral-ocr-latest".to_string(),
+            document: document_input,
+            include_image_base64: Some(true), // Need images for saving
+            // Reset page/image limits if it's an image - API might ignore anyway
+            pages: if document_input_type == "image" { None } else { None }, // Or keep None always? Test API behavior.
+            image_limit: if document_input_type == "image" { None } else { None },
+            image_min_size: if document_input_type == "image" { None } else { None },
+            id: None,
+        };
+
+        let ocr_response = self.process_document(&ocr_request).await?; // Propagates OcrError via From
+        debug!(target: "mistral_api::convenience", "OCR processing successful");
+
+
+        // --- Step 4: Save Output (Custom Logic) ---
+        debug!(target: "mistral_api::convenience", "Step 4: Saving results...");
+
+        // Ensure the base output directory exists (parent of the target .md file)
+        fs::create_dir_all(output_base_dir)
+            .await
+            .map_err(OcrToFileError::SaveIo)?;
+        debug!(target: "mistral_api::convenience", path = %output_base_dir.display(), "Ensured output base directory exists");
+
+
+        // 4a. Combine and write Markdown to the target path
+        let mut combined_markdown = String::new();
+        let mut sorted_pages = ocr_response.pages; // Use Vec directly
+        sorted_pages.sort_by_key(|p| p.index); // Sort just in case
+
+        for (i, page) in sorted_pages.iter().enumerate() {
+            if i > 0 {
+                combined_markdown.push_str("\n\n---\n\n"); // Page separator
+            }
+            combined_markdown.push_str(&page.markdown);
+        }
+
+        fs::write(target_md_path, combined_markdown)
+            .await
+            .map_err(OcrToFileError::SaveIo)?;
+        debug!(target: "mistral_api::convenience", path = %target_md_path.display(), "Wrote Markdown file");
+
+
+        // 4b. Decode and write images to parent/images/ directory
+        let images_dir = output_base_dir.join("images");
+        let mut images_found = false; // Track if we need to create the dir
+
+        for page in &sorted_pages {
+            for image in &page.images {
+                if !image.image_base64.is_empty() {
+                    // Create images dir only if we find the first image
+                    if !images_found {
+                        fs::create_dir_all(&images_dir)
+                            .await
+                            .map_err(OcrToFileError::SaveIo)?;
+                        debug!(target: "mistral_api::convenience", path = %images_dir.display(), "Created images directory");
+                        images_found = true;
+                    }
+
+                    // Strip data URI prefix (reuse logic from previous save function)
+                    let base64_data_to_decode = if image.image_base64.starts_with("data:") {
+                        image.image_base64.find(',').map_or_else(
+                            || {
+                                warn!(target: "mistral_api::convenience", image_id = %image.id, "Found 'data:' prefix but no comma");
+                                image.image_base64.as_str()
+                            },
+                            |comma_index| &image.image_base64[comma_index + 1..],
+                        )
+                    } else {
+                        &image.image_base64
+                    };
+
+                    // Decode
+                    let image_data = Base64Standard.decode(base64_data_to_decode).map_err(|e| {
+                        error!(target: "mistral_api::convenience", image_id = %image.id, error = %e, "Base64 decoding failed during save");
+                        OcrToFileError::SaveBase64 { image_id: image.id.clone(), source: e }
+                    })?;
+
+                    // Write image file
+                    let image_path = images_dir.join(&image.id); // Use image ID as filename
+                    fs::write(&image_path, image_data)
+                        .await
+                        .map_err(OcrToFileError::SaveIo)?;
+                    debug!(target: "mistral_api::convenience", path = %image_path.display(), "Wrote image");
+                }
+            }
+        }
+
+        if !images_found {
+            debug!(target: "mistral_api::convenience", "No images found in OCR response to save.");
+        }
+
+        info!(target: "mistral_api::convenience", "OCR conversion to file completed successfully.");
+        Ok(())
+    }
+
 
 }
+
+

@@ -13,4 +13,6 @@ pub enum ConversionError {
     IoError(std::io::Error),
     UnsupportedMimeType(Mime),
     ConversionFailed(String),
+    Other(Box<dyn std::error::Error + Send + Sync>),
 }
+

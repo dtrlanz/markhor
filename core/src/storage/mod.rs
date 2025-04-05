@@ -142,7 +142,7 @@ const WORKSPACE_CONFIG_FILENAME: &str = "config.json"; // Using .json for clarit
 
 #[derive(Debug, Error)]
 pub enum ConflictError {
-    #[error("Target content file already exists: {0}")]
+    #[error("Target markhor file already exists: {0}")]
     MarkhorFileExists(PathBuf), // Rule 1
 
     #[error("Existing file would be ambiguously owned by the new document: {0}")]
@@ -206,7 +206,10 @@ pub enum Error {
     DirectoryNotEmpty(PathBuf), // Could be useful, maybe subsumed by WorkspaceCreationConflict for now    
 
     #[error("Workspace configuration file is missing or invalid: {0}")]
-    InvalidWorkspaceConfig(PathBuf), // Covers missing or malformed config.json    
+    InvalidWorkspaceConfig(PathBuf), // Covers missing or malformed config.json
+
+    #[error("Content file could not be created: {0}")]
+    ContentFileNotCreated(String),
 }
 
 // Define a standard Result type for the library

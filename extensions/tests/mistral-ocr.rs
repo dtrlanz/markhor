@@ -1,3 +1,4 @@
+use core::panic;
 use std::{ops::Deref, path::{Path, PathBuf}, sync::atomic::{AtomicU64, Ordering}};
 
 use markhor_extensions::ocr::mistral::{client::MistralClient, helpers::{DocumentInput, OcrRequest}};
@@ -511,3 +512,39 @@ async fn test_image_ocr_helper(test_file: &str, expected_text: &str) {
     println!("Integration test completed successfully!");
 }
 
+
+#[tokio::test]
+//#[ignore]
+async fn pdf_via_file_to_markdown() {
+    delay_test().await; // Delay to avoid rate limits
+
+    test_file_to_markdown("tests/common/Lorem ipsum with Mona Lisa.pdf", "").await;
+}
+
+#[tokio::test]
+//#[ignore]
+async fn png_via_file_to_markdown() {
+    delay_test().await; // Delay to avoid rate limits
+
+    test_file_to_markdown("tests/common/Lorem ipsum with Mona Lisa.png", "").await;
+}
+
+async fn test_file_to_markdown(test_file: &str, expected_text: &str) {
+    // --- Setup ---
+    let api_key = common::get_api_key("MISTRAL_API_KEY");
+    let client = MistralClient::new(api_key);
+    let source_path = Path::new(test_file);
+
+    // Create a temporary directory for potential output saving
+    let output_dir = get_output_dir(test_file);
+    let output_path: &Path = &output_dir.join(source_path.file_name().unwrap()).with_extension("md");
+    println!("Test output will be saved to: {}", output_path.display()); // Info for debugging
+
+
+    let result = client.ocr_file_to_markdown(source_path, output_path).await;
+
+    if let Err(e) = result {
+        eprintln!("Error processing file: {}", e);
+        panic!("Test failed due to error: {}", e);
+    }
+}
