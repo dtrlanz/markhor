@@ -4,7 +4,7 @@ edition = "2024"
 version.workspace = true
 
 [dependencies]
-markhor_core = { path = "../core" }
+markhor_core = { path = "../core", version = "0.1.0-alpha.0.1" }
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io"] } # Needed for ReaderStream
 serde = { version = "1", features = ["derive"] }
@@ -21,6 +21,7 @@ base64 = "0.22.1"
 uuid = "1.16.0"
 url = { version = "2.5", features = ["serde"] }
 tempfile = "3.19.1"
+mime = "0.3.17"
 
 [dev-dependencies]
 tracing-subscriber = "0.3.19"

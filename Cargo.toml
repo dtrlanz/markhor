@@ -2,9 +2,10 @@
 members = [
     "core",
     "cli",
-    "util", 
+    "extensions", "markhor",
     "gui", 
-    "extensions",
+    "markhor", 
+    "util", 
 ]
 resolver = "3" # Use the edition 2024 resolver
 

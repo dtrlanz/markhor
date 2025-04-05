@@ -1,5 +1,6 @@
 [package]
 name = "markhor_util"
 edition = "2024"
+version.workspace = true
 
 [dependencies]
