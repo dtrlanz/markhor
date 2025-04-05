@@ -80,7 +80,8 @@
 //! # Example Usage
 //!
 //! ```rust,no_run
-//! use markhor_core::storage::{Workspace, Document, Error}; // Adjust path as needed
+//! use markhor_core::storage::{Storage, Workspace, Document, Error}; // Adjust path as needed
+//! use std::sync::Arc;
 //! use tempfile::tempdir; // For example purposes
 //!
 //! #[tokio::main]
@@ -90,15 +91,17 @@
 //!     let ws_path = temp_dir.path().to_path_buf();
 //!
 //!     // Create a new workspace
-//!     let ws = Workspace::create(ws_path.clone()).await?;
+//!     let storage = Arc::new(Storage::new());
+//!     let ws = Workspace::create(&storage, &*ws_path).await?;
 //!     println!("Workspace created at: {}", ws.path().display());
 //!
 //!     // Create a new document within the workspace
-//!     let doc = ws.root().create_document("my_doc").await?;
+//!     let root = ws.root().await;
+//!     let doc = root.create_document("my_doc").await?;
 //!     println!("Document created with ID: {}", doc.id());
 //!
 //!     // List documents in the workspace root
-//!     let root_docs = ws.root().list_documents().await?;
+//!     let root_docs = root.list_documents().await?;
 //!     println!("Found {} documents in workspace root.", root_docs.len());
 //!     assert_eq!(root_docs.len(), 1);
 //!
@@ -121,11 +124,20 @@ mod workspace;
 mod file;
 mod metadata;
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Weak};
 use thiserror::Error;
+use tokio::fs;
+use tokio::sync::{Mutex, RwLock};
+use tracing::{debug, instrument};
+use workspace::{read_workspace_metadata, write_workspace_metadata, WorkspaceEvents, WorkspaceMetadata};
 
 pub const MARKHOR_EXTENSION: &str = "markhor";
 pub const INTERNAL_DIR_NAME: &str = ".markhor";
+
+// Define the metadata filename constant
+const WORKSPACE_CONFIG_FILENAME: &str = "config.json"; // Using .json for clarity
 
 
 #[derive(Debug, Error)]
@@ -223,4 +235,45 @@ impl DocumentMoved {
 
 impl Event for DocumentMoved {
     type HandlerReturnType = ();
+}
+
+
+#[derive(Debug)]
+pub struct Storage {
+    // Weak reference to avoid circular dependencies
+    workspaces: RwLock<HashMap<PathBuf, Weak<Workspace>>>,
+}
+
+impl Storage {
+    pub fn new() -> Self {
+        Storage {
+            workspaces: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Asynchronously retrieves or inserts a workspace into the storage.
+    async fn get_or_insert<F: AsyncFnOnce() -> Result<Arc<Workspace>>>(
+        &self, 
+        absolute_path: &Path,
+        f: F,
+    ) -> Result<Arc<Workspace>> {
+        let ws_read = self.workspaces.read().await;
+        // Check if the workspace already exists in the map
+        if let Some(weak) = ws_read.get(absolute_path) {
+            if let Some(workspace) = weak.upgrade() {
+                return Ok(workspace);
+            }
+        }
+        std::mem::drop(ws_read); // Drop the read lock before acquiring the write lock
+
+        // Hold write lock while creating/opening the workspace
+        // This is necessary to ensure that the workspace is only created once
+        let mut ws_write = self.workspaces.write().await;
+        // Create/open workspace
+        let workspace = f().await?;
+        assert_eq!(workspace.path(), absolute_path, "Internal error: Workspace path mismatch");
+        // Store the weak reference to the workspace in the map
+        ws_write.insert(absolute_path.to_path_buf(), Arc::downgrade(&workspace));
+        Ok(workspace)
+    }
 }

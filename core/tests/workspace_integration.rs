@@ -1,16 +1,10 @@
 use tempfile::tempdir;
 use tokio::fs;
-use std::path::{PathBuf, Path};
+use std::{path::{Path, PathBuf}, sync::Arc};
 
 // Replace 'your_library_name' with the actual name of your crate
 use markhor_core::storage::{
-    Workspace,
-    Document,
-    Folder,
-    Error,
-    ConflictError,
-    MARKHOR_EXTENSION,
-    INTERNAL_DIR_NAME,
+    self, ConflictError, Document, Error, Folder, Storage, Workspace, INTERNAL_DIR_NAME, MARKHOR_EXTENSION
 };
 
 // Helper to create dummy file/dir - reusing from unit tests basically
@@ -29,28 +23,29 @@ async fn create_dummy(path: &Path, is_dir: bool) {
 async fn integration_create_and_open_workspace() {
     let dir = tempdir().unwrap();
     let ws_path = dir.path().join("my_integration_ws");
+    let storage = Arc::new(Storage::new());
 
     // 1. Create workspace
-    let created_ws = Workspace::create(ws_path.clone()).await.expect("Failed to create workspace");
+    let created_ws = Workspace::create(&storage, &*ws_path).await.expect("Failed to create workspace");
     let absolute_path = fs::canonicalize(&ws_path).await.unwrap(); // Get the absolute path
     assert_eq!(created_ws.path(), absolute_path, "Workspace path should match the canonicalized path");
     assert!(created_ws.path().join(INTERNAL_DIR_NAME).exists(), "Internal .markhor directory should exist after create");
     assert!(created_ws.path().join(INTERNAL_DIR_NAME).is_dir(), "Internal .markhor should be a directory");
 
     // 2. Open the created workspace
-    let opened_ws = Workspace::open(ws_path.clone()).await.expect("Failed to open existing workspace");
+    let opened_ws = Workspace::open(&storage, &*ws_path).await.expect("Failed to open existing workspace");
     assert_eq!(opened_ws.path(), absolute_path);
     assert!(opened_ws.path().join(INTERNAL_DIR_NAME).exists(), "Internal .markhor directory should exist after open");
 
     // 3. Try opening a non-existent path
     let non_existent_path = dir.path().join("non_existent_ws");
-    let open_err = Workspace::open(non_existent_path).await;
+    let open_err = Workspace::open(&storage, &*non_existent_path).await;
     assert!(matches!(open_err, Err(Error::DirectoryNotFound(_))), "Opening non-existent path should fail");
 
     // 4. Try opening a path that isn't a workspace
     let not_a_ws_path = dir.path().join("not_a_ws");
     create_dummy(&not_a_ws_path, true).await; // Just a dir, no .markhor subdir
-    let open_err_2 = Workspace::open(not_a_ws_path).await;
+    let open_err_2 = Workspace::open(&storage, &*not_a_ws_path).await;
     assert!(matches!(open_err_2, Err(Error::NotAWorkspace(_))), "Opening dir without .markhor should fail");
 }
 
@@ -109,7 +104,9 @@ async fn integration_create_and_open_workspace() {
 #[tokio::test]
 async fn integration_folders_and_nested_docs() {
     let dir = tempdir().unwrap();
-    let ws = Workspace::create(dir.path().to_path_buf()).await.unwrap();
+    let storage = Arc::new(Storage::new());
+
+    let ws = Workspace::create(&storage, dir.path()).await.unwrap();
     let folder1_path = ws.path().join("FolderA");
     let folder2_path = folder1_path.join("FolderB");
 
@@ -118,13 +115,13 @@ async fn integration_folders_and_nested_docs() {
     create_dummy(&folder2_path, true).await;
 
     // 2. List folders in workspace
-    let root_folders = ws.root().list_folders().await.unwrap();
+    let root_folders = ws.root().await.list_folders().await.unwrap();
     assert_eq!(root_folders.len(), 1);
     assert_eq!(root_folders[0].path(), PathBuf::from("FolderA"));
 
     // 3. List contents of FolderA
     // Get the Folder struct instance first
-    let folder_a = ws.root().list_folders().await.unwrap().into_iter()
+    let folder_a = ws.root().await.list_folders().await.unwrap().into_iter()
         .find(|f| f.path() == PathBuf::from("FolderA"))
         .expect("Could not find FolderA");
 
@@ -163,9 +160,10 @@ async fn integration_folders_and_nested_docs() {
 #[tokio::test]
 async fn integration_move_document_between_folders() {
     let dir = tempdir().unwrap();
-    let ws = Workspace::create(dir.path().to_path_buf()).await.unwrap();
-    let folder_a = ws.root().create_subfolder("DirA").await.unwrap();
-    let folder_b = ws.root().create_subfolder("DirB").await.unwrap();
+    let storage = Arc::new(Storage::new());
+    let ws = Workspace::create(&storage, dir.path()).await.unwrap();
+    let folder_a = ws.root().await.create_subfolder("DirA").await.unwrap();
+    let folder_b = ws.root().await.create_subfolder("DirB").await.unwrap();
     let original_doc_path = ws.path().join(folder_a.path()).join("movable.markhor");
     let original_file_path = ws.path().join(folder_a.path()).join("movable.data");
     let target_doc_path = ws.path().join(folder_b.path()).join("moved_doc.markhor"); // Moving and renaming
@@ -194,7 +192,7 @@ async fn integration_move_document_between_folders() {
     assert_eq!(moved_doc.path(), folder_b.path().join("moved_doc.markhor"), "Moved document internal path should be updated");
 
     // 4. Verify listing in new location
-    let folders = ws.root().list_folders().await.unwrap();
+    let folders = ws.root().await.list_folders().await.unwrap();
     let folder_b = folders.iter().find(|f| f.path() == folder_b.path()).unwrap();
     let docs_in_b = folder_b.list_documents().await.unwrap();
     assert_eq!(docs_in_b.len(), 1);
@@ -208,16 +206,17 @@ async fn integration_move_document_between_folders() {
 
 #[tokio::test]
 async fn integration_move_document_causes_conflict() {
-     let dir = tempdir().unwrap();
-    let ws = Workspace::create(dir.path().to_path_buf()).await.unwrap();
+    let dir = tempdir().unwrap();
+    let storage = Arc::new(Storage::new());
+    let ws = Workspace::create(&storage, dir.path()).await.unwrap();
 
     let doc1_path = ws.path().join("doc1.markhor");
     let doc2_path = ws.path().join("doc2.markhor");
     let conflicting_file_for_doc1 = ws.path().join("doc1.txt");
 
     // 1. Setup: doc1, doc2, and a file potentially belonging to doc1
-    let doc1 = ws.root().create_document("doc1").await.unwrap();
-    let doc2 = ws.root().create_document("doc2").await.unwrap();
+    let doc1 = ws.root().await.create_document("doc1").await.unwrap();
+    let doc2 = ws.root().await.create_document("doc2").await.unwrap();
     create_dummy(&conflicting_file_for_doc1, false).await;
 
     // 2. Attempt to move doc2 to doc1's name - should conflict (MarkhorFileExists)
@@ -238,14 +237,15 @@ async fn integration_move_document_causes_conflict() {
 #[tokio::test]
 async fn integration_move_adopts_orphan_conflict() {
     let dir = tempdir().unwrap();
-    let ws = Workspace::create(dir.path().to_path_buf()).await.unwrap();
+    let storage = Arc::new(Storage::new());
+    let ws = Workspace::create(&storage, dir.path()).await.unwrap();
 
     let source_doc_path = ws.path().join("source.markhor");
     let target_doc_path = ws.path().join("target.markhor"); // Target does NOT exist initially
     let orphan_file_path = ws.path().join("target.txt");   // File that WOULD belong to target
 
     // 1. Setup: Create source doc and the "orphan" file
-    let source_doc = ws.root().create_document("source").await.unwrap();
+    let source_doc = ws.root().await.create_document("source").await.unwrap();
     create_dummy(&orphan_file_path, false).await;
 
     assert!(source_doc_path.exists());
@@ -275,7 +275,8 @@ async fn integration_move_adopts_orphan_conflict() {
 #[tokio::test]
 async fn integration_create_document_causes_conflict() {
     let dir = tempdir().unwrap();
-    let ws = Workspace::create(dir.path().to_path_buf()).await.unwrap();
+    let storage = Arc::new(Storage::new());
+    let ws = Workspace::create(&storage, dir.path()).await.unwrap();
 
     let base_doc_name = "base";
     let suffix_doc_name = "base.a1";
@@ -283,22 +284,22 @@ async fn integration_create_document_causes_conflict() {
 
     // 1. Create base.txt - this conflicts with creating base.markhor (Rule 2)
     create_dummy(&conflicting_file_path, false).await;
-    let create_result_1 = ws.root().create_document(base_doc_name).await;
+    let create_result_1 = ws.root().await.create_document(base_doc_name).await;
     assert!(matches!(create_result_1, Err(Error::Conflict(ConflictError::ExistingFileWouldBeAdopted(p))) if p == conflicting_file_path));
     fs::remove_file(&conflicting_file_path).await.unwrap(); // Clean up for next test
 
 
     // 2. Create base.markhor successfully now
-    let base_doc = ws.root().create_document(base_doc_name).await.unwrap();
+    let base_doc = ws.root().await.create_document(base_doc_name).await.unwrap();
 
     // 3. Attempt to create base.a1.markhor - conflicts with existing base.markhor (Rule 3)
-    let create_result_2 = ws.root().create_document(suffix_doc_name).await;
+    let create_result_2 = ws.root().await.create_document(suffix_doc_name).await;
      assert!(matches!(create_result_2, Err(Error::Conflict(ConflictError::SuffixBaseAmbiguity(b, s))) if b == "base" && s == "a1"));
 
     // 4. Delete base, create suffix, try creating base (Rule 4)
      base_doc.delete().await.unwrap();
-     let _suffix_doc = ws.root().create_document(suffix_doc_name).await;
-     let create_result_3 = ws.root().create_document(base_doc_name).await;
+     let _suffix_doc = ws.root().await.create_document(suffix_doc_name).await;
+     let create_result_3 = ws.root().await.create_document(base_doc_name).await;
      assert!(matches!(create_result_3, Err(Error::Conflict(ConflictError::BaseSuffixAmbiguity(b, s))) if b == "base" && s == "base.a1"));
 
 }

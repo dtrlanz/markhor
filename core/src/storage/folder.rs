@@ -1,8 +1,11 @@
 use crate::storage::{Error, Result, INTERNAL_DIR_NAME, MARKHOR_EXTENSION};
 use crate::storage::document::Document;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::fs;
 use tracing::{debug, instrument, warn};
+
+use super::Workspace;
 
 /// Represents a directory within a Workspace or another Folder,
 /// which can contain Documents and other Folders.
@@ -10,22 +13,22 @@ use tracing::{debug, instrument, warn};
 pub struct Folder {
     // Absolute path to the folder
     absolute_path: PathBuf,
-    // Absolute path to the workspace root
-    workspace_path: PathBuf,
+    // Workspace owning this document
+    workspace: Arc<Workspace>,
 }
 
 impl Folder {
     /// Creates a Folder instance. Intended for internal use.
     /// Assumes the path already points to a valid, existing directory.
-    pub(crate) fn new(absolute_path: PathBuf, workspace_path: PathBuf) -> Self {
+    pub(crate) fn new(absolute_path: PathBuf, workspace: Arc<Workspace>) -> Self {
         // Consider adding an assertion or quick check in debug mode?
         // debug_assert!(path.is_dir(), "Folder::new called with non-directory path");
-        Folder { absolute_path, workspace_path }
+        Folder { absolute_path, workspace }
     }
 
     /// Returns the path to this folder's directory.
     pub fn path(&self) -> &Path {
-        &self.absolute_path.strip_prefix(&self.workspace_path)
+        &self.absolute_path.strip_prefix(&self.workspace.absolute_path)
             .expect("Internal error: Document is not in workspace")
     }
 
@@ -44,7 +47,7 @@ impl Folder {
     #[instrument(skip(self), fields(folder_path = %self.absolute_path.display()))]
     pub async fn document_by_name(&self, name: &str) -> Result<Document> {
         let document_path = self.absolute_path.join(format!("{}.{}", name, MARKHOR_EXTENSION));
-        Document::open(document_path, self.workspace_path.clone()).await
+        Document::open(document_path, self.workspace.clone()).await
     }
 
     /// Creates a new document in this folder with the specified name.
@@ -57,7 +60,7 @@ impl Folder {
     #[instrument(skip(self), fields(folder_path = %self.absolute_path.display()))]
     pub async fn create_document(&self, name: &str) -> Result<Document> {
         let document_path = self.absolute_path.join(format!("{}.{}", name, MARKHOR_EXTENSION));
-        Document::create(document_path, self.workspace_path.clone()).await
+        Document::create(document_path, self.workspace.clone()).await
     }
 
     /// Creates a new subfolder within this folder with the specified name.
@@ -69,7 +72,7 @@ impl Folder {
     pub async fn create_subfolder(&self, name: &str) -> Result<Folder> {
         let subfolder_path = self.absolute_path.join(name);
         fs::create_dir_all(&subfolder_path).await.map_err(Error::Io)?;
-        Ok(Folder::new(subfolder_path, self.workspace_path.clone()))
+        Ok(Folder::new(subfolder_path, self.workspace.clone()))
     }
 
     /// Lists the documents directly contained within this folder (non-recursive).
@@ -96,7 +99,7 @@ impl Folder {
             if path.is_file() {
                 if path.extension().and_then(|ext| ext.to_str()) == Some(MARKHOR_EXTENSION) {
                     debug!("Found potential content file: {}", path.display());
-                    match Document::open(path.clone(), self.workspace_path.clone()).await {
+                    match Document::open(path.clone(), self.workspace.clone()).await {
                         Ok(doc) => documents.push(doc),
                         Err(e) => {
                             // Log and skip invalid/inaccessible content files
@@ -137,7 +140,7 @@ impl Folder {
                     continue;
                 }
                 debug!("Found subfolder: {}", path.display());
-                folders.push(Folder::new(path, self.workspace_path.clone()));
+                folders.push(Folder::new(path, self.workspace.clone()));
             }
         }
         debug!("Found {} subfolders", folders.len());
