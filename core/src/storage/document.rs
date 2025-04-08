@@ -2,12 +2,13 @@ use crate::storage::{metadata, ConflictError, Error, Result};
 use crate::storage::metadata::DocumentMetadata;
 use crate::storage::ContentFile;
 use regex::Regex;
+use tokio::io::{AsyncRead, AsyncWriteExt};
 use uuid::Uuid;
 use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::fs;
+use tokio::fs::{self, OpenOptions};
 use tracing::{debug, instrument, warn};
 
 use super::Workspace; // Optional: for logging
@@ -231,6 +232,65 @@ impl Document {
     #[instrument(skip(self))]
     pub async fn files_by_extension(&self, extension: &str) -> Result<Vec<ContentFile>> {
         self.list_content_files_internal(Some(extension)).await
+    }
+
+    /// Adds a new file to the document with the specified extension.
+    /// 
+    /// If a file with the same name already exists, a hexadecimal suffix will be added.
+    pub async fn add_file<R: AsyncRead + Unpin + ?Sized>(&self, extension: &str, content: &mut R) -> Result<ContentFile> {
+        let mut result = self.add_file_internal(extension, None, content).await;
+        let mut suffix = 1u32;
+        while let Err(err) = result {
+            if let Error::Io(io_err) = err {
+                if io_err.kind() == std::io::ErrorKind::AlreadyExists {
+                    // File already exists, try with a new suffix
+                    result = self.add_file_internal(extension, Some(suffix), content).await;
+                    suffix += 1;
+                } else {
+                    return Err(Error::Io(io_err)); // Some other IO error occurred
+                }
+            } else {
+                return Err(err); // Non-IO error occurred
+            }
+            // Sanity check
+            if suffix > 100 {
+                return Err(Error::ContentFileNotCreated(String::from("Too many suffixes")));
+            }
+        }
+        return result;
+    }
+
+    /// Adds a new file to the document with the specified extension and hexadecimal suffix.
+    /// 
+    /// If a file with the same name already exists, it will fail.
+    pub async fn add_file_with_suffix<R: AsyncRead + Unpin + ?Sized>(&self, extension: &str, suffix: u32, content: &mut R) -> Result<ContentFile> {
+        self.add_file_internal(extension, Some(suffix), content).await
+    }
+
+    async fn add_file_internal<R: AsyncRead + Unpin + ?Sized>(&self, extension: &str, suffix: Option<u32>, content: &mut R) -> Result<ContentFile> {
+        let (dir, basename) = get_dir_and_basename(&self.absolute_path)?;
+        let new_file_name = match suffix {
+            Some(sfx) => format!("{}.{:x}.{}", basename, sfx, extension),
+            None => format!("{}.{}", basename, extension),
+        };
+        let new_file_path = dir.join(new_file_name);
+
+        // Create the file
+        //let file = fs::File::create(&new_file_path).await.map_err(Error::Io)?;
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true) // Fail if the file already exists
+            .open(&new_file_path)
+            .await
+            .map_err(Error::Io)?;
+
+        // Write the content to the file
+        let mut writer = tokio::io::BufWriter::new(file);
+        tokio::io::copy(content, &mut writer).await.map_err(Error::Io)?;
+        writer.flush().await.map_err(Error::Io)?;
+
+        // Return a ContentFile instance for the new file
+        Ok(ContentFile::new(new_file_path, self))
     }
 
 

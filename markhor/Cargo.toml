@@ -1,5 +1,8 @@
 [package]
 name = "markhor"
+license = "MIT OR Apache-2.0"
+description = "CLI application for interacting with Markhor, a platform for agentic knowledge work."
+repository = "https://github.com/dtrlanz/markhor"
 edition = "2024"
 version.workspace = true
 
@@ -10,3 +13,8 @@ async-once-cell = "0.5.4"
 clap = { version = "4.5.35", features = ["derive", "env"] }
 anyhow = "1.0.97"
 tokio = { version = "1.44.2", features = ["full"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "time"] }
+dotenv = "0.15.0"
+dialoguer = "0.11.0"
+reqwest = { version = "0.12.15", features = ["json", "multipart", "stream"] }

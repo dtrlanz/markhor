@@ -1,9 +1,9 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use markhor_core::convert::{ConversionError, Converter};
-use markhor_core::extension::Functionality;
-use markhor_core::storage::{Content, ContentBuilder, ContentFile};
+use markhor_core::extension::{Extension, Functionality};
 use mime::Mime;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::multipart::{Form, Part};
@@ -18,6 +18,7 @@ use base64::{engine::general_purpose::STANDARD as Base64Standard, Engine as _}; 
 use crate::ocr::mistral::error::MistralApiErrorResponse;
 use crate::ocr::mistral::helpers::{DocumentInput, HttpValidationErrorResponse};
 
+use super::converter::MistralOcr;
 use super::error::{FileUploadError, OcrError, OcrToFileError, SignedUrlError};
 use super::helpers::{FileUploadResponse, OcrRequest, OcrResponse, SignedUrlResponse}; // Added instrument for tracing
 
@@ -26,26 +27,17 @@ const MISTRAL_API_BASE: &str = "https://api.mistral.ai/v1";
 
 
 // Assume a client structure like this exists
-pub struct MistralClient {
+pub(crate) struct MistralClientInner {
     client: Client,
     api_key: String,
     // other fields like base_url if needed
 }
 
-impl MistralClient {
-    pub fn new(api_key: String) -> Self {
-        Self {
-            client: Client::new(), // Or reuse an existing client
-            api_key,
-        }
-    }
-
-
-
+impl MistralClientInner {
     /// Processes a document using the Mistral OCR API.
     ///
     /// The document source must be a public URL or a pre-signed URL
-    /// obtained from Mistral's file upload service (upload mechanism not implemented here).
+    /// obtained from Mistral's file upload service.
     #[instrument(skip(self, request), fields(model = %request.model))] // Added tracing span
     pub async fn process_document(
         &self,
@@ -302,7 +294,7 @@ impl MistralClient {
         debug!(target: "mistral_api::files::url", url = %url, "Requesting signed URL");
 
         // Build and send the GET request
-        let response = self
+        let response = self 
             .client
             .get(url) // Use the constructed Url object
             .header(AUTHORIZATION, format!("Bearer {}", self.api_key))
@@ -578,3 +570,69 @@ impl MistralClient {
 }
 
 
+pub struct MistralClient {
+    inner: Arc<MistralClientInner>,
+}
+
+impl MistralClient {
+    pub fn new(api_key: String) -> Self {
+        let inner = Arc::new(MistralClientInner {
+            client: Client::new(), // Or reuse an existing client
+            api_key,
+        });
+        Self { inner }
+    }
+
+    pub fn process_document(
+        &self,
+        request: &OcrRequest,
+    ) -> impl std::future::Future<Output = Result<OcrResponse, OcrError>> {
+        self.inner.process_document(request)
+    }
+
+    pub fn upload_file(
+        &self,
+        file_path: impl AsRef<Path>,
+        purpose: &str,
+    ) -> impl std::future::Future<Output = Result<FileUploadResponse, FileUploadError>> {
+        self.inner.upload_file(file_path, purpose)
+    }
+
+    pub fn get_signed_url(
+        &self,
+        file_id: &str,
+        expiry_hours: Option<u32>,
+    ) -> impl std::future::Future<Output = Result<SignedUrlResponse, SignedUrlError>> {
+        self.inner.get_signed_url(file_id, expiry_hours)
+    }
+
+    pub fn ocr_file_to_markdown(
+        &self,
+        source_path: impl AsRef<Path>,
+        target_md_path: impl AsRef<Path>,
+    ) -> impl std::future::Future<Output = Result<(), OcrToFileError>> {
+        self.inner.ocr_file_to_markdown(source_path, target_md_path)
+    }
+}
+
+pub(crate) const URI: &str = "(mistral ocr extension uri)";
+pub(crate) const NAME: &str = "Mistral Client";
+pub(crate) const DESCRIPTION: &str = "Client for Mistral API (only OCR implemented so far)";
+
+impl Extension for MistralClient {
+    fn uri(&self) -> &str {
+        URI
+    }
+
+    fn name(&self) -> &str {
+        NAME
+    }
+
+    fn description(&self) -> &str {
+        DESCRIPTION
+    }
+
+    fn converter(&self) -> Option<std::sync::Arc<dyn Converter>> {
+        Some(Arc::new(MistralOcr(Arc::clone(&self.inner))))
+    }
+}

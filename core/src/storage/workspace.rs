@@ -8,7 +8,7 @@ use uuid::Uuid;
 use tokio::fs;
 use tracing::{debug, instrument, warn};
 
-use super::Storage;
+use super::{Document, Storage};
 
 
 /// Represents the root workspace directory containing documents and folders,
@@ -36,15 +36,56 @@ impl Workspace {
 
     /// Returns the root folder of the workspace.
     pub async fn root(&self) -> Folder {
-        let ws = self.storage
+        Folder::new(self.absolute_path.clone(), self.arc().await)
+    }
+
+    /// Returns a folder instance for the specified path within the workspace.
+    pub async fn folder(&self, path: &Path) -> Result<Folder> {
+        // Compare absolute paths
+        let abs_path = fs::canonicalize(path).await.map_err(Error::Io)?;
+        if abs_path.starts_with(&self.absolute_path) {
+            // Path is within the workspace
+            // Check if the path is a directory
+            if abs_path.is_dir() {
+                Ok(Folder::new(abs_path, self.arc().await))
+            } else {
+                Err(Error::NotADirectory(abs_path))
+            }
+        } else {
+            // Path is outside the workspace
+            Err(Error::PathOutsideWorkspace(path.to_path_buf()))
+        }
+    }
+
+    pub async fn document(&self, path: &Path) -> Result<Document> {
+
+        // TODO: Be consistent about extension handling
+        // Ensure the file has the correct extension
+        let with_ext = path.with_extension("markhor");
+
+        // Compare absolute paths
+        let abs_path = fs::canonicalize(with_ext).await.map_err(Error::Io)?;
+        if abs_path.starts_with(&self.absolute_path) {
+            // Path is within the workspace
+            // Remaining checks are carried out in Document::open()
+            let doc = Document::open(abs_path, self.arc().await).await?;
+            Ok(doc)
+        } else {
+            // Path is outside the workspace
+            Err(Error::PathOutsideWorkspace(path.to_path_buf()))
+        }
+    }
+
+    /// Retrieves an `Arc` reference to the workspace instance.
+    /// This is useful because `Folder` and `Document` instances need a reference.
+    async fn arc(&self) -> Arc<Workspace> {
+        self.storage
             // Get always succeeds because this instance exists
             .get_or_insert(&self.absolute_path, async || unreachable!())
             // Will only yield if a workspace is currently being opened or created
             .await
             // We can just unwrap (see above: Get always succeeds)
-            .unwrap();
-
-        Folder::new(self.absolute_path.clone(), ws)
+            .unwrap()
     }
 
     /// Returns the path to the internal `.markhor` directory used for configuration and caching.

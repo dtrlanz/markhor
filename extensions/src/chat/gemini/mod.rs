@@ -7,6 +7,7 @@ use markhor_core::chat::chat::{
     UsageInfo,
 };
 use async_trait::async_trait;
+use markhor_core::extension::{Extension, Functionality};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -571,6 +572,20 @@ impl GeminiClient {
     }
 }
 
+const URI: &str = "https://github.com/dtrlanz/markhor/tree/main/extensions/src/chat/gemini";
+
+
+
+impl Functionality for GeminiClient {
+    fn extension_uri(&self) -> &str {
+        URI
+    }
+
+    fn id(&self) -> &str {
+        "Gemini chat client"
+    }
+}
+
 
 #[async_trait]
 impl ChatApi for GeminiClient {
@@ -667,8 +682,6 @@ impl ChatApi for GeminiClient {
              ApiError::Network(Box::new(e))
          })?;
         trace!(body = %raw_body, "Received Gemini generate response body");
-        println!("{:?}", raw_body);
-
 
         let gemini_response: GeminiGenerateResponse = serde_json::from_str(&raw_body)
             .map_err(|e| {
@@ -701,6 +714,36 @@ impl ChatApi for GeminiClient {
     }
 }
 
+
+pub struct GeminiClientExtension {
+    api_key: String,
+    http_client: reqwest::Client,
+}
+
+impl GeminiClientExtension {
+    pub fn new(api_key: String, http_client: reqwest::Client) -> Self {
+        GeminiClientExtension { api_key, http_client }
+    }
+}
+
+impl Extension for GeminiClientExtension {
+    fn uri(&self) -> &str {
+        URI
+    }
+
+    fn name(&self) -> &str {
+        "Gemini Client Extension"
+    }
+
+    fn description(&self) -> &str {
+        "Provides a chat client for the Gemini API."
+    }
+
+    fn chat_model(&self) -> Option<std::sync::Arc<dyn ChatApi>> {
+        let client = GeminiClient::new(self.api_key.clone(), self.http_client.clone());
+        Some(std::sync::Arc::new(client))
+    }
+}
 
 // Helper function to create a reqwest client (useful for examples/tests)
 // Consider moving this to a more central place if used by multiple clients

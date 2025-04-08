@@ -109,4 +109,7 @@ pub enum ChatError {
 
     #[error("Error while using plugin: {0}")]
     PluginError(Box<dyn std::error::Error + Send + Sync>),
+
+    #[error("Other error: {0}")]
+    Other(Box<dyn std::error::Error + Send + Sync>),
 }

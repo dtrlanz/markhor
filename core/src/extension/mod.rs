@@ -5,14 +5,14 @@ use std::sync::Arc;
 //pub use extension_set::ExtensionSet;
 use thiserror::Error;
 
-use crate::{chat::ChatModel, convert::Converter, embedding::{Chunker, Embedder}};
+use crate::{chat::{chat::ChatApi, ChatModel}, convert::Converter, embedding::{Chunker, Embedder}};
 
 pub trait Extension: Send + Sync {
     fn uri(&self) -> &str;
     fn name(&self) -> &str;
     fn description(&self) -> &str;
 
-    fn chat_model(&self) -> Option<Arc<dyn ChatModel>> { None }
+    fn chat_model(&self) -> Option<Arc<dyn ChatApi>> { None }
     fn embedding_model(&self) -> Option<Arc<dyn Embedder>> { None }
     fn chunker(&self) -> Option<Arc<dyn Chunker>> { None }
     fn converter(&self) -> Option<Arc<dyn Converter>> { None }

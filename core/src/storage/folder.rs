@@ -19,7 +19,7 @@ pub struct Folder {
 
 impl Folder {
     /// Creates a Folder instance. Intended for internal use.
-    /// Assumes the path already points to a valid, existing directory.
+    /// Assumes the path already points to a valid, existing directory *inside* the workspace.
     pub(crate) fn new(absolute_path: PathBuf, workspace: Arc<Workspace>) -> Self {
         // Consider adding an assertion or quick check in debug mode?
         // debug_assert!(path.is_dir(), "Folder::new called with non-directory path");

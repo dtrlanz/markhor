@@ -1,16 +1,17 @@
 
-use std::sync::Arc;
+use std::{path::{Path, PathBuf}, sync::Arc};
 
 // Import argument structs from the cli module
-use crate::{cli::{
+use crate::{app::Markhor, cli::{
     ChatArgs, ConfigArgs, ConfigCommands, ImportArgs, InstallArgs, OpenArgs, SearchArgs, ShowArgs, WorkspaceArgs, WorkspaceCommands
-}, AppContext};
+}};
 use anyhow::Result;
 use markhor_core::storage::Workspace;
+use tracing::{error, info};
 
 // --- Handler Functions ---
 
-pub async fn handle_import(args: ImportArgs) -> Result<()> {
+pub async fn handle_import(args: ImportArgs, markhor: Markhor) -> Result<()> {
     println!("Executing import command for: {:?}", args.paths);
     // TODO: Implement import logic using markhor-core
     // - Validate paths
@@ -19,10 +20,16 @@ pub async fn handle_import(args: ImportArgs) -> Result<()> {
     // - Handle metadata and tags
     // - Use args.model if provided, otherwise use default from config/workspace
     // - Show progress indicator (indicatif)
+
+    for path in args.paths {
+        markhor.import(&*path).await?; // Assuming import is a method in Markhor
+        println!("  Imported: {}", path.display());
+    }
+
     Ok(())
 }
 
-pub async fn handle_chat(args: ChatArgs) -> Result<()> {
+pub async fn handle_chat(args: ChatArgs, markhor: Markhor) -> Result<()> {
     println!("Executing chat command...");
     if let Some(prompt) = args.prompt {
         println!("  Initial prompt: {}", prompt);
@@ -33,6 +40,12 @@ pub async fn handle_chat(args: ChatArgs) -> Result<()> {
     // - Start interactive session or handle single prompt
     // - Manage chat history
     // - Handle plugins (args.plugins)
+
+    let paths = args.scope.iter()
+        .map(|s| PathBuf::from(s))
+        .collect::<Vec<_>>();
+
+    markhor.chat(paths).await?;
     Ok(())
 }
 
@@ -113,42 +126,47 @@ pub async fn handle_config(args: ConfigArgs) -> Result<()> {
     Ok(())
 }
 
-pub async fn handle_workspace(args: WorkspaceArgs, cx: AppContext) -> Result<()> {
+pub async fn handle_workspace(args: WorkspaceArgs, markhor: Markhor) -> Result<()> {
     match args.command {
         WorkspaceCommands::Create { path, name } => {
-            if cx.workspace.is_ok() {
-                println!("Warning: You are already in a workspace.");
+            if markhor.workspace.is_ok() {
+                error!("Cannot create a new workspace while in an existing one.");
                 return Err(anyhow::anyhow!("Cannot create a new workspace while in an existing one."));
             }
 
+            // Check if any descendant directories already contain workspaces
+            // Todo
+
             let mut target_path = path.unwrap_or_else(|| std::env::current_dir().expect("Cannot get current dir"));
+            info!("Creating workspace at: {}", target_path.display());
             println!("  Creating workspace at: {}", target_path.display());
             if let Some(n) = name {
                 println!("  Named: {}", n);
                 target_path.push(n);
             }
 
-            let new_ws = Workspace::create(&cx.storage, &target_path).await?;
+            let new_ws = Workspace::create(&markhor.storage, &target_path).await?;
             println!("  Workspace created successfully.");
         }
         WorkspaceCommands::List {} => {
             println!("  Listing workspaces...");
             // TODO: Implement workspace listing (deferred - requires global tracking)
-                unimplemented!("Workspace listing requires global tracking (deferred)");
+            unimplemented!("Workspace listing requires global tracking (deferred)");
         }
         WorkspaceCommands::Delete { target, force } => {
-                println!("  Deleting workspace: {}", target);
-                if force { println!("  Forcing deletion (no confirmation)."); }
-                // TODO: Implement workspace deletion
-                // - Resolve target (path or name)
-                // - Ask for confirmation if not forced
-                // - Remove `.markhor` directory and potentially global registration (deferred)
+            println!("  Deleting workspace: {}", target);
+            if force { println!("  Forcing deletion (no confirmation)."); }
+            // TODO: Implement workspace deletion
+            // - Resolve target (path or name)
+            // - Ask for confirmation if not forced
+            // - Remove `.markhor` directory and potentially global registration (deferred)
+            unimplemented!("Workspace deletion not implemented yet");
         }
         WorkspaceCommands::Info{ target } => {
-            if let Ok(ws) = cx.workspace {
+            if let Ok(ws) = markhor.workspace {
                 println!("  Current workspace: {}", ws.path().display());
             } else {
-                println!("  No current workspace found.\n{}", cx.workspace.err().unwrap());
+                println!("  No current workspace found.\n{}", markhor.workspace.err().unwrap());
             }
         }
     }

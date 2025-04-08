@@ -57,47 +57,15 @@ impl<'a> ContentFile<'a> {
     }
 }
 
-pub struct Content {
-    file_path: PathBuf,
-    document: Document,
+#[derive(Debug, Clone)]
+pub enum Content {
+    File(PathBuf),
 }
 
-pub struct ContentBuilder {
-    path: PathBuf,
-    name: String,
-    files: Vec<PathBuf>,
-}
-
-impl ContentBuilder {
-    pub fn new(content: &Content) -> Self {
-        ContentBuilder {
-            path: content.file_path.clone(),
-            name: content.document.name().to_string(),
-            files: Vec::new(),
+impl Content {
+    pub fn path(&self) -> &Path {
+        match self {
+            Content::File(path) => path,
         }
-    }
-
-    pub async fn add_file(&mut self, extension: &str, ) -> Result<File> {
-        // Find available file name, appending hex digits if necessary
-        for suffix in 0..100 {
-            let suffix_string = if suffix == 0 {
-                String::new()
-            } else {
-                format!(".{:x}", suffix)
-            };
-            let file_name = format!("{}{}.{}", self.name, suffix_string, extension);
-            let path = self.path.with_file_name(file_name);
-            let result = File::create(&path).await;
-            match result {
-                Ok(file) => {
-                    self.files.push(path);
-                    return Ok(file);
-                },
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(Error::Io(e)),
-            }
-        }
-
-        return Err(Error::ContentFileNotCreated("Too many conflicts with other content files".to_string()));
     }
 }

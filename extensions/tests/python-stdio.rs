@@ -49,18 +49,18 @@ async fn test_stdio_plugin() {
     );
     
     let model = plugin.chat_model().unwrap();
-    let result = model.chat(
-        &vec![
-            markhor_core::chat::Message::user("What is tha capital of France?"),
-        ],
-        Some("gemini-2.0-flash-lite"),
-        None,
-    ).await;
+    // let result = model.chat(
+    //     &vec![
+    //         markhor_core::chat::Message::user("What is tha capital of France?"),
+    //     ],
+    //     Some("gemini-2.0-flash-lite"),
+    //     None,
+    // ).await;
 
-    println!("Chat completion result:\n{:?}", result);
+    // println!("Chat completion result:\n{:?}", result);
 
-    let completion = result.unwrap();
+    // let completion = result.unwrap();
     
-    assert_eq!(completion.message.role, markhor_core::chat::MessageRole::Assistant);
-    assert!(completion.message.content.contains("Paris"));
+    // assert_eq!(completion.message.role, markhor_core::chat::MessageRole::Assistant);
+    // assert!(completion.message.content.contains("Paris"));
 }

@@ -42,7 +42,7 @@ impl Extension for PythonStdioPlugin {
     fn description(&self) -> &str {
         &self.description
     }
-    fn chat_model(&self) -> Option<Arc<dyn ChatModel>> {
-        Some(self.chat_models.first().unwrap().clone())
-    }
+    // fn chat_model(&self) -> Option<Arc<dyn ChatModel>> {
+    //     Some(self.chat_models.first().unwrap().clone())
+    // }
 }

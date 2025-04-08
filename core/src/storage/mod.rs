@@ -114,7 +114,7 @@
 use crate::event::Event;
 
 pub use self::document::Document;
-pub use self::file::{ContentFile, Content, ContentBuilder};
+pub use self::file::{ContentFile, Content};
 pub use self::folder::Folder;
 pub use self::workspace::Workspace;
 
@@ -192,6 +192,9 @@ pub enum Error {
 
     #[error("Path is not a valid workspace (missing '.markhor' subdirectory): {0}")]
     NotAWorkspace(PathBuf),
+
+    #[error("Path is outside the workspace: {0}")]
+    PathOutsideWorkspace(PathBuf),
 
     #[error("Cannot create workspace: path exists and is not an empty directory: {0}")]
     WorkspaceCreationConflict(PathBuf), // Covers non-empty or existing .markhor dir
