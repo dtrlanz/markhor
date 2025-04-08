@@ -1,6 +1,8 @@
 [package]
 name = "markhor_extensions"
 edition = "2024"
+description = "Extensions for Markhor, a project connecting AI models, documents, and workflows for knowledge work"
+repository = "https://github.com/dtrlanz/markhor"
 version.workspace = true
 
 [dependencies]
