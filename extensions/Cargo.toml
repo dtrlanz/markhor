@@ -5,6 +5,10 @@ license = "MIT OR Apache-2.0"
 description = "Extensions for Markhor, a project connecting AI models, documents, and workflows for knowledge work"
 repository = "https://github.com/dtrlanz/markhor"
 version.workspace = true
+exclude = [
+    "tests/common/*",
+    "tests/python-chat-plugin/*",
+]
 
 [dependencies]
 markhor_core = { path = "../core", version = "0.1.0-alpha.0.1" }
