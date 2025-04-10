@@ -6,9 +6,22 @@ Markhor is a platform connecting AI models, documents, and workflows for knowled
 
 ## Project Status
 
-This project is still pre-alpha. Assume all APIs are experimental.
+This project is still pre-alpha. Assume all APIs are experimental. Every version has breaking changes.
 
 **Version:** 0.1.0-alpha.0
+
+## Packages
+
+-   `markhor`: App context and command-line interface
+-   `markhor_core`: Core functionalities for AI (models, embeddings, etc.) and file management (workspaces, documents, metadata)
+-   `markhor_extensions`: Various extensions (incl. clients for several APIs)
+
+## Getting Started
+
+1.  Clone the repository.
+2.  Navigate to the project directory.
+3.  Build the project using `cargo build`.
+4.  Run the CLI application using `cargo run --package markhor`.
 
 ## Project Goals
 
@@ -16,7 +29,7 @@ This project is still pre-alpha. Assume all APIs are experimental.
 -   Integrate various AI models for personal, local knowledge management.
 -   Enable user-driven automation for common tasks using workflows and prompt templates.
 -   Facilitate portability, future-proof access, and compatibility with other software (e.g., backup, sync) by privileging plain text.
--   Prioritize user control over data privacy.
+-   Give users control over their own data and its privacy.
 -   Foster extensibility and customizability.
 
 ## Non-Goals
@@ -31,21 +44,6 @@ In terms of implementation strategy, the following items are currently non-goals
 
 -   Runtime-agnostic libraries: We're unapologetically relying on `tokio` for now and awaiting further developments in the world of `async` Rust.
 -   Prefer native Rust implementations: For now, we're happy to use APIs via Python or JavaScript when that's easiest.
-
-## Packages
-
--   `markhor_core`: Core AI functionalities (models, embeddings, etc.)
--   `markhor_extensions`: Various extensions
--   `markhor_cli`: Command-line interface
--   `markhor_gui`: GUI interface
--   `markhor_util`: Utility functions and modules
-
-## Getting Started
-
-1.  Clone the repository.
-2.  Navigate to the project directory.
-3.  Build the project using `cargo build`.
-4.  Run the CLI application using `cargo run --package cli`.
 
 ## License
 
