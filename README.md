@@ -45,6 +45,25 @@ In terms of implementation strategy, the following items are currently non-goals
 -   Runtime-agnostic libraries: We're unapologetically relying on `tokio` for now and awaiting further developments in the world of `async` Rust.
 -   Prefer native Rust implementations: For now, we're happy to use APIs via Python or JavaScript when that's easiest.
 
+## Roadmap
+
+### Alpha
+
+- [ ] RAG
+- [ ] File inline data
+- [ ] Privacy metadata
+- [ ] App & workspace configuration
+- [ ] Tools
+- [ ] ...
+
+### Beta
+
+- [ ] File output
+- [ ] Workflows
+- [ ] Plugins
+- [ ] MCP client
+- [ ] ...
+
 ## License
 
 Licensed under either of <a href="LICENSE-APACHE">Apache License, Version
