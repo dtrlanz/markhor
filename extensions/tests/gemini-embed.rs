@@ -54,9 +54,9 @@ mod tests {
                 let expected_dims = expected_dims.unwrap(); // Safe after check
 
                 for (i, embedding) in embeddings.iter().enumerate() {
-                    assert_eq!(embedding.len(), expected_dims, "{}: Embedding {} should have correct dimensions", test_name, i);
+                    assert_eq!(embedding.0.len(), expected_dims, "{}: Embedding {} should have correct dimensions", test_name, i);
                     // Basic sanity check on values (not all zero)
-                    assert!(embedding.iter().any(|&v| v != 0.0), "{}: Embedding {} should not be all zeros", test_name, i);
+                    assert!(embedding.0.iter().any(|&v| v != 0.0), "{}: Embedding {} should not be all zeros", test_name, i);
                 }
                 assert_eq!(embedder.intended_use_case(), EmbeddingUseCase::General, "{}: Default use case should be General", test_name);
             }
@@ -96,7 +96,7 @@ mod tests {
                 assert_eq!(embeddings.len(), texts.len(), "{}: Should return embedding for the input", test_name);
                 let expected_dims = embedder.dimensions().unwrap_or(0);
                 assert_ne!(expected_dims, 0, "{}: Dimensions should be > 0", test_name);
-                assert_eq!(embeddings.0[0].len(), expected_dims, "{}: Embedding should have correct dimensions", test_name);
+                assert_eq!(embeddings[0].0.len(), expected_dims, "{}: Embedding should have correct dimensions", test_name);
             }
             Err(e) => {
                 // Note: Some task_types might eventually be invalid for certain models,

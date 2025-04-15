@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 //pub use extension_set::ExtensionSet;
 use thiserror::Error;
 
@@ -58,5 +59,21 @@ pub trait Functionality {
     /// The default implementation returns `self.id()`.
     fn name(&self) -> &str {
         self.id()
+    }
+}
+
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct FunctionalityId {
+    uri: String,
+    id: String,
+}
+
+impl<T: Functionality + ?Sized> From<&T> for FunctionalityId {
+    fn from(f: &T) -> Self {
+        FunctionalityId {
+            uri: f.extension_uri().to_string(),
+            id: f.id().to_string(),
+        }
     }
 }

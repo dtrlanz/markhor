@@ -17,9 +17,9 @@ pub async fn chat(assets: &mut Assets) -> Result<(), RunJobError> {
         )];
         for doc in docs {
             for file in doc.files().await.map_err(|e| RunJobError::Other(Box::new(e)))? {
-                if file.extension() == Some("md") {
+                if file.extension() == "md" {
                     let content = file.read_string().await.map_err(|e| RunJobError::Other(Box::new(e)))?;
-                    vec.push(Message::user(format!("[{}]\n\n{}", file.file_name().unwrap(), content)));
+                    vec.push(Message::user(format!("[{}]\n\n{}", file.file_name(), content)));
                     vec.push(Message::assistant("I have reviewed the document and am ready to help."));
                 }
             }

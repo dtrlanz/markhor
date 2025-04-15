@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use markhor_core::embedding::{Embedder, EmbeddingError, EmbeddingUseCase, Embeddings};
+use markhor_core::{embedding::{Embedder, Embedding, EmbeddingError, EmbeddingUseCase}, extension::Functionality};
 use reqwest::Client;
 use tracing::{debug, instrument, warn, error}; // For logging/tracing
 
@@ -116,10 +116,10 @@ const BATCH_LIMIT: usize = 100;
 #[async_trait]
 impl Embedder for GeminiEmbedder {
     #[instrument(skip(self, texts), fields(model=%self.model_name, num_texts=texts.len()))]
-    async fn embed(&self, texts: &[&str]) -> Result<Embeddings, EmbeddingError> {
+    async fn embed(&self, texts: &[&str]) -> Result<Vec<Embedding>, EmbeddingError> {
         if texts.is_empty() {
             debug!("Input texts slice is empty, returning empty embeddings.");
-            return Ok(Embeddings(vec![]));
+            return Ok(vec![]);
         }
 
         // Check batch size limit (Gemini typically has a limit, e.g., 100)
@@ -218,10 +218,8 @@ impl Embedder for GeminiEmbedder {
 
         debug!("Successfully received embeddings from Gemini API.");
         // Extract the embedding vectors
-        let embeddings_vec: Vec<Vec<f32>> = response_data.embeddings.into_iter().map(|e| e.values).collect();
-
-        // Wrap in our Embeddings type
-        Ok(Embeddings::from(embeddings_vec))
+        let embeddings_vec = response_data.embeddings.into_iter().map(|e| Embedding::from(e.values)).collect();
+        Ok(embeddings_vec)
     }
 
     fn dimensions(&self) -> Option<usize> {
@@ -245,5 +243,15 @@ impl Embedder for GeminiEmbedder {
         // Use a conservative characters estimate (e.g., 4 chars/token -> 8192)
         // Round down slightly.
         Some(8000)
+    }
+}
+
+impl Functionality for GeminiEmbedder {
+    fn extension_uri(&self) -> &str {
+        "https://github.com/dtrlanz/markhor/tree/main/extensions/src/embedding/gemini"
+    }
+
+    fn id(&self) -> &str {
+        "embeddings"
     }
 }

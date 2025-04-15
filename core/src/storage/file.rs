@@ -48,12 +48,12 @@ impl<'a> ContentFile<'a> {
             })
     }
 
-    pub fn file_name(&self) -> Option<&str> {
-        self.file_path.file_name()?.to_str()
+    pub fn file_name(&self) -> &str {
+        self.file_path.file_name().unwrap().to_str().unwrap()
     }
 
-    pub fn extension(&self) -> Option<&str> {
-        self.file_path.extension()?.to_str()
+    pub fn extension(&self) -> &str {
+        self.file_path.extension().unwrap().to_str().unwrap()
     }
 }
 

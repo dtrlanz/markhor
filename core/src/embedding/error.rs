@@ -1,5 +1,5 @@
 use std::error::Error as StdError;
-use thiserror::Error; // Using thiserror
+use thiserror::Error;
 
 // Define the custom error enum using thiserror
 #[derive(Error, Debug)]
@@ -53,6 +53,18 @@ pub enum EmbeddingError {
     /// A catch-all for errors specific to an implementation that don't fit other categories.
     #[error("Implementation-specific error: {0}")]
     ImplementationSpecific(#[source] Box<dyn StdError + Send + Sync>),
+
+    /// Error when calculating similarity of zero vectors
+    #[error("Embedding vectors have zero length.")]
+    ZeroLength,
+
+    /// Error when calculating similarity of incompatible vectors
+    #[error("Embedding vectors have different lengths.")]
+    MismatchedLengths,
+
+    /// Error with local document storage
+    #[error("File storage error: {0}")]
+    Storage(#[from] crate::storage::Error),
 
     /// Custom variant to wrap external errors when converting via From,
     /// ensuring the source is captured correctly by thiserror.

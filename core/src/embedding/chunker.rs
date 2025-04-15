@@ -7,7 +7,7 @@ use super::error::EmbeddingError;
 /// A trait for chunking text into smaller segments for embedding.
 pub trait Chunker: Functionality {
     /// Chunk the input text into a range of indices.
-    fn chunk(&self, text: &str) -> Result<Range<usize>, EmbeddingError>;
+    fn chunk(&self, text: &str) -> Result<Vec<Range<usize>>, EmbeddingError>;
 
     /// Get the text corresponding to the chunk.
     /// 

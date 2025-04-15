@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use super::{error::EmbeddingError, Embeddings};
+use crate::extension::Functionality;
+
+use super::{error::EmbeddingError, Embedding};
 
 /// Trait for asynchronous text embedding generation.
 ///
@@ -9,7 +11,7 @@ use super::{error::EmbeddingError, Embeddings};
 /// (e.g., a connection to OpenAI's 'text-embedding-3-small' or a loaded
 /// local sentence-transformer model), potentially specialized for a particular use case.
 #[async_trait]
-pub trait Embedder: Send + Sync {
+pub trait Embedder: Functionality + Send + Sync {
     /// Generates embeddings for a batch of text chunks asynchronously.
     ///
     /// # Arguments
@@ -19,11 +21,11 @@ pub trait Embedder: Send + Sync {
     /// # Returns
     ///
     /// A `Result` containing either:
-    /// * `Ok(Embeddings)`: Wrapper containing vectors for each input text chunk.
+    /// * `Ok(Vec<Embedding>)`: Wrapper containing vectors for each input text chunk.
     /// * `Err(EmbeddingError)`: An error encountered during the process. Implementations
     ///   should use specific variants like `InputTooLong` or `BatchTooLarge` when
     ///   input limits are exceeded.
-    async fn embed(&self, texts: &[&str]) -> Result<Embeddings, EmbeddingError>;
+    async fn embed(&self, texts: &[&str]) -> Result<Vec<Embedding>, EmbeddingError>;
 
     /// Returns the number of dimensions in the embedding vectors produced by this embedder.
     ///
