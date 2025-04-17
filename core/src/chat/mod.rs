@@ -1,7 +1,7 @@
 pub mod chat;
 pub mod error;
 
-pub use error::ApiError;
+pub use error::ChatError;
 
 
 // Implementation Notes:
@@ -99,17 +99,17 @@ pub struct UsageData {
 }
 
 
-#[derive(Debug, Error)]
-pub enum ChatError {
-    #[error("Invalid message format")]
-    InvalidMessageFormat,
+// #[derive(Debug, Error)]
+// pub enum ChatError {
+//     #[error("Invalid message format")]
+//     InvalidMessageFormat,
 
-    #[error("Model error: {0}")]
-    ModelError(String),
+//     #[error("Model error: {0}")]
+//     ModelError(String),
 
-    #[error("Error while using plugin: {0}")]
-    PluginError(Box<dyn std::error::Error + Send + Sync>),
+//     #[error("Error while using plugin: {0}")]
+//     PluginError(Box<dyn std::error::Error + Send + Sync>),
 
-    #[error("Other error: {0}")]
-    Other(Box<dyn std::error::Error + Send + Sync>),
-}
+//     #[error("Other error: {0}")]
+//     Other(Box<dyn std::error::Error + Send + Sync>),
+// }

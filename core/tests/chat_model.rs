@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::{atomic::{AtomicUsize, Ordering}, Arc}};
 
 use async_trait::async_trait;
-use markhor_core::{chat::{self, chat::{ChatApi, ChatOptions, ChatResponse, ChatStream, ContentPart, Message, ModelInfo}, ApiError, ChatError, ChatModel}, extension::{Extension, Functionality}};
+use markhor_core::{chat::{self, chat::{ChatApi, ChatOptions, ChatResponse, ChatStream, ContentPart, Message, ModelInfo}, ChatError, ChatModel}, extension::{Extension, Functionality}};
 
 
 const SONNET_18: [&str; 14] = [
@@ -41,7 +41,7 @@ impl Functionality for ShakespeareChatModel {
 impl ChatModel for ShakespeareChatModel {
     async fn generate(&self, _messages: &Vec<chat::Message>) -> Result<String, ChatError> {
         if self.idx.load(Ordering::SeqCst) >= SONNET_18.len() {
-            return Err(ChatError::ModelError(String::from("Out of lines")));
+            return Err(ChatError::Provider("Out of lines".into()));
         }
         let idx = self.idx.fetch_add(1, Ordering::SeqCst);
         Ok(String::from(SONNET_18[idx]))
@@ -54,7 +54,7 @@ impl ChatModel for ShakespeareChatModel {
         _config: Option<HashMap<String, serde_json::Value>>,
     ) -> Result<markhor_core::chat::Completion, ChatError> {
         if self.idx.load(Ordering::SeqCst) >= SONNET_18.len() {
-            return Err(ChatError::ModelError(String::from("Out of lines")));
+            return Err(ChatError::Provider("Out of lines".into()));
         }
         let idx = self.idx.fetch_add(1, Ordering::SeqCst);
         Ok(markhor_core::chat::Completion {
@@ -66,7 +66,7 @@ impl ChatModel for ShakespeareChatModel {
 
 #[async_trait]
 impl ChatApi for ShakespeareChatModel {
-    async fn list_models(&self) -> Result<Vec<ModelInfo>, ApiError> {
+    async fn list_models(&self) -> Result<Vec<ModelInfo>, ChatError> {
         Ok(vec![ModelInfo {
             id: "shakespeare".to_string(),
             description: Some("Chat with Shakespeare".to_string()),
@@ -75,9 +75,9 @@ impl ChatApi for ShakespeareChatModel {
         }])
     }
 
-    async fn generate(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatResponse, ApiError> {
+    async fn generate(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatResponse, ChatError> {
         if self.idx.load(Ordering::SeqCst) >= SONNET_18.len() {
-            return Err(ApiError::RateLimited);
+            return Err(ChatError::RateLimited);
         }
         let idx = self.idx.fetch_add(1, Ordering::SeqCst);
         Ok(ChatResponse {
@@ -89,7 +89,7 @@ impl ChatApi for ShakespeareChatModel {
         })
     }
 
-    async fn generate_stream(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatStream, ApiError> {
+    async fn generate_stream(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatStream, ChatError> {
         unimplemented!()
     }
 }

@@ -1,6 +1,6 @@
 
 use base64::Engine;
-use markhor_core::chat::ApiError;
+use markhor_core::chat::ChatError;
 use markhor_core::chat::chat::{
     ChatApi, ChatOptions, ChatResponse, ChatStream, ContentPart, FinishReason,
     Message, ModelInfo, ToolCallRequest, ToolChoice, ToolParameterSchema,
@@ -261,7 +261,7 @@ struct GeminiGenerateResponse {
 
 impl GeminiGenerateResponse {
     /// Converts Gemini response to Markhor's internal ChatResponse.
-    pub fn into_chat_response(self, request_model_id: &str) -> Result<ChatResponse, ApiError> {
+    pub fn into_chat_response(self, request_model_id: &str) -> Result<ChatResponse, ChatError> {
         // Take the first candidate if available
         let first_candidate = self.candidates.and_then(|mut c| c.pop());
 
@@ -346,16 +346,19 @@ struct GeminiCandidate {
     // ...
 }
 
-#[derive(Deserialize, Debug, PartialEq, Eq)]
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 enum GeminiFinishReason {
-    // Todo: Add remaining
     Stop,
     MaxTokens,
     Safety,
     Recitation,
-    FunctionCall, // Our trigger for ToolCalls
-    Other,        // Catch-all
+    Blocklist,
+    ProhibitedContent,
+    Spii,
+    MalformedFunctionCall,
+    Other,
+    Unspecified,
 }
 
 impl Into<FinishReason> for GeminiFinishReason {
@@ -363,10 +366,14 @@ impl Into<FinishReason> for GeminiFinishReason {
         match self {
             GeminiFinishReason::Stop => FinishReason::Stop,
             GeminiFinishReason::MaxTokens => FinishReason::Length,
-            GeminiFinishReason::FunctionCall => FinishReason::ToolCalls,
             GeminiFinishReason::Safety => FinishReason::ContentFilter,
             GeminiFinishReason::Recitation => FinishReason::Other("Recitation".to_string()),
+            GeminiFinishReason::Blocklist => FinishReason::Other("Blocklist".to_string()),
+            GeminiFinishReason::ProhibitedContent => FinishReason::ContentFilter,
+            GeminiFinishReason::Spii => FinishReason::ContentFilter,
+            GeminiFinishReason::MalformedFunctionCall => FinishReason::Other("MalformedFunctionCall".to_string()),
             GeminiFinishReason::Other => FinishReason::Other("Unknown".to_string()),
+            GeminiFinishReason::Unspecified => FinishReason::Unspecified,
         }
     }
 }
@@ -398,15 +405,15 @@ struct GeminiErrorResponse {
 }
 
 impl GeminiErrorResponse {
-    fn into_api_error(self, response_status: StatusCode) -> ApiError {
+    fn into_api_error(self, response_status: StatusCode) -> ChatError {
         let msg = format!("{} (Status: {}, Code: {})", self.error.message, self.error.status, self.error.code);
         match response_status.as_u16() {
-            400 => ApiError::InvalidRequest(msg),
-            401 | 403 => ApiError::Authentication(msg),
-            404 => ApiError::ModelNotFound(msg), // Or potentially other 404 reasons
-            429 => ApiError::RateLimited,
-            500..=599 => ApiError::Api { status: response_status.as_u16(), message: msg },
-            _ => ApiError::Api { status: response_status.as_u16(), message: msg },
+            400 => ChatError::InvalidRequest(msg),
+            401 | 403 => ChatError::Authentication(msg),
+            404 => ChatError::ModelNotFound(msg), // Or potentially other 404 reasons
+            429 => ChatError::RateLimited,
+            500..=599 => ChatError::Api { status: Some(response_status.as_u16()), message: msg, source: None },
+            _ => ChatError::Api { status: Some(response_status.as_u16()), message: msg, source: None },
         }
     }
 }
@@ -480,7 +487,7 @@ impl GeminiClient {
     }
 
     /// Maps Gemini API errors (parsed from JSON or status codes) to our ApiError enum.
-    async fn map_gemini_error(err_resp: reqwest::Response) -> ApiError {
+    async fn map_gemini_error(err_resp: reqwest::Response) -> ChatError {
         let status = err_resp.status();
         let error_text_result = err_resp.text().await; // Consume body to attempt parsing
 
@@ -495,14 +502,14 @@ impl GeminiClient {
                     Err(parse_err) => {
                         // Couldn't parse the specific error format, return generic API error
                         warn!(parse_error = %parse_err, body = %error_text, "Failed to parse Gemini error response JSON");
-                        ApiError::Api { status: status.as_u16(), message: error_text }
+                        ChatError::Api { status: Some(status.as_u16()), message: error_text, source: None }
                     }
                 }
             },
             Err(text_err) => {
                 // Failed even to read the error body text
                 error!(status = %status, text_error = %text_err, "Failed to read Gemini error response body text");
-                ApiError::Api { status: status.as_u16(), message: format!("Failed to read error response body: {}", text_err)}
+                ChatError::Api { status: Some(status.as_u16()), message: format!("Failed to read error response body: {}", text_err), source: None }
             }
         }
     }
@@ -510,15 +517,15 @@ impl GeminiClient {
     /// Converts Markhor's internal message format to Gemini's Content format.
     fn convert_messages(
         messages: &[Message],
-    ) -> Result<(Option<GeminiContent>, Vec<GeminiContent>), ApiError> {
-        let mut system_instruction: Result<Option<GeminiContent>, ApiError> = Ok(None);
+    ) -> Result<(Option<GeminiContent>, Vec<GeminiContent>), ChatError> {
+        let mut system_instruction: Result<Option<GeminiContent>, ChatError> = Ok(None);
         let gemini_contents: Vec<GeminiContent> = messages.iter()
             .filter(|&m| match m {
                 Message::System(_) => {
                     // Gemini uses a dedicated 'system_instruction' field.
                     // We only support one currently. Error if multiple are present.
                     if !system_instruction.as_ref().is_ok_and(|v| v.is_none()) {
-                        system_instruction = Err(ApiError::InvalidRequest(
+                        system_instruction = Err(ChatError::InvalidRequest(
                             "Multiple System messages are not supported by Gemini; use 'system_instruction'.".to_string()
                         ));
                         return false;
@@ -572,55 +579,41 @@ impl GeminiClient {
     }
 }
 
-const URI: &str = "https://github.com/dtrlanz/markhor/tree/main/extensions/src/chat/gemini";
-
-
-
-impl Functionality for GeminiClient {
-    fn extension_uri(&self) -> &str {
-        URI
-    }
-
-    fn id(&self) -> &str {
-        "Gemini chat client"
-    }
-}
-
 
 #[async_trait]
 impl ChatApi for GeminiClient {
     #[instrument(skip(self))]
-    async fn list_models(&self) -> Result<Vec<ModelInfo>, ApiError> {
+    async fn list_models(&self) -> Result<Vec<ModelInfo>, ChatError> {
         let url = self.build_list_models_url();
         debug!(%url, "Requesting Gemini models list");
 
         let response = self.http_client.get(&url)
             .send()
             .await
-            .map_err(|e| ApiError::Network(Box::new(e)))?;
+            .map_err(|e| ChatError::Network(Box::new(e)))?;
 
         if !response.status().is_success() {
-             error!(status = %response.status(), "Failed to list models");
-             return Err(Self::map_gemini_error(response).await);
+            error!(status = %response.status(), "Failed to list models");
+            return Err(Self::map_gemini_error(response).await);
         }
 
-        let raw_body = response.text().await.map_err(|e| ApiError::Network(Box::new(e)))?;
+        let raw_body = response.text().await.map_err(|e| ChatError::Network(Box::new(e)))?;
         trace!(body = %raw_body, "Received model list response body");
 
         let list_response: GeminiListModelsResponse = serde_json::from_str(&raw_body)
-             .map_err(|e| ApiError::Parsing(Box::new(e)))?;
+            .map_err(|e| ChatError::Parsing(Box::new(e)))?;
 
 
         let models = list_response.models.into_iter()
-             .filter(|m| m.name.starts_with("models/")) // Ensure correct format
-             .map(|m| ModelInfo {
-                // Extract the actual ID from "models/model-id"
-                id: m.name.split('/').last().unwrap_or(&m.name).to_string(),
-                description: m.description.clone().or(m.display_name.clone()), // Prefer description
-                context_window: m.input_token_limit,
-                max_output_tokens: m.output_token_limit,
-             })
-             .collect();
+            .filter(|m| m.name.starts_with("models/")) // Ensure correct format
+            .map(|m| ModelInfo {
+            // Extract the actual ID from "models/model-id"
+            id: m.name.split('/').last().unwrap_or(&m.name).to_string(),
+            description: m.description.clone().or(m.display_name.clone()), // Prefer description
+            context_window: m.input_token_limit,
+            max_output_tokens: m.output_token_limit,
+            })
+            .collect();
 
         Ok(models)
     }
@@ -631,7 +624,7 @@ impl ChatApi for GeminiClient {
         &self,
         messages: &[Message],
         options: &ChatOptions,
-    ) -> Result<ChatResponse, ApiError> {
+    ) -> Result<ChatResponse, ChatError> {
         let model_id = options
             .model_id
             .as_deref()
@@ -668,25 +661,25 @@ impl ChatApi for GeminiClient {
             .send()
             .await
             .map_err(|e| {
-                 error!(error = %e, "Network error during generate request");
-                 ApiError::Network(Box::new(e))
-             })?;
+                error!(error = %e, "Network error during generate request");
+                ChatError::Network(Box::new(e))
+            })?;
 
         if !response.status().is_success() {
             error!(status = %response.status(), "Gemini API returned error status");
-             return Err(Self::map_gemini_error(response).await);
+            return Err(Self::map_gemini_error(response).await);
         }
 
         let raw_body = response.text().await.map_err(|e| {
-             error!(error = %e, "Failed to read response body");
-             ApiError::Network(Box::new(e))
-         })?;
+            error!(error = %e, "Failed to read response body");
+            ChatError::Network(Box::new(e))
+        })?;
         trace!(body = %raw_body, "Received Gemini generate response body");
 
         let gemini_response: GeminiGenerateResponse = serde_json::from_str(&raw_body)
             .map_err(|e| {
                 error!(serde_error = %e, raw_body = %raw_body, "Failed to parse Gemini response JSON");
-                ApiError::Parsing(Box::new(e))
+                ChatError::Parsing(Box::new(e))
             })?;
 
         debug!("Successfully parsed Gemini response");
@@ -699,20 +692,46 @@ impl ChatApi for GeminiClient {
         &self,
         messages: &[Message],
         options: &ChatOptions,
-    ) -> Result<ChatStream, ApiError> {
-         // TODO: Implement streaming for Gemini
-         // This involves:
-         // 1. Adding ":streamGenerateContent" to the URL.
-         // 2. Sending the same request body.
-         // 3. Handling the response as a stream of Server-Sent Events (SSE).
-         // 4. Parsing each SSE chunk (which will be JSON, similar to GeminiGenerateResponse but partial/delta).
-         // 5. Extracting text deltas from `candidates[0].content.parts[0].text`.
-         // 6. Handling potential errors within the stream.
-         // 7. Mapping the stream items to `Result<String, ApiError>`.
-         warn!("Gemini streaming is not yet implemented.");
-         Err(ApiError::NotSupported("Streaming is not yet implemented for the Gemini client.".to_string()))
+    ) -> Result<ChatStream, ChatError> {
+        // TODO: Implement streaming for Gemini
+        // This involves:
+        // 1. Adding ":streamGenerateContent" to the URL.
+        // 2. Sending the same request body.
+        // 3. Handling the response as a stream of Server-Sent Events (SSE).
+        // 4. Parsing each SSE chunk (which will be JSON, similar to GeminiGenerateResponse but partial/delta).
+        // 5. Extracting text deltas from `candidates[0].content.parts[0].text`.
+        // 6. Handling potential errors within the stream.
+        // 7. Mapping the stream items to `Result<String, ApiError>`.
+        warn!("Gemini streaming is not yet implemented.");
+        Err(ChatError::NotSupported("Streaming is not yet implemented for the Gemini client.".to_string()))
     }
 }
+
+
+// Helper function to create a reqwest client (useful for examples/tests)
+// Consider moving this to a more central place if used by multiple clients
+pub fn create_default_http_client() -> Result<reqwest::Client, ChatError> {
+    reqwest::Client::builder()
+       .timeout(std::time::Duration::from_secs(60)) // Example timeout
+       .build()
+       .map_err(|e| ChatError::Configuration(format!("Failed to build HTTP client: {}", e)))
+}
+
+
+const URI: &str = "https://github.com/dtrlanz/markhor/tree/main/extensions/src/chat/gemini";
+
+
+
+impl Functionality for GeminiClient {
+    fn extension_uri(&self) -> &str {
+        URI
+    }
+
+    fn id(&self) -> &str {
+        "Gemini chat client"
+    }
+}
+
 
 
 pub struct GeminiClientExtension {
@@ -745,14 +764,6 @@ impl Extension for GeminiClientExtension {
     }
 }
 
-// Helper function to create a reqwest client (useful for examples/tests)
-// Consider moving this to a more central place if used by multiple clients
-pub fn create_default_http_client() -> Result<reqwest::Client, ApiError> {
-     reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60)) // Example timeout
-        .build()
-        .map_err(|e| ApiError::Configuration(format!("Failed to build HTTP client: {}", e)))
-}
 
 #[cfg(test)]
 mod tests {

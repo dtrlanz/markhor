@@ -134,7 +134,7 @@ mod tests {
         // Check if the error is an ApiError (most likely)
         // The exact status code might vary (e.g., 400, 403, 401), but it should be an API error.
         assert!(
-            matches!(result.err().unwrap(), EmbeddingError::ApiError { .. }),
+            matches!(result.err().unwrap(), EmbeddingError::Api { .. }),
             "{}: Error should be an ApiError variant", test_name
         );
     }
@@ -163,13 +163,13 @@ mod tests {
         // Expect an API error, likely a 404 or similar invalid argument status.
         let err = result.err().unwrap();
         assert!(
-            matches!(err, EmbeddingError::ApiError { .. }),
+            matches!(err, EmbeddingError::Api { .. }),
             "{}: Error should be an ApiError variant, got {:?}", test_name, err
         );
 
         // Optional: Check if status code seems like 'not found' or 'invalid argument' if needed
-        if let EmbeddingError::ApiError { status_code, message, .. } = err {
-             println!("{}: Received ApiError status: {:?}, message: {}", test_name, status_code, message);
+        if let EmbeddingError::Api { status, message, .. } = err {
+             println!("{}: Received ApiError status: {:?}, message: {}", test_name, status, message);
              // Example check: assert!(status_code == Some(404) || status_code == Some(400));
         }
     }

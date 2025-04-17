@@ -29,7 +29,8 @@ impl VectorStore {
             return Ok(());
         }
 
-        let md_files = doc.files_by_extension("md").await?;
+        // TODO: fix error handling
+        let md_files = doc.files_by_extension("md").await.map_err(|e| EmbeddingError::Provider(Box::new(e)))?;
 
         let doc_embeddings = doc.with_metadata::<_, Result<DocumentEmbeddings, EmbeddingError>>(async |metadata| {
             let mut doc_embeddings = DocumentEmbeddings::new();
@@ -43,7 +44,8 @@ impl VectorStore {
                     embeddings
                 } else {
                     // Generate chunks
-                    let text = file.read_string().await?;
+                    // TODO: fix error handling
+                    let text = file.read_string().await.map_err(|e| EmbeddingError::Provider(Box::new(e)))?;
                     let chunk_ranges = chunker.chunk(&text)?;
                     let chunk_texts = chunk_ranges.iter()
                         .map(|range| chunker.get_chunk_text(&text, range.clone()))
@@ -73,7 +75,9 @@ impl VectorStore {
                 doc_embeddings.chunks.extend(embeddings.iter().map(|(_, range)| (file_idx, range.clone())));
             }
             Ok(doc_embeddings)
-        }).await??; // handle storage errors (outer) and embedding errors (inner)
+                // TODO: fix error handling
+                // handle storage errors (outer) and embedding errors (inner)
+        }).await.map_err(|e| EmbeddingError::Provider(Box::new(e)))??; 
 
         // Add document to embeddings map
         self.documents.insert(*doc.id(), doc_embeddings);

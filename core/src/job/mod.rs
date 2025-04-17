@@ -162,7 +162,8 @@ impl Assets {
                 tracing::debug!("Found chat model in extension {}", ext.name());
                 if let Some(requested_model) = &model {
                     tracing::debug!("Looking for model {}", requested_model);
-                    for model in chat_client.list_models().await.map_err(|e| ChatError::Other(Box::new(e)))? {
+                    // TODO reconsider error variant
+                    for model in chat_client.list_models().await.map_err(|e| ChatError::Provider(Box::new(e)))? {
                         if *model.id == *requested_model {
                             tracing::debug!("Found model {}", requested_model);
                             return Ok(chat_client.clone());
@@ -174,7 +175,8 @@ impl Assets {
                 }
             }
         }
-        Err(ChatError::Other("No chat model found".into()))
+        // TODO reconsider error variant
+        Err(ChatError::Provider("No chat model found".into()))
     }
 }
 

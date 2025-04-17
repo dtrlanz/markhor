@@ -29,6 +29,7 @@ uuid = "1.16.0"
 url = { version = "2.5", features = ["serde"] }
 tempfile = "3.19.1"
 mime = "0.3.17"
+secrecy = "0.10.3"
 
 [dev-dependencies]
 tracing-subscriber = "0.3.19"

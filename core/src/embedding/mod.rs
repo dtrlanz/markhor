@@ -3,7 +3,7 @@ mod embedder;
 mod chunker;
 mod vector_store;
 
-pub use error::EmbeddingError;
+pub use error::{EmbeddingError};
 pub use embedder::{Embedder, EmbeddingUseCase};
 pub use chunker::Chunker;
 
@@ -28,11 +28,14 @@ impl Embedding {
     /// Returns an error if the vectors are empty or have mismatched lengths.
     pub fn similarity(&self, other: &Embedding) -> Result<f32, EmbeddingError> {
         if self.0.is_empty() || other.0.is_empty() {
-            return Err(EmbeddingError::ZeroLength);
+            // TODO: fix errors
+            //return Err(EmbeddingError::ZeroLength);
+            panic!("zero length vector");
         }
 
         if self.0.len() != other.0.len() {
-            return Err(EmbeddingError::MismatchedLengths);
+            //return Err(EmbeddingError::MismatchedLengths);
+            panic!("mismatched vector lengths");
         }
 
         let dot_product: f32 = self.0.iter().zip(&other.0).map(|(a, b)| a * b).sum();
@@ -40,7 +43,8 @@ impl Embedding {
         let norm_other: f32 = other.0.iter().map(|x| x * x).sum::<f32>().sqrt();
 
         if norm_self == 0.0 || norm_other == 0.0 {
-            return Err(EmbeddingError::ZeroLength);
+            //return Err(EmbeddingError::ZeroLength);
+            panic!("zero length vector");
         }
 
         Ok(dot_product / (norm_self * norm_other))

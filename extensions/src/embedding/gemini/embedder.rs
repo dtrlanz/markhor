@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use markhor_core::{embedding::{Embedder, Embedding, EmbeddingError, EmbeddingUseCase}, extension::Functionality};
 use reqwest::Client;
 use tracing::{debug, instrument, warn, error}; // For logging/tracing
+use std::error::Error as StdError;
 
 use crate::embedding::gemini::helpers::{GeminiApiErrorResponse, GeminiBatchRequest, GeminiBatchResponse, GeminiContent, GeminiEmbedRequest, GeminiPart};
 
@@ -146,7 +147,7 @@ impl Embedder for GeminiEmbedder {
         let request_body = GeminiBatchRequest { requests };
 
         let request_json = serde_json::to_string(&request_body)
-            .map_err(|e| EmbeddingError::ImplementationSpecific(format!("Failed to serialize request body: {}", e).into()))?; // Should not fail usually
+            .map_err(|e| EmbeddingError::Provider(format!("Failed to serialize request body: {}", e).into()))?; // Should not fail usually
 
         debug!(endpoint = %self.api_endpoint, body = %request_json, "Sending request to Gemini API");
 
@@ -161,12 +162,38 @@ impl Embedder for GeminiEmbedder {
 
         // Handle network/request errors
         let response = match response {
-             Ok(res) => res,
-             Err(e) => {
-                 error!(error = %e, "Gemini API request failed");
-                 // Convert reqwest::Error into EmbeddingError
-                 return Err(EmbeddingError::from(e));
-             }
+            Ok(res) => res,
+            Err(err) => {
+                error!(error = %err, "Gemini API request failed");
+
+                // Convert reqwest::Error into EmbeddingError
+
+                let boxed_err = Box::new(err) as Box<dyn StdError + Send + Sync>;
+                // Try to classify based on reqwest error kind
+                let err_ref = boxed_err.downcast_ref::<reqwest::Error>().unwrap(); // Safe cast back
+
+                if err_ref.is_connect() || err_ref.is_timeout() {
+                    return Err(EmbeddingError::Network(boxed_err));
+                } else if err_ref.is_status() {
+                    let status = err_ref.status();
+                    return Err(EmbeddingError::Api {
+                        status: status.map(|s| s.as_u16()),
+                        message: format!("HTTP status error: {}", status.unwrap_or_default()),
+                        source: Some(boxed_err), // Include the original reqwest::Error as source
+                    });
+                } else if err_ref.is_request() || err_ref.is_body() || err_ref.is_decode() {
+                    // These could be API errors (bad request format) or network issues,
+                    // or internal serialization issues. ApiError or ImplementationSpecific might fit.
+                    return Err(EmbeddingError::Api {
+                        status: None, // Status not necessarily available
+                        message: format!("API request/response handling error: {}", boxed_err),
+                        source: Some(boxed_err),
+                    });
+                } else {
+                    // Default to ImplementationSpecific or wrap directly
+                    return Err(EmbeddingError::Provider(boxed_err));
+                }
+            }
         };
 
         let status = response.status();
@@ -188,8 +215,8 @@ impl Embedder for GeminiEmbedder {
                  Err(_) => String::from_utf8_lossy(&response_bytes).to_string(), // Fallback to raw body
             };
 
-            return Err(EmbeddingError::ApiError {
-                status_code: Some(status.as_u16()),
+            return Err(EmbeddingError::Api {
+                status: Some(status.as_u16()),
                 message,
                 source: None, // Source could be parsing error if needed, but message usually covers it
             });
@@ -200,8 +227,8 @@ impl Embedder for GeminiEmbedder {
              Ok(data) => data,
              Err(e) => {
                  error!(error = %e, response_body = %String::from_utf8_lossy(&response_bytes), "Failed to parse successful Gemini API response");
-                 return Err(EmbeddingError::ApiError{ // Treat unexpected success format as API error
-                     status_code: Some(status.as_u16()),
+                 return Err(EmbeddingError::Api { // Treat unexpected success format as API error
+                     status: Some(status.as_u16()),
                      message: "Failed to parse successful response body".to_string(),
                      source: Some(Box::new(e)),
                  });
@@ -211,7 +238,7 @@ impl Embedder for GeminiEmbedder {
         // Check if the number of embeddings matches the input
         if response_data.embeddings.len() != texts.len() {
              error!(expected = texts.len(), received = response_data.embeddings.len(), "Mismatch between input text count and received embeddings count");
-            return Err(EmbeddingError::ImplementationSpecific(
+            return Err(EmbeddingError::Provider(
                 format!("API returned {} embeddings, expected {}", response_data.embeddings.len(), texts.len()).into()
             ));
         }

@@ -6,7 +6,7 @@ use std::pin::Pin;
 
 use crate::extension::Functionality;
 
-use super::ApiError;
+use super::ChatError;
 
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,10 +170,9 @@ pub struct UsageInfo {
 pub enum FinishReason {
     Stop,
     Length,
-    /// The model decided to call one or more tools. Check `tool_calls`.
-    ToolCalls,
     ContentFilter,
-    Cancelled,
+    ToolCalls,
+    Unspecified,
     Other(String),
 }
 
@@ -211,14 +210,53 @@ pub struct ModelInfo {
     // pub supports_vision: Option<bool>,
 }
 
+// ============== For Streaming ==============
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] // May need adjustments based on contents
+pub enum StreamChunk {
+    /// A delta of the primary text content.
+    Text(String),
+
+    /// The model decided to call a tool. This might arrive before, during, or after related Text deltas.
+    /// Some APIs might send the whole request at once, others might stream arguments.
+    /// This variant assumes the full request arrives as one chunk.
+    ToolCall(ToolCallRequest),
+
+    /// For APIs that stream arguments chunk by chunk (less common but possible).
+    // ToolCallArgumentDelta { call_id: String, argument_chunk: String },
+
+    /// Provides intermediate or final usage information.
+    Usage(UsageInfo),
+
+    /// Indicates the stream ended and why. Might include final Usage.
+    /// (Could be combined with Usage, or separate if reason arrives before final stats)
+    StreamEnd {
+        finish_reason: FinishReason,
+        usage: Option<UsageInfo>, // Optional final usage details
+    },
+
+    /// An error reported by the provider *within* the stream content itself
+    /// (distinct from transport/parsing errors covered by the outer Result).
+    StreamError { message: String, code: Option<String> },
+
+    /// Placeholder for other provider-specific structured events.
+    ProviderSpecific { kind: String, data: JsonValue },
+
+    // Could add others like: RoleChange(String), Citations(Vec<CitationInfo>), etc.
+}
+
+pub type ChatStream = Pin<Box<dyn Stream<Item = Result<StreamChunk, ChatError>> + Send>>;
+
+//pub type ChatStream = Pin<Box<dyn Stream<Item = Result<String, ApiError>> + Send>>;
+
+
 // ============== The Trait ==============
 
-pub type ChatStream = Pin<Box<dyn Stream<Item = Result<String, ApiError>> + Send>>;
 
 #[async_trait]
 pub trait ChatApi: Functionality + Send + Sync {
     /// Returns a list of models available through this API provider.
-    async fn list_models(&self) -> Result<Vec<ModelInfo>, ApiError>;
+    async fn list_models(&self) -> Result<Vec<ModelInfo>, ChatError>;
 
     /// Generates a chat response, potentially including text and/or tool call requests.
     ///
@@ -236,7 +274,7 @@ pub trait ChatApi: Functionality + Send + Sync {
     /// # Returns
     /// A `ChatResponse` which may contain an assistant message, tool call requests, or both,
     /// along with metadata.
-    async fn generate(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatResponse, ApiError>;
+    async fn generate(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatResponse, ChatError>;
 
     /// Generates a chat response as a stream of text deltas.
     ///
@@ -254,5 +292,5 @@ pub trait ChatApi: Functionality + Send + Sync {
     ///
     /// # Returns
     /// A `Stream` yielding `Result<String, ApiError>` for text deltas.
-    async fn generate_stream(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatStream, ApiError>;
+    async fn generate_stream(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatStream, ChatError>;
 }
