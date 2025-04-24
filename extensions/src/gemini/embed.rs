@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use markhor_core::{embedding::{Embedder, Embedding, EmbeddingError, EmbeddingUseCase}, extension::Functionality};
 use reqwest::Client;
@@ -8,17 +10,14 @@ use secrecy::ExposeSecret;
 
 use crate::gemini::error::map_response_error;
 
-use super::{error::GeminiError, shared::{GeminiConfig, SharedGeminiClient, EXTENSION_URI}};
+use super::{error::GeminiError, shared::{self, GeminiConfig, SharedGeminiClient, EXTENSION_URI}};
 
 /// Embedder implementation for Google Gemini models via the Generative Language API.
 #[derive(Debug, Clone)] // Clone shares the SharedGeminiClient efficiently
 pub struct GeminiEmbedder {
-    shared_client: SharedGeminiClient,
-    model_name: String,         // User-facing model name, e.g., "embedding-001"
+    shared_client: Arc<SharedGeminiClient>,
     model_path_segment: String, // Path segment for API calls, e.g., "models/embedding-001"
     task_type: Option<String>,  // Store the configured task type string
-    use_case: EmbeddingUseCase, // The mapped use case enum
-    dimensions: Option<usize>,  // Known dimensions for the model
 }
 
 impl GeminiEmbedder {
@@ -49,29 +48,27 @@ impl GeminiEmbedder {
         api_base_url: Option<String>,
         client_override: Option<Client>,
     ) -> Result<Self, GeminiError> {
-        let model_name = model_name.into();
-        if model_name.is_empty() {
-            return Err(GeminiError::InvalidConfiguration("Model name cannot be empty".to_string()));
-        }
-
         let mut config = GeminiConfig::new(api_key)?;
         if let Some(base_url_str) = api_base_url {
             config = config.base_url(&base_url_str)?;
         }
-
-        Self::from_config(config, model_name, task_type, client_override)
-    }
-
-    /// Creates a new Gemini Embedder from a pre-built configuration.
-    #[instrument(name = "gemini_embedder_from_config", skip(config, client_override), fields(model_name=%model_name))]
-    pub fn from_config(
-        config: GeminiConfig,
-        model_name: String, // Now required directly
-        task_type: Option<String>,
-        client_override: Option<Client>,
-    ) -> Result<Self, GeminiError> {
         let shared_client = SharedGeminiClient::new(config, client_override)?;
 
+        Self::new_with_shared_client(Arc::new(shared_client), model_name.into(), task_type)
+    }
+
+    /// Creates a new Gemini Embedder with a pre-built client configuration.
+    #[instrument(name = "gemini_embedder_from_config", skip(shared_client), fields(model_name=%model_name))]
+    pub fn new_with_shared_client(
+        shared_client: Arc<SharedGeminiClient>,
+        model_name: String,
+        task_type: Option<String>,
+    ) -> Result<Self, GeminiError> {
+        
+
+        if model_name.is_empty() {
+            return Err(GeminiError::InvalidConfiguration("Model name cannot be empty".to_string()));
+        }
         let model_path_segment = format!("models/{}", model_name);
 
         // Map task_type string to EmbeddingUseCase enum
@@ -91,11 +88,8 @@ impl GeminiEmbedder {
 
         Ok(Self {
             shared_client,
-            model_name,
             model_path_segment,
             task_type,
-            use_case,
-            dimensions,
         })
     }
 
@@ -137,7 +131,7 @@ const BATCH_LIMIT: usize = 100;
 
 #[async_trait]
 impl Embedder for GeminiEmbedder {
-    #[instrument(skip(self, texts), fields(model=%self.model_name, num_texts=texts.len()))]
+    #[instrument(skip(self, texts), fields(model=%self.model_name(), num_texts=texts.len()))]
     async fn embed(&self, texts: &[&str]) -> Result<Vec<Embedding>, EmbeddingError> {
         // Inner async block returning Result<..., GeminiError>
         async {
@@ -256,15 +250,33 @@ impl Embedder for GeminiEmbedder {
     }
 
     fn dimensions(&self) -> Option<usize> {
-        self.dimensions
+        match self.model_name() {
+            "embedding-001" => Some(768),
+            // Add other known Gemini models here
+            _ => {
+                warn!(model = %self.model_name(), "Unknown Gemini embedding model, dimensions not set.");
+                None
+            }
+        }
     }
 
     fn model_name(&self) -> &str {
-        &self.model_name
+        &self.model_path_segment[7..] // Skip "models/" prefix
     }
 
     fn intended_use_case(&self) -> EmbeddingUseCase {
-        self.use_case.clone()
+        match self.task_type.as_ref().map(|s| s.as_str()) {
+            Some("RETRIEVAL_QUERY") => EmbeddingUseCase::RetrievalQuery,
+            Some("RETRIEVAL_DOCUMENT") => EmbeddingUseCase::RetrievalDocument,
+            Some("SEMANTIC_SIMILARITY") | Some("SIMILARITY") => EmbeddingUseCase::Similarity,
+            Some("CLASSIFICATION") => EmbeddingUseCase::Classification,
+            Some("CLUSTERING") => EmbeddingUseCase::Clustering,
+            Some("QUESTION_ANSWERING") => EmbeddingUseCase::QuestionAnswering,
+            Some("FACT_VERIFICATION") => EmbeddingUseCase::FactVerification,
+            Some(other) if other.starts_with("CODE_") => EmbeddingUseCase::CodeRetrievalQuery, // Group code tasks
+            Some(other) => EmbeddingUseCase::Other(other.to_string()),
+            None => EmbeddingUseCase::General, // Default if no task type is specified
+        }
     }
 
     fn max_batch_size_hint(&self) -> Option<usize> {

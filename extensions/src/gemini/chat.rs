@@ -1,4 +1,6 @@
 
+use std::sync::Arc;
+
 use base64::Engine;
 use markhor_core::chat::ChatError;
 use markhor_core::chat::chat::{
@@ -484,7 +486,7 @@ const DEFAULT_GEMINI_CHAT_MODEL: &str = "gemini-2.0-flash-lite";
 
 #[derive(Debug, Clone)]
 pub struct GeminiChatClient {
-    shared_client: SharedGeminiClient,
+    shared_client: Arc<SharedGeminiClient>,
     default_model_id: String,
     // Add any chat-specific config here if needed later
 }
@@ -510,17 +512,17 @@ impl GeminiChatClient {
         client_override: Option<Client>,
     ) -> Result<Self, GeminiError> {
         let config = GeminiConfig::new(api_key)?; // Create base config
-        Self::from_config(config, default_model_id, client_override)
+        let shared_client = SharedGeminiClient::new(config, client_override)?;
+        Self::new_with_shared_client(Arc::new(shared_client), default_model_id)
     }
 
-    /// Creates a new Gemini Chat API client from a pre-built configuration.
-    #[instrument(name = "gemini_chat_client_from_config", skip(config, client_override))]
-    pub fn from_config(
-        config: GeminiConfig,
+    /// Creates a new Gemini Chat API client with a pre-built client configuration.
+    #[instrument(name = "gemini_chat_client_from_config", skip(shared_client))]
+    pub(crate) fn new_with_shared_client(
+        shared_client: Arc<SharedGeminiClient>,
         default_model_id: Option<String>,
-        client_override: Option<Client>,
     ) -> Result<Self, GeminiError> {
-        let shared_client = SharedGeminiClient::new(config, client_override)?;
+        
         let model_id = default_model_id.unwrap_or_else(|| DEFAULT_GEMINI_CHAT_MODEL.to_string());
         debug!(default_model_id = %model_id, "GeminiChatClient created.");
         Ok(Self {

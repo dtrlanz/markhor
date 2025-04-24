@@ -11,8 +11,7 @@ use markhor::cli::{Cli, Commands};
 use markhor::commands;
 use markhor_core::extension::Extension;
 use markhor_core::storage::{Storage, Workspace};
-use async_once_cell::OnceCell;
-use markhor_extensions::chat::gemini::GeminiClientExtension;
+use markhor_extensions::gemini::GeminiClientExtension;
 use markhor_extensions::ocr::mistral::client::MistralClient;
 use reqwest::Client;
 use tracing::{debug, error, info, Level};
@@ -24,17 +23,16 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // --- Tracing Initialization ---
+    
+    // Initialize tracing
     setup_tracing(cli.verbose, cli.quiet);
 
     // Log that tracing is set up (this will now be captured)
     tracing::debug!(args = ?cli, "Markhor CLI arguments parsed");
 
-    // TODO: Initialize configuration loading (env vars, config files) -> store in some AppContext struct?
-
     // --- Configuration Loading ---
 
     let mut extensions: Vec<Arc<dyn Extension>> = vec![];
-    let client = Client::new();
 
     // Process env vars
     dotenv::dotenv().ok();
@@ -43,7 +41,12 @@ async fn main() -> Result<()> {
     match std::env::var("GOOGLE_API_KEY") {
         Ok(key) => {
             info!("Google API key loaded from environment variables");
-            extensions.push(Arc::new(GeminiClientExtension::new(key, client)));
+            match GeminiClientExtension::new(key) {
+                Ok(ext) => extensions.push(Arc::new(ext)),
+                Err(e) => {
+                    error!("Failed to construct Gemini extension: {}", e);
+                }
+            }
         },
         Err(_) => {
             debug!("Google API key not found in environment variables");
@@ -61,8 +64,8 @@ async fn main() -> Result<()> {
         }
     };
 
-
     // --- Workspace Initialization ---
+
     let storage = Arc::new(Storage::new());
     let workspace = get_workspace(&storage, cli.workspace.clone()).await;
     // If the workspace is found, use current directory as default folder
@@ -82,6 +85,8 @@ async fn main() -> Result<()> {
         folder,
         extensions,
     };
+
+    // --- Command Dispatching ---
 
     // Match the command and call the appropriate handler function
     tracing::debug!(command = ?cli.command, "Dispatching command");
@@ -122,7 +127,8 @@ async fn main() -> Result<()> {
         }
     };
 
-    // --- Handle Command Result ---
+    // --- Command Result Handling ---
+
     if let Err(e) = command_result {
         // Log the detailed error using tracing
         // The {:?} format for anyhow::Error provides the context chain.
