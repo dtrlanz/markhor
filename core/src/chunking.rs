@@ -34,32 +34,6 @@ pub trait Chunker: Send + Sync {
     /// on their strategy (though overlap logic might be handled by the calling library
     /// during materialization if not done here).
     fn chunk(&self, source_text: &str) -> Result<Vec<ChunkData>, ChunkerError>;
-
-//     /// Get the text corresponding to the chunk.
-//     /// 
-//     /// The default implementation should be adequate for most use cases. However, the method 
-//     /// allows customization, for example in case some metadata should affect the chunk's 
-//     /// presentation.
-//     fn display_chunk(&self, source_text: &str, chunk: &Chunk) -> String {
-//         let mut result = String::new();
-
-//         // // Append heading text (if any) separated by " > "
-//         // if let Some(heading_path) = &chunk.heading_path {
-//         //     result = heading_path
-//         //         .iter()
-//         //         .map(|range| &source_text[range.clone()])
-//         //         .collect::<Vec<_>>()
-//         //         .join(" > ");
-//         //     result.push_str(":\n");
-//         // }
-
-//         // Append chunk text
-//         for range in &chunk.text_ranges {
-//             result.push_str(&source_text[range.clone()]);
-//         }
-//         result
-//     }
-
 }
 
 
@@ -106,6 +80,19 @@ impl ChunkData {
     }
 }
 
+/// Errors that can occur during the chunking process.
+#[derive(Debug, Error)]
+pub enum ChunkerError {
+    /// A general error occurred during chunk processing logic.
+    #[error("Chunker processing failed: {0}")]
+    Processing(String),
+
+    /// The configuration provided or inherent to the chunker is invalid.
+    #[error("Invalid chunker configuration: {0}")]
+    Configuration(String),
+    // Add other generic error types applicable across different chunkers if identified
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Represents a chunk of text materialized from `ChunkData`.
 pub struct Chunk<'a> {
@@ -139,15 +126,3 @@ impl<'a> Display for Chunk<'a> {
     }
 }
 
-/// Errors that can occur during the chunking process.
-#[derive(Debug, Error)]
-pub enum ChunkerError {
-    /// A general error occurred during chunk processing logic.
-    #[error("Chunker processing failed: {0}")]
-    Processing(String),
-
-    /// The configuration provided or inherent to the chunker is invalid.
-    #[error("Invalid chunker configuration: {0}")]
-    Configuration(String),
-    // Add other generic error types applicable across different chunkers if identified
-}
