@@ -7,6 +7,7 @@ use tokio::sync::MutexGuard;
 use uuid::Uuid;
 use std::borrow::Cow;
 use std::ffi::OsStr;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs::{self, OpenOptions};
@@ -251,6 +252,13 @@ impl Document {
         }
     }
 
+    pub async fn file(&self, file_name: &str) -> Result<ContentFile> {
+        // TODO: No need to iterate all files if we know the name
+        let files = self.list_content_files_internal(None).await?;
+        files.into_iter()
+            .find(|file| file.file_name() == file_name)
+            .ok_or_else(|| Error::FileNotFound(self.absolute_path.with_file_name(file_name)))
+    }
 
     /// Returns a list of all files associated with this document
     /// (excluding the `.markhor` file itself).
@@ -384,6 +392,20 @@ impl Document {
             }
         }
         Ok(paths)
+    }
+}
+
+impl PartialEq for Document {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for Document {}
+
+impl Hash for Document {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
     }
 }
 

@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
-use crate::{chat::{chat::ChatApi, ChatError}, convert::{ConversionError, Converter}, extension::{Extension, UseExtensionError}, storage::{Content, Document, Folder}};
+use crate::{chat::{chat::ChatApi, ChatError}, chunking::Chunker, convert::{ConversionError, Converter}, embedding::{Embedder, EmbeddingError}, extension::{Extension, UseExtensionError}, storage::{self, Content, Document, Folder}};
 use mime::Mime;
 use thiserror::Error;
 use tokio::{io::AsyncRead, sync::mpsc::{error::SendError, UnboundedReceiver, UnboundedSender}, task::JoinHandle};
 
+pub mod search;
 
 /// A unit of work that can be executed asynchronously.
 /// 
@@ -37,10 +38,15 @@ impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> 
         self
     }
 
-    /// Add a folder to the job's assets.
-    pub fn add_folder(&mut self, folder: Folder) -> &mut Self {
-        self.assets.folders.push(folder);
-        self
+    /// Add all documents in a folder to the job's assets.
+    pub async fn add_folder(&mut self, folder: Folder) -> Result<&mut Self, storage::Error> {
+        for doc in folder.list_documents().await? {
+            self.add_document(doc);
+        }
+        for folder in folder.list_folders().await? {
+            Box::pin(self.add_folder(folder)).await?;
+        }
+        Ok(self)
     }
 
     /// Add an extension to the job's assets.
@@ -88,7 +94,7 @@ impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> 
 /// A collection of assets that can be used by a job.
 pub struct Assets {
     documents: Vec<Document>,
-    folders: Vec<Folder>,
+    folders: Vec<Folder>,   // currently unused
     extensions: Vec<Arc<dyn Extension>>,
     receiver: Option<UnboundedReceiver<AssetItem>>,
 }
@@ -178,6 +184,28 @@ impl Assets {
         // TODO reconsider error variant
         Err(ChatError::Provider("No chat model found".into()))
     }
+
+    pub fn embedders(&self) -> Vec<Arc<dyn Embedder>> {
+        tracing::debug!("Getting embedders");
+        let mut embedders = Vec::new();
+        for ext in &self.extensions {
+            if let Some(embedder) = ext.embedding_model() {
+                embedders.push(embedder.clone());
+            }
+        }
+        embedders
+    }
+
+    pub fn chunkers(&self) -> Vec<Arc<dyn Chunker>> {
+        tracing::debug!("Getting chunkers");
+        let mut chunkers = Vec::new();
+        for ext in &self.extensions {
+            if let Some(chunker) = ext.chunker() {
+                chunkers.push(chunker.clone());
+            }
+        }
+        chunkers
+    }
 }
 
 
@@ -236,8 +264,11 @@ pub enum RunJobError {
     #[error("Job failed due to extension error: {0}")]
     Extension(#[from] UseExtensionError),
 
-    #[error("Job failed due to document error: {0}")]
+    #[error("Job failed due to chat error: {0}")]
     Chat(#[from] ChatError),
+
+    #[error("Job failed due to embedding error: {0}")]
+    Embedding(#[from] EmbeddingError),
 
     #[error("Job failed due to conversion error: {0}")]
     Conversion(#[from] ConversionError),

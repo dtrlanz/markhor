@@ -71,13 +71,15 @@ pub async fn handle_open(args: OpenArgs) -> Result<()> {
     Ok(())
 }
 
-pub async fn handle_search(args: SearchArgs) -> Result<()> {
+pub async fn handle_search(args: SearchArgs, markhor: Markhor) -> Result<()> {
     println!("Executing search command for query: '{}'", args.query);
     // TODO: Implement search logic using markhor-core
     // - Determine embedding model (args.model or default)
     // - Generate query embedding
     // - Perform similarity search against document embeddings in the workspace (considering scope)
     // - Retrieve and display top `args.limit` results
+
+    markhor.search(&args.query, args.limit).await?;
     Ok(())
 }
 

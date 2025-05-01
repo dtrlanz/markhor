@@ -1,11 +1,10 @@
 mod error;
 mod embedder;
-mod chunker;
 mod vector_store;
 
 pub use error::{EmbeddingError};
 pub use embedder::{Embedder, EmbeddingUseCase};
-pub use chunker::Chunker;
+pub use vector_store::{VectorStore, ChunkDataResult};
 
 use serde::{Deserialize, Serialize};
 

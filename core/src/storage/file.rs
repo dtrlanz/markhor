@@ -22,6 +22,11 @@ impl<'a> ContentFile<'a> {
         &self.file_path
     }
 
+    /// Returns the document to which this file belongs.
+    pub fn document(&self) -> &Document {
+        self.document
+    }
+
     /// Asynchronously reads the entire content of the file into a byte vector.
     pub async fn read_content(&self) -> Result<Vec<u8>> {
         tokio::fs::read(&self.file_path)

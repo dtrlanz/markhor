@@ -1,29 +1,35 @@
-use std::{collections::HashMap, ops::Range, path::PathBuf};
+use std::{collections::HashMap, ops::Range, path::PathBuf, sync::Arc};
 
-use tracing::error;
+use tracing::{debug, error, instrument};
 use uuid::Uuid;
 
-use crate::{extension::FunctionalityId, storage::Document};
+use crate::{chunking::{Chunk, ChunkData, Chunker}, extension::FunctionalityId, storage::Document};
 
-use super::{Chunker, Embedder, Embedding, EmbeddingError};
+use super::{Embedder, Embedding, EmbeddingError};
 
 const MINIMUM_SIMILARITY: f32 = 0.6;
 
 
-struct VectorStore {
-    embedder: Box<dyn Embedder>,
+pub struct VectorStore {
+    embedder: Arc<dyn Embedder>,
     documents: HashMap<Uuid, DocumentEmbeddings>,
 }
 
 impl VectorStore {
-    fn new(embedder: Box<dyn Embedder>) -> Self {
+    pub fn new(embedder: Arc<dyn Embedder>) -> Self {
         VectorStore {
             embedder,
             documents: HashMap::new(),
         }
     }
 
-    async fn add_documents<C: Chunker>(&mut self, doc: Document, chunker: C) -> Result<(), EmbeddingError> {
+    pub fn embedder(&self) -> &dyn Embedder {
+        &*self.embedder
+    }
+
+    #[instrument(skip(self, doc, chunker), fields(doc_path = %doc.path().display()))]
+    /// Adds a document to the vector store. If the document is already present, it will not be added again.
+    pub async fn add_document(&mut self, doc: Document, chunker: &(impl Chunker + ?Sized)) -> Result<(), EmbeddingError> {
         // Check if embeddings for this document are already cached
         if self.documents.contains_key(doc.id()) {
             return Ok(());
@@ -46,16 +52,21 @@ impl VectorStore {
                     // Generate chunks
                     // TODO: fix error handling
                     let text = file.read_string().await.map_err(|e| EmbeddingError::Provider(Box::new(e)))?;
-                    let chunk_ranges = chunker.chunk(&text)?;
-                    let chunk_texts = chunk_ranges.iter()
-                        .map(|range| chunker.get_chunk_text(&text, range.clone()))
+                    let chunk_data = chunker.chunk(&text).map_err(|e| EmbeddingError::Provider(Box::new(e)))?;
+                    let chunks = chunk_data.iter()
+                        .map(|chunk| chunk.to_chunk(&text))
                         .collect::<Vec<_>>();
-                    let chunk_texts_str = chunk_texts.iter().map(|s| s.as_ref()).collect::<Vec<_>>();
+
+                    // This is a rather inefficient way to get the `&[&str]` demanded by the `Embedder` trait.
+                    let chunk_texts = chunks.iter().map(|c| c.to_string()).collect::<Vec<_>>();
+                    let chunk_texts_str = chunk_texts.iter()
+                        .map(|c| &**c)
+                        .collect::<Vec<_>>();
 
                     // Generate embeddings
-                    let chunk_embeddings = self.embedder.embed(&chunk_texts_str).await?;
+                    let chunk_embeddings = self.embedder.embed(&*chunk_texts_str).await?;
                     let embeddings = chunk_embeddings.into_iter()
-                        .zip(chunk_ranges.into_iter())
+                        .zip(chunk_data.into_iter())
                         .collect::<Vec<_>>();
 
                     // Update metadata file
@@ -84,7 +95,8 @@ impl VectorStore {
         Ok(())
     }
 
-    async fn search(&self, embedding: Embedding, limit: usize) -> Result<HashMap<Uuid, HashMap<String, Vec<ChunkResult>>>, EmbeddingError> {
+    #[instrument(skip(self, embedding))]
+    pub async fn search(&self, embedding: &Embedding, limit: usize) -> Result<HashMap<Uuid, HashMap<String, Vec<ChunkDataResult>>>, EmbeddingError> {
         let mut count: usize = 0;
 
         // Collect all embeddings above the minimum similarity threshold
@@ -102,11 +114,15 @@ impl VectorStore {
             }
         }
 
+        debug!("Found {} results (total embeddings: {})", results.len(), count);
+
         // Sort by similarity
         results.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap());
 
         // Truncate
-        results.shrink_to(limit);
+        results.truncate(limit);
+
+        debug!("Truncated results to {} items (limit: {})", results.len(), limit);
 
         // Assign ranks
         for (idx, result) in results.iter_mut().enumerate()  {
@@ -123,11 +139,11 @@ impl VectorStore {
         let mut grouped_by_doc_and_file = HashMap::new();
         for (doc_id, chunks) in grouped_by_doc {
             let mut grouped_by_file = HashMap::new();
-            for (file_name, range, similarity, rank) in chunks {
+            for (file_name, chunk, similarity, rank) in chunks {
                 let percentile = u32::try_from((rank + 1) * 100 / count).unwrap();
                 grouped_by_file.entry(file_name.to_string()).or_insert_with(Vec::new).push(
-                    ChunkResult {
-                        range: range.clone(),
+                    ChunkDataResult {
+                        chunk: chunk.clone(),
                         similarity,
                         rank,
                         percentile,
@@ -145,7 +161,7 @@ impl VectorStore {
 #[derive(Debug, Clone)]
 struct DocumentEmbeddings {
     file_names: Vec<String>,
-    chunks: Vec<(usize, Range<usize>)>, // Tuple fields: (file_name_idx, chunk_range)
+    chunks: Vec<(usize, ChunkData)>, // Tuple fields: (file_name_idx, chunk_range)
     embeddings: Vec<Embedding>,         // Elements correspond to those in `chunks`
 }
 
@@ -159,9 +175,10 @@ impl DocumentEmbeddings {
     }
 }
 
-struct ChunkResult {
-    range: Range<usize>,
-    similarity: f32,
-    rank: usize,
-    percentile: u32,
+#[derive(Debug, Clone)]
+pub struct ChunkDataResult {
+    pub chunk: ChunkData,
+    pub similarity: f32,
+    pub rank: usize,
+    pub percentile: u32,
 }

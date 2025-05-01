@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 //pub use extension_set::ExtensionSet;
 use thiserror::Error;
 
-use crate::{chat::{chat::ChatApi, ChatModel}, convert::Converter, embedding::{Chunker, Embedder}};
+use crate::{chat::chat::ChatApi, chunking::Chunker, convert::Converter, embedding::Embedder};
 
 pub trait Extension: Send + Sync {
     fn uri(&self) -> &str;
@@ -75,5 +75,27 @@ impl<T: Functionality + ?Sized> From<&T> for FunctionalityId {
             uri: f.extension_uri().to_string(),
             id: f.id().to_string(),
         }
+    }
+}
+
+impl Into<String> for FunctionalityId {
+    fn into(self) -> String {
+        // Space is an acceptable separator because it is not valid in URIs
+        format!("{} {}", self.uri, self.id)
+    }
+}
+
+impl TryFrom<String> for FunctionalityId {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let parts: Vec<&str> = value.split(' ').collect();
+        if parts.len() != 2 {
+            return Err(value);
+        }
+        Ok(FunctionalityId {
+            uri: parts[0].to_string(),
+            id: parts[1].to_string(),
+        })
     }
 }

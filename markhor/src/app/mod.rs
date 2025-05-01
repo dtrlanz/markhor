@@ -1,8 +1,7 @@
-use std::{any, path::{Path, PathBuf}, pin::Pin, sync::Arc};
+use std::{collections::HashMap, path::{Path, PathBuf}, sync::Arc};
 
-use async_once_cell::Lazy;
-use markhor_core::{extension::Extension, job::{Job, RunJobError}, storage::{Content, Document, Folder, Storage, Workspace}};
-use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
+use markhor_core::{chunking::Chunk, embedding::{ChunkDataResult, VectorStore}, extension::{Extension, UseExtensionError}, job::{self, Assets, Job, RunJobError}, storage::{self, Content, ContentFile, Document, Folder, Storage, Workspace}};
+use tokio::io::{AsyncRead, BufReader};
 use tracing::error;
 
 mod chat;
@@ -61,6 +60,36 @@ impl Markhor {
         }
 
         Ok(doc)
+    }
+
+    pub async fn search(&self, query: &str, limit: usize) -> Result<(), anyhow::Error> {
+        let mut job = job::search::search_job(query, limit);
+
+        for ext in &self.extensions {
+            job.add_extension(ext.clone());
+        }
+
+        // Add all documents in the workspace to the job
+        let ws = self.workspace.as_ref()
+            .map_err(|e| anyhow::anyhow!("Error getting workspace: {}", e))?;
+
+        job.add_folder(ws.root().await).await?;
+
+        // Run search
+        let result = job.run().await?;
+
+        // Print results
+        for doc in result.documents() {
+            println!("Document: {}", doc.document().path().display());
+            for file in doc.files() {
+                println!("  File: {}", file.file_name());
+                for chunk in file.chunks().await? {
+                    println!("    Chunk #{} (similarity {})", chunk.rank(), chunk.similarity());
+                    println!("      Text: {}", chunk.chunk().text());
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn use_extension(&mut self, extension: Arc<dyn Extension>) -> &mut Self {

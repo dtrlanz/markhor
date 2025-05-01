@@ -1,4 +1,4 @@
-use crate::{embedding::{Embedder, Embedding}, extension::{Functionality, FunctionalityId}};
+use crate::{chunking::ChunkData, embedding::{Embedder, Embedding}, extension::{Functionality, FunctionalityId}};
 
 use std::{collections::{hash_map::Entry, HashMap}, ops::Range};
 
@@ -38,17 +38,18 @@ impl DocumentMetadata {
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ChunkIdx(usize);
+// #[derive(Debug, Clone, Serialize, Deserialize)]
+// struct ChunkIdx(usize);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FileMetadata {
-    extension_data: HashMap<FunctionalityId, ExtensionData>,
+    extension_data: HashMap<String, ExtensionData>,
 }
 
 impl FileMetadata {
-    pub fn embeddings(&self, embedder: &(impl Embedder + ?Sized)) -> Option<&Vec<(Embedding, Range<usize>)>> {
-        let data = self.extension_data.get(&embedder.into());
+    pub fn embeddings(&self, embedder: &(impl Embedder + ?Sized)) -> Option<&Vec<(Embedding, ChunkData)>> {
+        let key: String = FunctionalityId::from(embedder).into();
+        let data = self.extension_data.get(&key);
         match data {
             Some(ExtensionData::Embeddings(embeddings)) => Some(embeddings),
             None => None,
@@ -59,8 +60,9 @@ impl FileMetadata {
         }
     }
 
-    pub fn embeddings_mut(&mut self, embedder: &(impl Embedder + ?Sized)) -> &mut Vec<(Embedding, Range<usize>)> {
-        let data = self.extension_data.entry(embedder.into())
+    pub fn embeddings_mut(&mut self, embedder: &(impl Embedder + ?Sized)) -> &mut Vec<(Embedding, ChunkData)> {
+        let key: String = FunctionalityId::from(embedder).into();
+        let data = self.extension_data.entry(key)
             .and_modify(|data| match data {
                 ExtensionData::Embeddings(_) => {},
                 _ => {

@@ -11,6 +11,7 @@ use markhor::cli::{Cli, Commands};
 use markhor::commands;
 use markhor_core::extension::Extension;
 use markhor_core::storage::{Storage, Workspace};
+use markhor_extensions::chunking::Chunkers;
 use markhor_extensions::gemini::GeminiClientExtension;
 use markhor_extensions::ocr::mistral::client::MistralClient;
 use reqwest::Client;
@@ -33,6 +34,8 @@ async fn main() -> Result<()> {
     // --- Configuration Loading ---
 
     let mut extensions: Vec<Arc<dyn Extension>> = vec![];
+
+    extensions.push(Arc::new(Chunkers));
 
     // Process env vars
     dotenv::dotenv().ok();
@@ -109,7 +112,7 @@ async fn main() -> Result<()> {
         }
         Commands::Search(args) => {
             println!("Searching with args: {:?}", args);
-            commands::handle_search(args).await
+            commands::handle_search(args, app).await
         }
         Commands::Install(args) => {
             println!("Installing plugin with args: {:?}", args);

@@ -74,17 +74,7 @@ impl GeminiEmbedder {
         // Map task_type string to EmbeddingUseCase enum
         let use_case = map_task_type_to_use_case(task_type.as_deref());
 
-        // Determine dimensions based on known models
-        let dimensions = match model_name.as_str() {
-            "embedding-001" => Some(768),
-            // Add other known Gemini models here
-            _ => {
-                warn!(model = %model_name, "Unknown Gemini embedding model, dimensions not set.");
-                None
-            }
-        };
-
-        debug!(model=%model_name, task_type=?task_type, use_case=?use_case, dimensions=?dimensions, "GeminiEmbedder created.");
+        debug!(model=%model_name, task_type=?task_type, use_case=?use_case, "GeminiEmbedder created.");
 
         Ok(Self {
             shared_client,
@@ -252,7 +242,7 @@ impl Embedder for GeminiEmbedder {
     fn dimensions(&self) -> Option<usize> {
         match self.model_name() {
             "embedding-001" => Some(768),
-            // Add other known Gemini models here
+            "embedding-004" => Some(768),
             _ => {
                 warn!(model = %self.model_name(), "Unknown Gemini embedding model, dimensions not set.");
                 None
@@ -284,14 +274,22 @@ impl Embedder for GeminiEmbedder {
     }
 
     fn max_chunk_length_hint(&self) -> Option<usize> {
-        Some(CHAR_LENGTH_HINT)
+        match self.model_name() {
+            // 2048 token limit.
+            // Use a conservative characters estimate (e.g., 4 chars/token -> 8192)
+            // Round down slightly.
+            "embedding-001" => Some(8000),
+            "embedding-004" => Some(8000),
+            // 8192 token limit.
+            "gemini-embedding-exp-03-07" => Some(32000),
+            _ => {
+                warn!(model = %self.model_name(), "Unknown Gemini embedding model, max chunk length hint not set.");
+                None
+            }
+        }
     }
 }
 
-// Gemini embedding-001 has a 2048 token limit.
-// Use a conservative characters estimate (e.g., 4 chars/token -> 8192)
-// Round down slightly.
-const CHAR_LENGTH_HINT: usize = 8000;
 
 // --- Gemini API Request Structures ---
 
