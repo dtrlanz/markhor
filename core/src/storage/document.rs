@@ -104,7 +104,7 @@ impl Document {
 
     /// Reads and deserializes the document's metadata from its `.markhor` file.
     #[instrument(skip(self))]
-    pub(crate) async fn read_metadata(&self) -> Result<DocumentMetadata> {
+    pub async fn read_metadata(&self) -> Result<DocumentMetadata> {
         let _lock = self.lock_metadata_file().await;
         Self::read_metadata_internal(&self.absolute_path).await
     }

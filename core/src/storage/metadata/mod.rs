@@ -11,15 +11,16 @@ use uuid::Uuid;
 mod extension_data;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct DocumentMetadata {
+pub struct DocumentMetadata {
     markhor_version: String,
     pub(crate) id: Uuid,
     
     files: HashMap<String, FileMetadata>,
-    
 }
 
 impl DocumentMetadata {
+    /// Creates a new `DocumentMetadata` instance with a unique ID and the current version of 
+    /// Markhor.
     pub fn new() -> Self {
         DocumentMetadata { 
             markhor_version: crate_version!().to_string(),
@@ -28,12 +29,23 @@ impl DocumentMetadata {
         }
     }
 
+    pub fn markhor_version(&self) -> &str {
+        &self.markhor_version
+    }
+
+    /// Returns the metadata for the file with the given filename, or None if it doesn't exist.
     pub fn file(&self, filename: &str) -> Option<&FileMetadata> {
         self.files.get(filename)
     }
 
+    /// Returns the metadata for the file with the given filename, creating it if it doesn't exist.
     pub fn file_mut(&mut self, filename: &str) -> &mut FileMetadata {
         self.files.entry(filename.to_string()).or_default()
+    }
+
+    /// Returns the names of files for which metadata is available.
+    pub fn files_with_metadata(&self) -> impl Iterator<Item = &str> {
+        self.files.keys().map(|s| s.as_str())
     }
 }
 

@@ -8,6 +8,7 @@ use crate::{app::Markhor, cli::{
 use anyhow::Result;
 use markhor_core::storage::Workspace;
 use tracing::{error, info};
+use uuid::Uuid;
 
 // --- Handler Functions ---
 
@@ -49,12 +50,75 @@ pub async fn handle_chat(args: ChatArgs, markhor: Markhor) -> Result<()> {
     Ok(())
 }
 
-pub async fn handle_show(args: ShowArgs) -> Result<()> {
-    if let Some(doc_id) = args.document_id {
-        println!("Executing show command for document: {}", doc_id);
-        // TODO: Implement logic to show specific document details
-        // - Call core library to retrieve document by ID/path
-        // - Display requested info (metadata, embeddings, etc.) based on flags
+pub async fn handle_show(args: ShowArgs, markhor: Markhor) -> Result<()> {
+    if let Some(doc_arg) = args.document {
+        let doc = match Uuid::try_parse(&doc_arg) {
+            Ok(uuid) => {
+                println!("Executing show command for document ID: {}", uuid);
+                anyhow::bail!("ID-based document retrieval not implemented yet.");
+            }
+            Err(_) => {
+                println!("Executing show command for document: {}", doc_arg);
+                markhor.workspace?.document(&*PathBuf::from(doc_arg)).await?
+            }
+        };
+        
+        let metadata = doc.read_metadata().await?;
+        println!("  Document Path: {:?}", doc.path().display());
+        println!("  Document ID: {:?}", doc.id());
+
+        let files = metadata.files_with_metadata().collect::<Vec<_>>();
+
+        if args.metadata {
+            println!();
+            println!("  Document metadata version: {:?}", metadata.markhor_version());
+            println!("  Files with metadata: {}", files.join(", "));
+        }
+
+        if args.embeddings {
+            let embedders = markhor.extensions.iter()
+                .filter_map(|ext| ext.embedding_model())
+                .collect::<Vec<_>>();
+
+            for embedder in embedders {
+                println!();
+                println!("  Embedding model: {}", embedder.model_name());
+                for &file in files.iter() {
+                    if let Some(file_embeddings) = metadata.file(file)
+                        .and_then(|md| md.embeddings(&*embedder)) 
+                    {
+                        println!();
+                        println!("  File: {}", file);
+                        println!("    No. |     Range    | Bytes | Tokens | Heading");
+                        println!("    ----|--------------|-------|--------|-------------------------------------------------------------------");
+                        
+
+                        for (idx, (_, chunk_data)) in file_embeddings.iter().enumerate() {
+                            print!("   {:4} | {:5?} | {:5} | ", idx, chunk_data.text_range, chunk_data.text_range.len());
+                            if let Some(token_count) = chunk_data.token_count {
+                                print!("{:6} | ", token_count);
+                            } else {
+                                print!("  --   | ");
+                            }
+                            if let Some(heading_path) = chunk_data.heading_path.as_ref() {
+                                const HEADING_LENGTH_CUTOFF: usize = 70;
+                                if heading_path.len() <= HEADING_LENGTH_CUTOFF {
+                                    print!("{}", heading_path);
+                                } else {
+                                    let mut i = heading_path.len() - HEADING_LENGTH_CUTOFF;
+                                    while !heading_path.is_char_boundary(i) {
+                                        i -= 1;
+                                    }
+                                    print!("...{}.", &heading_path[i..]);
+                                }
+                            }
+                            println!();
+                        }
+                    }
+                }
+            }
+        }
+        
     } else {
         println!("Executing show command for workspace info.");
         // TODO: Implement logic to show workspace overview

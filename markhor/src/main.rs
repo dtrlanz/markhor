@@ -104,7 +104,7 @@ async fn main() -> Result<()> {
         }
         Commands::Show(args) => {
             println!("Showing info with args: {:?}", args);
-            commands::handle_show(args).await
+            commands::handle_show(args, app).await
         }
         Commands::Open(args) => {
             println!("Opening document with args: {:?}", args);

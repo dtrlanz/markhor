@@ -90,8 +90,8 @@ pub struct ChatArgs {
 
 #[derive(Args, Debug)]
 pub struct ShowArgs {
-    /// ID or path of the document to show details for. If omitted, shows workspace info.
-    pub document_id: Option<String>,
+    /// Path of the document to show details for. If omitted, shows workspace info.
+    pub document: Option<String>,
 
     /// Show document metadata.
     #[arg(long, short)]
