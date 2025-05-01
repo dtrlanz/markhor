@@ -65,7 +65,7 @@ impl Extension for GeminiClientExtension {
     fn embedding_model(&self) -> Option<std::sync::Arc<dyn Embedder>> {
         let embedder = GeminiEmbedder::new_with_shared_client(
             self.shared_client.clone(), 
-            "embedding-001".into(),
+            "text-embedding-004".into(),
             None,
         ).ok()?;
         let arc: Arc<dyn Embedder> = Arc::new(embedder);
