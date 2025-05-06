@@ -1,3 +1,6 @@
+mod active_extension;
+
+pub use active_extension::{ActiveExtension, ExtensionConfig};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

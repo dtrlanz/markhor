@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{chat::{chat::ChatApi, ChatError}, chunking::Chunker, convert::{ConversionError, Converter}, embedding::{Embedder, EmbeddingError}, extension::{Extension, UseExtensionError}, storage::{self, Content, Document, Folder}};
+use crate::{chat::{chat::ChatApi, ChatError}, chunking::Chunker, convert::{ConversionError, Converter}, embedding::{Embedder, EmbeddingError}, extension::{ActiveExtension, Extension, UseExtensionError}, storage::{self, Content, Document, Folder}};
 use mime::Mime;
 use thiserror::Error;
 use tokio::{io::AsyncRead, sync::mpsc::{error::SendError, UnboundedReceiver, UnboundedSender}, task::JoinHandle};
@@ -50,8 +50,8 @@ impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> 
     }
 
     /// Add an extension to the job's assets.
-    pub fn add_extension(&mut self, extension: Arc<dyn Extension>) -> &mut Self {
-        self.assets.extensions.push(extension);
+    pub fn add_extension(&mut self, extension: &ActiveExtension) -> &mut Self {
+        self.assets.extensions.push(extension.extension().clone());
         self
     }
 

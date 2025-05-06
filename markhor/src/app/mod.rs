@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::{Path, PathBuf}, sync::Arc};
 
-use markhor_core::{chunking::Chunk, embedding::{ChunkDataResult, VectorStore}, extension::{Extension, UseExtensionError}, job::{self, Assets, Job, RunJobError}, storage::{self, Content, ContentFile, Document, Folder, Storage, Workspace}};
+use markhor_core::{chunking::Chunk, embedding::{ChunkDataResult, VectorStore}, extension::{ActiveExtension, Extension, UseExtensionError}, job::{self, Assets, Job, RunJobError}, storage::{self, Content, ContentFile, Document, Folder, Storage, Workspace}};
 use tokio::io::{AsyncRead, BufReader};
 use tracing::error;
 
@@ -11,7 +11,7 @@ pub struct Markhor {
     pub storage: Arc<Storage>,
     pub workspace: anyhow::Result<Arc<Workspace>>,
     pub folder: Option<Folder>,
-    pub extensions: Vec<Arc<dyn Extension>>,
+    pub extensions: Vec<ActiveExtension>,
 }
 
 impl Markhor {
@@ -44,7 +44,7 @@ impl Markhor {
             Ok(output)
         });
         for ext in &self.extensions {
-            job.add_extension(ext.clone());
+            job.add_extension(ext);
         }
 
         let result = job.run().await;
@@ -66,7 +66,7 @@ impl Markhor {
         let mut job = job::search::search_job(query, limit);
 
         for ext in &self.extensions {
-            job.add_extension(ext.clone());
+            job.add_extension(ext);
         }
 
         // Add all documents in the workspace to the job
@@ -92,8 +92,8 @@ impl Markhor {
         Ok(())
     }
 
-    pub fn use_extension(&mut self, extension: Arc<dyn Extension>) -> &mut Self {
-        self.extensions.push(extension);
+    pub fn use_extension(&mut self, extension: impl Extension + 'static) -> &mut Self {
+        self.extensions.push(ActiveExtension::new(extension, Default::default()));
         self
     }
 
@@ -101,7 +101,7 @@ impl Markhor {
         let mut job  = Job::new(&chat);
 
         for ext in &self.extensions {
-            job.add_extension(ext.clone());
+            job.add_extension(ext);
         }
 
         let ws = match &self.workspace {

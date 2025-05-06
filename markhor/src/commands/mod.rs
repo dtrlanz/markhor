@@ -77,7 +77,7 @@ pub async fn handle_show(args: ShowArgs, markhor: Markhor) -> Result<()> {
 
         if args.embeddings {
             let embedders = markhor.extensions.iter()
-                .filter_map(|ext| ext.embedding_model())
+                .filter_map(|ext| ext.extension().embedding_model())
                 .collect::<Vec<_>>();
 
             for embedder in embedders {
