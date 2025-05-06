@@ -632,7 +632,7 @@ impl Extension for MistralClient {
         DESCRIPTION
     }
 
-    fn converter(&self) -> Option<std::sync::Arc<dyn Converter>> {
-        Some(Arc::new(MistralOcr(Arc::clone(&self.inner))))
+    fn converter(&self) -> Option<Box<dyn Converter>> {
+        Some(Box::new(MistralOcr(Arc::clone(&self.inner))))
     }
 }

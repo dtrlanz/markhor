@@ -11,12 +11,12 @@ const MINIMUM_SIMILARITY: f32 = 0.6;
 
 
 pub struct VectorStore {
-    embedder: Arc<dyn Embedder>,
+    embedder: Box<dyn Embedder>,
     documents: HashMap<Uuid, DocumentEmbeddings>,
 }
 
 impl VectorStore {
-    pub fn new(embedder: Arc<dyn Embedder>) -> Self {
+    pub fn new(embedder: Box<dyn Embedder>) -> Self {
         VectorStore {
             embedder,
             documents: HashMap::new(),

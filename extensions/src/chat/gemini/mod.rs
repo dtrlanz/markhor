@@ -758,9 +758,9 @@ impl Extension for GeminiClientExtension {
         "Provides a chat client for the Gemini API."
     }
 
-    fn chat_model(&self) -> Option<std::sync::Arc<dyn ChatApi>> {
+    fn chat_model(&self) -> Option<Box<dyn ChatApi>> {
         let client = GeminiClient::new(self.api_key.clone(), self.http_client.clone());
-        Some(std::sync::Arc::new(client))
+        Some(Box::new(client))
     }
 }
 

@@ -95,15 +95,11 @@ impl ChatApi for ShakespeareChatModel {
 }
 
 
-struct ShakespeareChatExtension {
-    model: Arc<ShakespeareChatModel>,
-}
+struct ShakespeareChatExtension;
 
 impl ShakespeareChatExtension {
     fn new() -> Self {
-        Self { 
-            model: Arc::new(ShakespeareChatModel::new())
-        }
+        Self
     }
 }
 
@@ -117,8 +113,8 @@ impl Extension for ShakespeareChatExtension {
     fn description(&self) -> &str {
         "Chat with Shakespeare"
     }
-    fn chat_model(&self) -> Option<Arc<dyn ChatApi>> {
-        Some(self.model.clone())
+    fn chat_model(&self) -> Option<Box<dyn ChatApi>> {
+        Some(Box::new(ShakespeareChatModel::new()))
     }
 }
 

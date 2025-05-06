@@ -138,7 +138,7 @@ impl Assets {
         let converters = self.extensions.iter()
             .filter_map(|ext| 
                 if let Some(converter) = ext.converter() {
-                    Some(converter.clone())
+                    Some(converter)
                 } else {
                     None
                 }
@@ -159,7 +159,7 @@ impl Assets {
         Err(ConversionError::UnsupportedMimeType(output_type))
     }
 
-    pub async fn chat_model(&self, model: Option<String>) -> Result<Arc<dyn ChatApi>, ChatError> {
+    pub async fn chat_model(&self, model: Option<String>) -> Result<Box<dyn ChatApi>, ChatError> {
         tracing::debug!("Getting chat model");
         // Iterate through extensions and find the specified model
         for ext in &self.extensions {
@@ -172,12 +172,12 @@ impl Assets {
                     for model in chat_client.list_models().await.map_err(|e| ChatError::Provider(Box::new(e)))? {
                         if *model.id == *requested_model {
                             tracing::debug!("Found model {}", requested_model);
-                            return Ok(chat_client.clone());
+                            return Ok(chat_client);
                         }
                     }
                 } else {
                     tracing::debug!("No model specified, returning default model");
-                    return Ok(chat_client.clone());
+                    return Ok(chat_client);
                 }
             }
         }
@@ -185,23 +185,23 @@ impl Assets {
         Err(ChatError::Provider("No chat model found".into()))
     }
 
-    pub fn embedders(&self) -> Vec<Arc<dyn Embedder>> {
+    pub fn embedders(&self) -> Vec<Box<dyn Embedder>> {
         tracing::debug!("Getting embedders");
         let mut embedders = Vec::new();
         for ext in &self.extensions {
             if let Some(embedder) = ext.embedding_model() {
-                embedders.push(embedder.clone());
+                embedders.push(embedder);
             }
         }
         embedders
     }
 
-    pub fn chunkers(&self) -> Vec<Arc<dyn Chunker>> {
+    pub fn chunkers(&self) -> Vec<Box<dyn Chunker>> {
         tracing::debug!("Getting chunkers");
         let mut chunkers = Vec::new();
         for ext in &self.extensions {
             if let Some(chunker) = ext.chunker() {
-                chunkers.push(chunker.clone());
+                chunkers.push(chunker);
             }
         }
         chunkers

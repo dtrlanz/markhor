@@ -53,23 +53,21 @@ impl Extension for GeminiClientExtension {
         "Provides a chat client for the Gemini API."
     }
 
-    fn chat_model(&self) -> Option<Arc<dyn ChatApi>> {
+    fn chat_model(&self) -> Option<Box<dyn ChatApi>> {
         let chat = GeminiChatClient::new_with_shared_client(
             self.shared_client.clone(), 
             None
         ).ok()?;
-        let arc: Arc<dyn ChatApi> = Arc::new(chat);
-        Some(arc)
+        Some(Box::new(chat))
     }
 
-    fn embedding_model(&self) -> Option<std::sync::Arc<dyn Embedder>> {
+    fn embedding_model(&self) -> Option<Box<dyn Embedder>> {
         let embedder = GeminiEmbedder::new_with_shared_client(
             self.shared_client.clone(), 
             "text-embedding-004".into(),
             None,
         ).ok()?;
-        let arc: Arc<dyn Embedder> = Arc::new(embedder);
-        Some(arc)
+        Some(Box::new(embedder))
     }
 }
 

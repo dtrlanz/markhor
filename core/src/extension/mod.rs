@@ -1,9 +1,5 @@
-//mod extension_set;
-
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-//pub use extension_set::ExtensionSet;
 use thiserror::Error;
 
 use crate::{chat::chat::ChatApi, chunking::Chunker, convert::Converter, embedding::Embedder};
@@ -13,11 +9,11 @@ pub trait Extension: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
 
-    fn chat_model(&self) -> Option<Arc<dyn ChatApi>> { None }
-    fn embedding_model(&self) -> Option<Arc<dyn Embedder>> { None }
-    fn chunker(&self) -> Option<Arc<dyn Chunker>> { None }
-    fn converter(&self) -> Option<Arc<dyn Converter>> { None }
-    fn tools(&self) -> Vec<Arc<dyn crate::tool::Tool>> { vec![] }
+    fn chat_model(&self) -> Option<Box<dyn ChatApi>> { None }
+    fn embedding_model(&self) -> Option<Box<dyn Embedder>> { None }
+    fn chunker(&self) -> Option<Box<dyn Chunker>> { None }
+    fn converter(&self) -> Option<Box<dyn Converter>> { None }
+    fn tools(&self) -> Vec<Box<dyn crate::tool::Tool>> { vec![] }
 }
 
 #[derive(Debug, Error)]
