@@ -77,7 +77,7 @@ pub async fn handle_show(args: ShowArgs, markhor: Markhor) -> Result<()> {
 
         if args.embeddings {
             let embedders = markhor.extensions.iter()
-                .filter_map(|ext| ext.extension().embedding_model())
+                .flat_map(|ext| ext.embedders())
                 .collect::<Vec<_>>();
 
             for embedder in embedders {
@@ -85,7 +85,7 @@ pub async fn handle_show(args: ShowArgs, markhor: Markhor) -> Result<()> {
                 println!("  Embedding model: {}", embedder.model_name());
                 for &file in files.iter() {
                     if let Some(file_embeddings) = metadata.file(file)
-                        .and_then(|md| md.embeddings(&*embedder)) 
+                        .and_then(|md| md.embeddings(&embedder)) 
                     {
                         println!();
                         println!("  File: {}", file);

@@ -1,5 +1,7 @@
 mod active_extension;
 
+use std::{fmt::Display, ops::Deref};
+
 pub use active_extension::{ActiveExtension, ExtensionConfig};
 
 use serde::{Deserialize, Serialize};
@@ -37,64 +39,52 @@ pub enum UseExtensionError {
     ToolNotAvailable,
 }
 
-/// Trait for identifying extension functionalities
-/// 
-/// An extension might have any number of functionalities. For example, a chat model extension
-/// might offer several different models; an SDK wrapper might implement different kinds of 
-/// functionalities (chat, embedding, conversion).
-/// 
-/// This trait helps identify and distinguish the various functinalities offered by extensions.
-/// 
-/// The combination of `extension_uri` and `id` must be unique.
-pub trait Functionality {
-    /// The unique URI of the extension that this functionality belongs to.
-    fn extension_uri(&self) -> &str;
+pub struct F11y<T: ?Sized> {
+    trait_object: Box<T>,
+    functionality_type: FunctionalityType,
+    extension: ActiveExtension,
+}
 
-    /// Identifier that is unique among the extension's functionalities.
-    fn id(&self) -> &str;
+impl<T: ?Sized> F11y<T> {
+    pub fn extension(&self) -> &ActiveExtension {
+        &self.extension
+    }
 
-    /// A name that might help the user identify this functionality (e.g., name of chat model).
-    /// 
-    /// The default implementation returns `self.id()`.
-    fn name(&self) -> &str {
-        self.id()
+    pub fn functionality_type(&self) -> FunctionalityType {
+        self.functionality_type
+    }
+
+    pub fn metadata_id(&self) -> String {
+        let suffix = match self.functionality_type {
+            _ => "",
+        };
+        format!("{} {}{}", self.extension.uri(), self.functionality_type, suffix)
     }
 }
 
+impl<T: ?Sized> Deref for F11y<T> {
+    type Target = T;
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct FunctionalityId {
-    uri: String,
-    id: String,
-}
-
-impl<T: Functionality + ?Sized> From<&T> for FunctionalityId {
-    fn from(f: &T) -> Self {
-        FunctionalityId {
-            uri: f.extension_uri().to_string(),
-            id: f.id().to_string(),
-        }
+    fn deref(&self) -> &Self::Target {
+        &*self.trait_object
     }
 }
 
-impl Into<String> for FunctionalityId {
-    fn into(self) -> String {
-        // Space is an acceptable separator because it is not valid in URIs
-        format!("{} {}", self.uri, self.id)
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum FunctionalityType {
+    ChatProvider,
+    Embedder,
+    Chunker,
+    Converter,
+    Tool,
+}
+
+impl Display for FunctionalityType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        serde_json::to_string(self)
+            .map_err(|_| std::fmt::Error)?
+            .fmt(f)
     }
 }
 
-impl TryFrom<String> for FunctionalityId {
-    type Error = String;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        let parts: Vec<&str> = value.split(' ').collect();
-        if parts.len() != 2 {
-            return Err(value);
-        }
-        Ok(FunctionalityId {
-            uri: parts[0].to_string(),
-            id: parts[1].to_string(),
-        })
-    }
-}

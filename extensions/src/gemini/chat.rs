@@ -9,7 +9,7 @@ use markhor_core::chat::chat::{
     UsageInfo,
 };
 use async_trait::async_trait;
-use markhor_core::extension::{Extension, Functionality};
+use markhor_core::extension::Extension;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -659,14 +659,6 @@ impl GeminiChatClient {
 
         (tools, tool_config)
     }
-}
-
-impl Functionality for GeminiChatClient {
-    fn extension_uri(&self) -> &str {
-        EXTENSION_URI
-    }
-    fn id(&self) -> &str { "gemini-chat-client" }
-    //fn description(&self) -> &str { "Client for Google Gemini Chat API (generativelanguage.googleapis.com)"}
 }
 
 #[async_trait]

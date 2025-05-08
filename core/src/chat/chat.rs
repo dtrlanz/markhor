@@ -4,8 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::pin::Pin;
 
-use crate::extension::Functionality;
-
 use super::ChatError;
 
 
@@ -254,7 +252,7 @@ pub type ChatStream = Pin<Box<dyn Stream<Item = Result<StreamChunk, ChatError>> 
 
 
 #[async_trait]
-pub trait ChatApi: Functionality + Send + Sync {
+pub trait ChatApi: Send + Sync {
     /// Returns a list of models available through this API provider.
     async fn list_models(&self) -> Result<Vec<ModelInfo>, ChatError>;
 

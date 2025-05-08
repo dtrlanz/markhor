@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use markhor_core::convert::{ConversionError, Converter};
-use markhor_core::extension::{Extension, Functionality};
+use markhor_core::extension::Extension;
 use mime::Mime;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::multipart::{Form, Part};

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use markhor_core::{embedding::{Embedder, Embedding, EmbeddingError, EmbeddingUseCase}, extension::Functionality};
+use markhor_core::embedding::{Embedder, Embedding, EmbeddingError, EmbeddingUseCase};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, instrument, trace, warn};
@@ -89,15 +89,6 @@ impl GeminiEmbedder {
         self.shared_client.build_url(&path_segment) // No extra query besides API key
     }    
 }
-
-impl Functionality for GeminiEmbedder {
-    fn extension_uri(&self) -> &str {
-        EXTENSION_URI
-    }
-    fn id(&self) -> &str { "gemini-embedder" }
-    //fn description(&self) -> &str { "Client for Google Gemini Embedding API (generativelanguage.googleapis.com)" }
-}
-
 
 /// Helper function to map Gemini task type strings to the EmbeddingUseCase enum.
 pub fn map_task_type_to_use_case(task_type: Option<&str>) -> EmbeddingUseCase {

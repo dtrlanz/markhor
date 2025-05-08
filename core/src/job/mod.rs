@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{chat::{chat::ChatApi, ChatError}, chunking::Chunker, convert::{ConversionError, Converter}, embedding::{Embedder, EmbeddingError}, extension::{ActiveExtension, Extension, UseExtensionError}, storage::{self, Content, Document, Folder}};
+use crate::{chat::{chat::ChatApi, ChatError}, chunking::Chunker, convert::{ConversionError, Converter}, embedding::{Embedder, EmbeddingError}, extension::{ActiveExtension, Extension, F11y, UseExtensionError}, storage::{self, Content, Document, Folder}};
 use mime::Mime;
 use thiserror::Error;
 use tokio::{io::AsyncRead, sync::mpsc::{error::SendError, UnboundedReceiver, UnboundedSender}, task::JoinHandle};
@@ -51,7 +51,7 @@ impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> 
 
     /// Add an extension to the job's assets.
     pub fn add_extension(&mut self, extension: &ActiveExtension) -> &mut Self {
-        self.assets.extensions.push(extension.extension().clone());
+        self.assets.extensions.push(extension.clone());
         self
     }
 
@@ -95,7 +95,7 @@ impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> 
 pub struct Assets {
     documents: Vec<Document>,
     folders: Vec<Folder>,   // currently unused
-    extensions: Vec<Arc<dyn Extension>>,
+    extensions: Vec<ActiveExtension>,
     receiver: Option<UnboundedReceiver<AssetItem>>,
 }
 
@@ -124,7 +124,7 @@ impl Assets {
     }
 
     /// Get the extensions available to the job.
-    pub fn extensions(&self) -> &Vec<Arc<dyn Extension>> {
+    pub fn extensions(&self) -> &Vec<ActiveExtension> {
         &self.extensions
     }
 
@@ -137,7 +137,7 @@ impl Assets {
         tracing::debug!("Converting content to {}", output_type);
         let converters = self.extensions.iter()
             .filter_map(|ext| 
-                if let Some(converter) = ext.converter() {
+                if let Some(converter) = ext.converters().nth(0) {
                     Some(converter)
                 } else {
                     None
@@ -159,12 +159,12 @@ impl Assets {
         Err(ConversionError::UnsupportedMimeType(output_type))
     }
 
-    pub async fn chat_model(&self, model: Option<String>) -> Result<Box<dyn ChatApi>, ChatError> {
+    pub async fn chat_model(&self, model: Option<String>) -> Result<F11y<dyn ChatApi>, ChatError> {
         tracing::debug!("Getting chat model");
         // Iterate through extensions and find the specified model
         for ext in &self.extensions {
             tracing::debug!("Checking extension {}", ext.name());
-            if let Some(chat_client) = ext.chat_model() {
+            if let Some(chat_client) = ext.chat_providers().nth(0) {
                 tracing::debug!("Found chat model in extension {}", ext.name());
                 if let Some(requested_model) = &model {
                     tracing::debug!("Looking for model {}", requested_model);
@@ -185,22 +185,22 @@ impl Assets {
         Err(ChatError::Provider("No chat model found".into()))
     }
 
-    pub fn embedders(&self) -> Vec<Box<dyn Embedder>> {
+    pub fn embedders(&self) -> Vec<F11y<dyn Embedder>> {
         tracing::debug!("Getting embedders");
         let mut embedders = Vec::new();
         for ext in &self.extensions {
-            if let Some(embedder) = ext.embedding_model() {
+            if let Some(embedder) = ext.embedders().nth(0) {
                 embedders.push(embedder);
             }
         }
         embedders
     }
 
-    pub fn chunkers(&self) -> Vec<Box<dyn Chunker>> {
+    pub fn chunkers(&self) -> Vec<F11y<dyn Chunker>> {
         tracing::debug!("Getting chunkers");
         let mut chunkers = Vec::new();
         for ext in &self.extensions {
-            if let Some(chunker) = ext.chunker() {
+            if let Some(chunker) = ext.chunkers().nth(0) {
                 chunkers.push(chunker);
             }
         }
@@ -244,7 +244,7 @@ impl AssetSender {
     /// 
     /// The extension will be added to the assets of the job when the job is run or when the job's
     /// callback function calls `Assets::refresh`.
-    pub fn send_extension(&self, extension: Arc<dyn Extension>) -> Result<(), SendError<Arc<dyn Extension>>> {
+    pub fn send_extension(&self, extension: ActiveExtension) -> Result<(), SendError<ActiveExtension>> {
         self.inner.send(AssetItem::Extension(extension)).map_err(|e| match e.0 {
             AssetItem::Extension(extension) => SendError(extension),
             _ => unreachable!(),
@@ -256,7 +256,7 @@ impl AssetSender {
 enum AssetItem {
     Document(Document),
     Folder(Folder),
-    Extension(Arc<dyn Extension>),
+    Extension(ActiveExtension),
 }
 
 #[derive(Debug, Error)]
@@ -282,7 +282,7 @@ mod tests {
     use async_trait::async_trait;
     
     use super::*;
-    use crate::{chat::{ChatModel, Message}, extension::{Extension, Functionality}};
+    use crate::{chat::{ChatModel, Message}, extension::{Extension}};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct TestChatModel {
@@ -293,12 +293,6 @@ mod tests {
         fn new() -> Self {
             Self { idx: AtomicUsize::new(0) }
         }
-    }
-
-    impl Functionality for TestChatModel {
-        fn extension_uri(&self) -> &str { "test" }
-        fn id(&self) -> &str { "test" }
-        fn name(&self) -> &str { "Test Chat Model" }
     }
 
     #[async_trait]

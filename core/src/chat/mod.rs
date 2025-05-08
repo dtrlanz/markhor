@@ -24,10 +24,8 @@ use std::{collections::HashMap, fmt};
 use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
 
-use crate::extension::Functionality;
-
 #[async_trait]
-pub trait ChatModel: Functionality + Send + Sync {
+pub trait ChatModel: Send + Sync {
     // We have temporariliy ended up with two overlapping methods in this trait because it made
     // sense to return more than just a string result (e.g., usage data) but I didn't want to
     // update existing tests immediately.

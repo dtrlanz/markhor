@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::{atomic::{AtomicUsize, Ordering}, Arc}};
 
 use async_trait::async_trait;
-use markhor_core::{chat::{self, chat::{ChatApi, ChatOptions, ChatResponse, ChatStream, ContentPart, Message, ModelInfo}, ChatError, ChatModel}, extension::{Extension, Functionality}};
+use markhor_core::{chat::{self, chat::{ChatApi, ChatOptions, ChatResponse, ChatStream, ContentPart, Message, ModelInfo}, ChatError, ChatModel}, extension::Extension};
 
 
 const SONNET_18: [&str; 14] = [
@@ -29,12 +29,6 @@ impl ShakespeareChatModel {
     fn new() -> Self {
         Self { idx: AtomicUsize::new(0) }
     }
-}
-
-impl Functionality for ShakespeareChatModel {
-    fn extension_uri(&self) -> &str { "test" }
-    fn id(&self) -> &str { "shakespeare" }
-    fn name(&self) -> &str { "William Shakespeare" }
 }
 
 #[async_trait]

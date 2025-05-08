@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use markhor_core::{embedding::{Embedder, Embedding, EmbeddingError, EmbeddingUseCase}, extension::Functionality};
+use markhor_core::{embedding::{Embedder, Embedding, EmbeddingError, EmbeddingUseCase}};
 use reqwest::Client;
 use tracing::{debug, instrument, warn, error}; // For logging/tracing
 use std::error::Error as StdError;
@@ -270,15 +270,5 @@ impl Embedder for GeminiEmbedder {
         // Use a conservative characters estimate (e.g., 4 chars/token -> 8192)
         // Round down slightly.
         Some(8000)
-    }
-}
-
-impl Functionality for GeminiEmbedder {
-    fn extension_uri(&self) -> &str {
-        "https://github.com/dtrlanz/markhor/tree/main/extensions/src/embedding/gemini"
-    }
-
-    fn id(&self) -> &str {
-        "embeddings"
     }
 }

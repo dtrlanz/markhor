@@ -1,4 +1,4 @@
-use crate::{chunking::ChunkData, embedding::{Embedder, Embedding}, extension::{Functionality, FunctionalityId}};
+use crate::{chunking::ChunkData, embedding::{Embedder, Embedding}, extension::F11y};
 
 use std::{collections::{hash_map::Entry, HashMap}, ops::Range};
 
@@ -59,9 +59,8 @@ pub struct FileMetadata {
 }
 
 impl FileMetadata {
-    pub fn embeddings(&self, embedder: &(impl Embedder + ?Sized)) -> Option<&Vec<(Embedding, ChunkData)>> {
-        let key: String = FunctionalityId::from(embedder).into();
-        let data = self.extension_data.get(&key);
+    pub fn embeddings(&self, embedder: &F11y<dyn Embedder>) -> Option<&Vec<(Embedding, ChunkData)>> {
+        let data = self.extension_data.get(&embedder.metadata_id());
         match data {
             Some(ExtensionData::Embeddings(embeddings)) => Some(embeddings),
             None => None,
@@ -72,9 +71,8 @@ impl FileMetadata {
         }
     }
 
-    pub fn embeddings_mut(&mut self, embedder: &(impl Embedder + ?Sized)) -> &mut Vec<(Embedding, ChunkData)> {
-        let key: String = FunctionalityId::from(embedder).into();
-        let data = self.extension_data.entry(key)
+    pub fn embeddings_mut(&mut self, embedder: &F11y<dyn Embedder>) -> &mut Vec<(Embedding, ChunkData)> {
+        let data = self.extension_data.entry(embedder.metadata_id())
             .and_modify(|data| match data {
                 ExtensionData::Embeddings(_) => {},
                 _ => {

@@ -1,8 +1,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::extension::Functionality;
-
 use super::{error::EmbeddingError, Embedding};
 
 /// Trait for asynchronous text embedding generation.
@@ -11,7 +9,7 @@ use super::{error::EmbeddingError, Embedding};
 /// (e.g., a connection to OpenAI's 'text-embedding-3-small' or a loaded
 /// local sentence-transformer model), potentially specialized for a particular use case.
 #[async_trait]
-pub trait Embedder: Functionality + Send + Sync {
+pub trait Embedder: Send + Sync {
     /// Generates embeddings for a batch of text chunks asynchronously.
     ///
     /// # Arguments

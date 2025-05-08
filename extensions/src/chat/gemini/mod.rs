@@ -7,7 +7,7 @@ use markhor_core::chat::chat::{
     UsageInfo,
 };
 use async_trait::async_trait;
-use markhor_core::extension::{Extension, Functionality};
+use markhor_core::extension::Extension;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -720,17 +720,6 @@ pub fn create_default_http_client() -> Result<reqwest::Client, ChatError> {
 
 const URI: &str = "https://github.com/dtrlanz/markhor/tree/main/extensions/src/chat/gemini";
 
-
-
-impl Functionality for GeminiClient {
-    fn extension_uri(&self) -> &str {
-        URI
-    }
-
-    fn id(&self) -> &str {
-        "Gemini chat client"
-    }
-}
 
 
 

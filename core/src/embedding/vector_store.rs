@@ -3,7 +3,7 @@ use std::{collections::HashMap, ops::Range, path::PathBuf, sync::Arc};
 use tracing::{debug, error, instrument};
 use uuid::Uuid;
 
-use crate::{chunking::{Chunk, ChunkData, Chunker}, extension::FunctionalityId, storage::Document};
+use crate::{chunking::{Chunk, ChunkData, Chunker}, extension::F11y, storage::Document};
 
 use super::{Embedder, Embedding, EmbeddingError};
 
@@ -11,12 +11,12 @@ const MINIMUM_SIMILARITY: f32 = 0.6;
 
 
 pub struct VectorStore {
-    embedder: Box<dyn Embedder>,
+    embedder: F11y<dyn Embedder>,
     documents: HashMap<Uuid, DocumentEmbeddings>,
 }
 
 impl VectorStore {
-    pub fn new(embedder: Box<dyn Embedder>) -> Self {
+    pub fn new(embedder: F11y<dyn Embedder>) -> Self {
         VectorStore {
             embedder,
             documents: HashMap::new(),
@@ -44,7 +44,7 @@ impl VectorStore {
             // TODO: process files concurrently instead
             for file in md_files {
                 let existing = metadata.file(file.file_name())
-                    .and_then(|md| md.embeddings(&*self.embedder));
+                    .and_then(|md| md.embeddings(&self.embedder));
 
                 let embeddings = if let Some(embeddings) = existing {
                     embeddings
@@ -72,11 +72,11 @@ impl VectorStore {
                     // Update metadata file
                     let new_embeddings = metadata.to_mut()
                         .file_mut(file.file_name())
-                        .embeddings_mut(&*self.embedder);
+                        .embeddings_mut(&self.embedder);
                     *new_embeddings = embeddings;
 
                     metadata.file(file.file_name())
-                        .and_then(|md| md.embeddings(&*self.embedder))
+                        .and_then(|md| md.embeddings(&self.embedder))
                         .unwrap()
                 };
 
