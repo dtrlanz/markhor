@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{chat::chat::ChatApi, chunking::Chunker, convert::Converter, embedding::Embedder};
+use crate::{chat::{chat::ChatApi, prompter::Prompter}, chunking::Chunker, convert::Converter, embedding::Embedder};
 
 use super::{Extension, F11y, FunctionalityType};
 
@@ -72,6 +72,14 @@ impl ActiveExtension {
         self.extension().converter().into_iter().map(|model| F11y {
             trait_object: model,
             functionality_type: FunctionalityType::Converter,
+            extension: self.clone(),
+        })
+    }
+
+    pub fn prompters(&self) -> impl Iterator<Item = F11y<dyn Prompter>> {
+        self.extension().prompters().into_iter().map(|model| F11y {
+            trait_object: model,
+            functionality_type: FunctionalityType::Prompter,
             extension: self.clone(),
         })
     }

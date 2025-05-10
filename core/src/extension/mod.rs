@@ -7,7 +7,7 @@ pub use active_extension::{ActiveExtension, ExtensionConfig};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{chat::chat::ChatApi, chunking::Chunker, convert::Converter, embedding::Embedder};
+use crate::{chat::{chat::ChatApi, prompter::Prompter}, chunking::Chunker, convert::Converter, embedding::Embedder};
 
 pub trait Extension: Send + Sync {
     fn uri(&self) -> &str;
@@ -18,6 +18,7 @@ pub trait Extension: Send + Sync {
     fn embedding_model(&self) -> Option<Box<dyn Embedder>> { None }
     fn chunker(&self) -> Option<Box<dyn Chunker>> { None }
     fn converter(&self) -> Option<Box<dyn Converter>> { None }
+    fn prompters(&self) -> Vec<Box<dyn Prompter>> { vec![] }
     fn tools(&self) -> Vec<Box<dyn crate::tool::Tool>> { vec![] }
 }
 
@@ -72,11 +73,12 @@ impl<T: ?Sized> Deref for F11y<T> {
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-enum FunctionalityType {
+pub enum FunctionalityType {
     ChatProvider,
     Embedder,
     Chunker,
     Converter,
+    Prompter,
     Tool,
 }
 

@@ -4,6 +4,7 @@ pub mod embedding;
 pub mod ocr;
 pub mod gemini;
 pub mod chunking;
+pub mod cli;
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
