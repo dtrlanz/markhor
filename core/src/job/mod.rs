@@ -1,11 +1,15 @@
 use std::sync::Arc;
 
-use crate::{chat::{chat::ChatApi, ChatError}, chunking::Chunker, convert::{ConversionError, Converter}, embedding::{Embedder, EmbeddingError}, extension::{ActiveExtension, Extension, F11y, UseExtensionError}, storage::{self, Content, Document, Folder}};
+use crate::{chat::{chat::ChatApi, prompter::Prompter, ChatError}, chunking::Chunker, convert::{ConversionError, Converter}, embedding::{Embedder, EmbeddingError}, extension::{ActiveExtension, Extension, F11y, UseExtensionError}, storage::{self, Content, Document, Folder}};
 use mime::Mime;
 use thiserror::Error;
 use tokio::{io::AsyncRead, sync::mpsc::{error::SendError, UnboundedReceiver, UnboundedSender}, task::JoinHandle};
+use tracing::instrument;
 
 pub mod search;
+mod chat;
+
+pub use chat::{chat, simple_rag};
 
 /// A unit of work that can be executed asynchronously.
 /// 
@@ -32,6 +36,58 @@ impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> 
         }
     }
 
+    pub fn and_then<T2, C: AsyncFnOnce(&mut Assets, T) -> Result<T2, RunJobError> + Send>(self, callback: C) -> Job<T2, impl AsyncFnOnce(&mut Assets) -> Result<T2, RunJobError> + Send> {
+        let callback0 = self.callback;
+        Job {
+            callback: async move |assets| {
+                let result0 = callback0(assets).await?;
+                callback(assets, result0).await
+            },
+            assets: self.assets,
+            asset_sender: self.asset_sender,
+        }
+    }
+
+    pub fn and_chain<T2, F2: AsyncFnOnce(&mut Assets) -> Result<T2, RunJobError> + Send, C: FnOnce(T) -> Job<T2, F2> + Send>(self, callback: C) -> Job<T2, impl AsyncFnOnce(&mut Assets) -> Result<T2, RunJobError> + Send> {
+        let callback0 = self.callback;
+        Job {
+            callback: async move |assets| {
+                let result0 = callback0(assets).await?;
+                let mut next_job = callback(result0);
+                // Add assets to chained job
+                for doc in assets.documents.drain(..) {
+                    next_job.add_document(doc);
+                }
+                for ext in assets.extensions.iter() {
+                    next_job.add_extension(ext);
+                }
+                next_job.run().await
+            },
+            assets: self.assets,
+            asset_sender: self.asset_sender,
+        }
+    }
+
+    pub fn and_chain_async<T2, F2: AsyncFnOnce(&mut Assets) -> Result<T2, RunJobError> + Send, C: AsyncFnOnce(T) -> Job<T2, F2> + Send>(self, callback: C) -> Job<T2, impl AsyncFnOnce(&mut Assets) -> Result<T2, RunJobError> + Send> {
+        let callback0 = self.callback;
+        Job {
+            callback: async move |assets| {
+                let result0 = callback0(assets).await?;
+                let mut next_job = callback(result0).await;
+                // Add assets to chained job
+                for doc in assets.documents.drain(..) {
+                    next_job.add_document(doc);
+                }
+                for ext in assets.extensions.iter() {
+                    next_job.add_extension(ext);
+                }
+                next_job.run().await
+            },
+            assets: self.assets,
+            asset_sender: self.asset_sender,
+        }
+    }
+
     /// Add a document to the job's assets.
     pub fn add_document(&mut self, document: Document) -> &mut Self {
         self.assets.documents.push(document);
@@ -53,6 +109,11 @@ impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> 
     pub fn add_extension(&mut self, extension: &ActiveExtension) -> &mut Self {
         self.assets.extensions.push(extension.clone());
         self
+    }
+
+    /// Get the assets available to the job.
+    pub fn assets(&self) -> &Assets {
+        &self.assets
     }
 
     /// Get an asset sender for this job.
@@ -206,6 +267,20 @@ impl Assets {
         }
         chunkers
     }
+
+    /// Get the available prompters from the extensions.
+    #[instrument(skip(self))]
+    pub fn prompters(&self) -> Vec<F11y<dyn Prompter>> {
+        tracing::debug!("Getting prompters");
+        let mut prompters = Vec::new();
+        for ext in &self.extensions {
+            let len_before = prompters.len();
+            prompters.extend(ext.prompters());
+            let len_after = prompters.len();
+            tracing::debug!("Found {} prompters in extension {}", len_after - len_before, ext.name());
+        }
+        prompters
+    }
 }
 
 
@@ -273,6 +348,9 @@ pub enum RunJobError {
     #[error("Job failed due to conversion error: {0}")]
     Conversion(#[from] ConversionError),
 
+    #[error("Job failed due to prompt error: {0}")]
+    Prompt(#[from] crate::chat::prompter::PromptError),
+
     #[error("Job failed: {0}")]
     Other(Box<dyn std::error::Error + Send + Sync>),
 }
@@ -282,7 +360,7 @@ mod tests {
     use async_trait::async_trait;
     
     use super::*;
-    use crate::{chat::{ChatModel, Message}, extension::{Extension}};
+    use crate::chat::{ChatModel, Message};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct TestChatModel {

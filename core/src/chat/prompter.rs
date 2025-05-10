@@ -13,6 +13,9 @@ pub trait Prompter: Send + Sync {
 
 #[derive(Debug, Error)]
 pub enum PromptError {
+    #[error("Prompt was canceled by the user.")]
+    Canceled,
+
     #[error("Prompt input failed due to IO error: {0}")]
     Io(#[from] std::io::Error),
 

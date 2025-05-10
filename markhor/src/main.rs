@@ -12,6 +12,7 @@ use markhor::commands;
 use markhor_core::extension::{ActiveExtension, Extension};
 use markhor_core::storage::{Storage, Workspace};
 use markhor_extensions::chunking::Chunkers;
+use markhor_extensions::cli::CliExtension;
 use markhor_extensions::gemini::GeminiClientExtension;
 use markhor_extensions::ocr::mistral::client::MistralClient;
 use reqwest::Client;
@@ -33,9 +34,10 @@ async fn main() -> Result<()> {
 
     // --- Configuration Loading ---
 
-    let mut extensions: Vec<ActiveExtension> = vec![];
-
-    extensions.push(ActiveExtension::new(Chunkers, Default::default()));
+    let mut extensions: Vec<ActiveExtension> = vec![
+        ActiveExtension::new(Chunkers, Default::default()),
+        ActiveExtension::new(CliExtension, Default::default()),
+    ];
 
     // Process env vars
     dotenv::dotenv().ok();

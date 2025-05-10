@@ -36,6 +36,9 @@ pub enum UseExtensionError {
     #[error("Converter not available in extension")]
     ConverterNotAvailable,
 
+    #[error("Prompter not available in extension")]
+    PrompterNotAvailable,
+
     #[error("Tool not available in extension")]
     ToolNotAvailable,
 }

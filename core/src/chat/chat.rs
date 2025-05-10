@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::pin::Pin;
+use std::{borrow::Borrow, pin::Pin};
 
 use super::ChatError;
 
@@ -21,6 +21,15 @@ impl ContentPart {
         match self {
             ContentPart::Text(text) => Some(text),
             _ => None,
+        }
+    }
+}
+
+impl Borrow<str> for ContentPart {
+    fn borrow(&self) -> &str {
+        match self {
+            ContentPart::Text(s) => &*s,
+            ContentPart::Image { .. } => "[Image]",
         }
     }
 }
@@ -74,6 +83,15 @@ impl Message {
 
     pub fn tool(results: Vec<ToolResult>) -> Self {
         Message::Tool(results)
+    }
+
+    pub fn text_content(&self) -> String {
+        match self {
+            Message::System(content) => content.join(""),
+            Message::User(content) => content.join(""),
+            Message::Assistant { content, .. } => content.join(""),
+            Message::Tool(..) => String::new(),
+        }
     }
 }
 

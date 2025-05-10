@@ -32,7 +32,7 @@ pub async fn handle_import(args: ImportArgs, markhor: Markhor) -> Result<()> {
 
 pub async fn handle_chat(args: ChatArgs, markhor: Markhor) -> Result<()> {
     println!("Executing chat command...");
-    if let Some(prompt) = args.prompt {
+    if let Some(prompt) = args.prompt.as_ref() {
         println!("  Initial prompt: {}", prompt);
     }
     // TODO: Implement chat logic using markhor-core
@@ -46,7 +46,7 @@ pub async fn handle_chat(args: ChatArgs, markhor: Markhor) -> Result<()> {
         .map(|s| PathBuf::from(s))
         .collect::<Vec<_>>();
 
-    markhor.chat(paths).await?;
+    markhor.chat(args.prompt.as_deref(), paths).await?;
     Ok(())
 }
 
@@ -136,14 +136,11 @@ pub async fn handle_open(args: OpenArgs) -> Result<()> {
 }
 
 pub async fn handle_search(args: SearchArgs, markhor: Markhor) -> Result<()> {
-    println!("Executing search command for query: '{}'", args.query);
-    // TODO: Implement search logic using markhor-core
-    // - Determine embedding model (args.model or default)
-    // - Generate query embedding
-    // - Perform similarity search against document embeddings in the workspace (considering scope)
-    // - Retrieve and display top `args.limit` results
+    let paths = args.scope.iter()
+        .map(|s| PathBuf::from(s))
+        .collect::<Vec<_>>();
 
-    markhor.search(&args.query, args.limit).await?;
+    markhor.search(&args.query, args.limit, paths).await?;
     Ok(())
 }
 
