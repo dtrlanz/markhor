@@ -115,7 +115,7 @@ use crate::event::Event;
 
 pub use self::document::Document;
 pub use self::file::{ContentFile, Content};
-pub use self::folder::Folder;
+pub use self::folder::{Folder, Scope};
 pub use self::workspace::Workspace;
 
 mod document;

@@ -149,3 +149,18 @@ impl Folder {
 
     // Potential future methods: delete, rename, move_to, create_subfolder, etc.
 }
+
+/// Represents a scope for searching or filtering documents.
+pub struct Scope {
+    folder: Folder,
+    tags: Vec<String>, // TODO - tags don't exist yet
+}
+
+impl From<Folder> for Scope {
+    fn from(folder: Folder) -> Self {
+        Scope {
+            folder,
+            tags: Vec::new(),
+        }
+    }
+}

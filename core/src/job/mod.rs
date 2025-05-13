@@ -1,6 +1,4 @@
-use std::sync::Arc;
-
-use crate::{chat::{chat::ChatApi, prompter::Prompter, ChatError}, chunking::Chunker, convert::{ConversionError, Converter}, embedding::{Embedder, EmbeddingError}, extension::{ActiveExtension, Extension, F11y, UseExtensionError}, storage::{self, Content, Document, Folder}};
+use crate::{chat::{chat::ChatApi, prompter::Prompter, ChatError}, chunking::Chunker, convert::{ConversionError, Converter}, embedding::{Embedder, EmbeddingError}, extension::{ActiveExtension, Extension, F11y, UseExtensionError}, storage::{self, Content, Document, Folder, Scope}};
 use mime::Mime;
 use thiserror::Error;
 use tokio::{io::AsyncRead, sync::mpsc::{error::SendError, UnboundedReceiver, UnboundedSender}, task::JoinHandle};
@@ -28,7 +26,7 @@ impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> 
             callback,
             assets: Assets {
                 documents: Vec::new(),
-                folders: Vec::new(),
+                scopes: Vec::new(),
                 extensions: Vec::new(),
                 receiver: None,
             },
@@ -155,7 +153,7 @@ impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> 
 /// A collection of assets that can be used by a job.
 pub struct Assets {
     documents: Vec<Document>,
-    folders: Vec<Folder>,   // currently unused
+    scopes: Vec<Scope>,
     extensions: Vec<ActiveExtension>,
     receiver: Option<UnboundedReceiver<AssetItem>>,
 }
@@ -167,8 +165,7 @@ impl Assets {
             while let Ok(item) = receiver.try_recv() {
                 match item {
                     AssetItem::Document(document) => self.documents.push(document),
-                    AssetItem::Folder(folder) => self.folders.push(folder),
-                    AssetItem::Extension(extension) => self.extensions.push(extension),
+                    AssetItem::Scope(scope) => self.scopes.push(scope),
                 }
             }
         }
@@ -180,8 +177,8 @@ impl Assets {
     }
 
     /// Get the folders available to the job.
-    pub fn folders(&self) -> &[Folder] {
-        &self.folders
+    pub fn scopes(&self) -> &[Scope] {
+        &self.scopes
     }
 
     /// Get the extensions available to the job.
@@ -308,20 +305,9 @@ impl AssetSender {
     /// 
     /// The folder will be added to the assets of the job when the job is run or when the job's
     /// callback function calls `Assets::refresh`.
-    pub fn send_folder(&self, folder: Folder) -> Result<(), SendError<Folder>> {
-        self.inner.send(AssetItem::Folder(folder)).map_err(|e| match e.0 {
-            AssetItem::Folder(folder) => SendError(folder),
-            _ => unreachable!(),
-        })
-    }
-
-    /// Send an extension to the job.
-    /// 
-    /// The extension will be added to the assets of the job when the job is run or when the job's
-    /// callback function calls `Assets::refresh`.
-    pub fn send_extension(&self, extension: ActiveExtension) -> Result<(), SendError<ActiveExtension>> {
-        self.inner.send(AssetItem::Extension(extension)).map_err(|e| match e.0 {
-            AssetItem::Extension(extension) => SendError(extension),
+    pub fn send_scope(&self, scope: Scope) -> Result<(), SendError<Scope>> {
+        self.inner.send(AssetItem::Scope(scope)).map_err(|e| match e.0 {
+            AssetItem::Scope(folder) => SendError(folder),
             _ => unreachable!(),
         })
     }
@@ -330,8 +316,7 @@ impl AssetSender {
 /// An item that can be sent to a job's assets.
 enum AssetItem {
     Document(Document),
-    Folder(Folder),
-    Extension(ActiveExtension),
+    Scope(Scope),
 }
 
 #[derive(Debug, Error)]
@@ -361,7 +346,7 @@ mod tests {
     
     use super::*;
     use crate::chat::{ChatModel, Message};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
 
     struct TestChatModel {
         idx: AtomicUsize,
