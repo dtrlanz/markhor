@@ -54,13 +54,12 @@ impl Markhor {
         // Convert the file to markdown using the extensions
         let input = Content::File(file.to_path_buf());
         let output_type = "text/markdown".parse().unwrap();
-        let mut job: Job<Vec<Box<dyn AsyncRead + Unpin>>, _> = Job::new(async |assets| {
-            let output = assets.convert(input, output_type).await?;
-            Ok(output)
-        });
-        for ext in &self.extensions {
-            job.add_extension(ext);
-        }
+        let job: Job<Vec<Box<dyn AsyncRead + Unpin>>, _> = 
+            Job::new(async |assets| {
+                let output = assets.convert(input, output_type).await?;
+                Ok(output)
+            })
+            .with_extensions(self.extensions.iter().cloned());
 
         let result = job.run().await;
         match result {
@@ -78,11 +77,8 @@ impl Markhor {
     }
 
     pub async fn search(&self, query: &str, limit: usize, paths: Vec<PathBuf>) -> Result<(), anyhow::Error> {
-        let mut job = job::search::search_job(query, limit);
-
-        for ext in &self.extensions {
-            job.add_extension(ext);
-        }
+        let mut job = job::search::search_job(query, limit)
+            .with_extensions(self.extensions.iter().cloned());
 
         let ws = self.workspace.as_ref()
             .map_err(|e| anyhow::anyhow!("Error getting workspace: {}", e))?;
@@ -109,7 +105,7 @@ impl Markhor {
         }
 
         println!("Searching for: {}", query);
-        println!("Searching {} document(s)...", job.assets().documents().len());
+        println!("Searching {} document(s)...", job.documents().len());
 
         // Run search
         let result = job.run().await?;
@@ -159,12 +155,9 @@ impl Markhor {
         }
 
         
-        let mut job  = job::chat(messages, print_assistant_message);
+        let job  = job::chat(messages, print_assistant_message)
+            .with_extensions(self.extensions.iter().cloned());
         
-        for ext in &self.extensions {
-            job.add_extension(ext);
-        }
-
         job.run().await?;
 
         Ok(())

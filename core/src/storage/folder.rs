@@ -151,6 +151,7 @@ impl Folder {
 }
 
 /// Represents a scope for searching or filtering documents.
+#[derive(Debug, Clone)]
 pub struct Scope {
     folder: Folder,
     tags: Vec<String>, // TODO - tags don't exist yet
