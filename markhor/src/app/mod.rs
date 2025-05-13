@@ -6,6 +6,8 @@ use tracing::error;
 use console::Term;
 use textwrap::wrap;
 
+use crate::cli::ChatArgs;
+
 
 pub struct Markhor {
     pub storage: Arc<Storage>,
@@ -15,6 +17,19 @@ pub struct Markhor {
 }
 
 impl Markhor {
+    /// Opens documents in the workspace.
+    pub async fn open_documents(&self, docs: Vec<String>) -> Result<Vec<Document>, anyhow::Error> {
+        let mut documents = Vec::new();
+        let ws = self.workspace.as_ref()
+            .map_err(|e| anyhow::anyhow!("Error getting workspace: {}", e))?;
+        for doc in docs {
+            let doc = ws.document(&Path::new(&doc)).await?;
+            documents.push(doc);
+        }
+        Ok(documents)
+    }
+
+
     pub async fn import(&self, file: &Path) -> Result<Document, anyhow::Error> {
         let folder = if let Some(folder) = &self.folder {
             folder
@@ -118,47 +133,31 @@ impl Markhor {
         self
     }
 
-    pub async fn chat(&self, prompt: Option<&str>, paths: Vec<PathBuf>) -> Result<(), anyhow::Error> {
-        println!("\nEnter empty string to exit\n");
+    pub async fn chat(&self, args: ChatArgs) -> Result<(), anyhow::Error> {
+        if args.model.is_some() {
+            anyhow::bail!("Model override is not yet implemented");
+        }
+        if !args.plugins.is_empty() {
+            anyhow::bail!("Plugins are not yet implemented");
+        }
+        let ChatArgs { prompt, docs, scope, .. } = args;
 
-        if let Some(prompt) = prompt {
-            if !paths.is_empty() {
-                let mut job = job::simple_rag(&prompt, 10,  print_assistant_message);
-
-                let ws = match &self.workspace {
-                    Ok(ws) => ws,
-                    Err(e) => {
-                        anyhow::bail!("Error getting workspace: {}", e);
-                    }
-                };
-
-                for path in paths {
-                    // Check if the path is a file or folder
-                    if path.is_file() {
-                        // If it's a file, add it
-                        let doc = ws.document(&*path).await?;
-                        job.add_document(doc);
-                    } else if path.is_dir() {
-                        // If it's a folder, add the documents in the folder
-                        let folder = ws.folder(&*path).await?;
-                        job.add_folder(folder).await?;
-                    } else {
-                        println!("Path is neither a file nor a folder: {}", path.display());
-                    }
-                }
-
-                println!("Searching for: {}", prompt);
-                println!("Searching {} document(s)...", job.assets().documents().len());
-
-                job.run().await?;
-                return Ok(());
-            }
+        // System message
+        let mut messages = vec![Message::system("You are a helpful assistant.")];
+        
+        // Load document contents
+        let docs = self.open_documents(docs).await?;
+        if !docs.is_empty() {
+            attach_docs(&mut messages, docs).await?;
+            messages.push(Message::assistant("I have reviewed the documents. How can I assist?"));
         }
 
-        let mut messages = vec![Message::system("You are a helpful assistant.")];
+        println!("\nEnter empty string to exit\n");
+        
         if let Some(prompt) = prompt {
             messages.push(Message::user(prompt.to_string()));
         }
+
         
         let mut job  = job::chat(messages, print_assistant_message);
         
@@ -183,4 +182,30 @@ fn print_assistant_message(msg: &Message) {
         }
         _ => (),
     }
+}
+
+async fn attach_docs(messages: &mut Vec<Message>, docs: Vec<Document>) -> Result<(), anyhow::Error> {
+    let mut doc_contents = vec![];
+    for doc in docs {
+        let mut content = vec![];
+        for file in doc.primary_content_files().await? {
+            content.push(file.read_string().await.unwrap());
+        }
+        doc_contents.push(
+            format!(
+                "<document name=\"{}\">\n{}\n</document>", 
+                doc.path().with_extension("").display(),
+                content.join("\n\n"),
+            )
+        );
+        println!(" 📄{}", doc.path().with_extension("").display());
+    }
+
+    messages.push(
+        Message::user(format!(
+            "<automated_message type=\"file_attachment\">The user has attached the following document(s). If the reason is obvious from prior messages, respond directly. If not, only confirm very briefly and await further instructions.</automated_message>{}", 
+            doc_contents.join("\n\n"))
+        )
+    );
+    Ok(())
 }

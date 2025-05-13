@@ -46,7 +46,7 @@ pub async fn handle_chat(args: ChatArgs, markhor: Markhor) -> Result<()> {
         .map(|s| PathBuf::from(s))
         .collect::<Vec<_>>();
 
-    markhor.chat(args.prompt.as_deref(), paths).await?;
+    markhor.chat(args).await?;
     Ok(())
 }
 

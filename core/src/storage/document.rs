@@ -274,6 +274,14 @@ impl Document {
         self.list_content_files_internal(Some(extension)).await
     }
 
+    /// Returns a list of files representing the primary content of this document.
+    /// 
+    /// The current implementation simply returns all Markdown (.md) files, but this behavior will
+    /// be refined in the future.
+    pub async fn primary_content_files(&self) -> Result<Vec<ContentFile>> {
+        self.list_content_files_internal(Some("md")).await
+    }
+
     /// Adds a new file to the document with the specified extension.
     /// 
     /// If a file with the same name already exists, a hexadecimal suffix will be added.
