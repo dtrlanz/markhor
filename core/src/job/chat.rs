@@ -1,15 +1,20 @@
 use tokio::sync::mpsc::Sender;
 
-use crate::{chat::{chat::{ContentPart, Message}, prompter::PromptError}, extension::UseExtensionError};
+use crate::{chat::{chat::{ContentPart, Message}, prompter::PromptError}, extension::UseExtensionError, storage::{self, Document}};
 
 use super::{search::{search_job, SearchResults}, Assets, Job, RunJobError};
 
 
-pub fn chat<F: FnMut(&Message) + Send>(mut messages: Vec<Message>, mut on_message: F) -> Job<Vec<Message>, impl AsyncFnOnce(&mut Assets) -> Result<Vec<Message>, RunJobError> + Send> {
+pub fn chat<F1: FnMut(&Message) + Send, F2: FnMut(&[Document]) + Send>(mut messages: Vec<Message>, mut on_message: F1, on_attachment: F2) -> Job<Vec<Message>, impl AsyncFnOnce(&mut Assets) -> Result<Vec<Message>, RunJobError> + Send> {
     Job::new(async move |assets| {
         let chat_model = assets.chat_model(None).await?;
         let prompter = assets.prompters().into_iter().nth(0)
             .ok_or(UseExtensionError::PrompterNotAvailable)?;
+
+        if !assets.documents.is_empty() {
+            attach_docs(&mut messages, &assets.documents, on_attachment).await?;
+            messages.push(Message::assistant("I have reviewed the documents. How can I assist?"));
+        }
 
         loop {
             let next_message = match messages.last() {
@@ -50,6 +55,33 @@ pub fn chat<F: FnMut(&Message) + Send>(mut messages: Vec<Message>, mut on_messag
 
 
 
+async fn attach_docs<F: FnMut(&[Document]) + Send>(messages: &mut Vec<Message>, docs: &[Document], mut on_attachment: F) -> Result<(), storage::Error> {
+    let mut doc_contents = vec![];
+    for doc in docs {
+        let mut content = vec![];
+        for file in doc.primary_content_files().await? {
+            content.push(file.read_string().await.unwrap());
+        }
+        doc_contents.push(
+            format!(
+                "<document name=\"{}\">\n{}\n</document>", 
+                doc.path().with_extension("").display(),
+                content.join("\n\n"),
+            )
+        );
+    }
+
+    on_attachment(&docs);
+
+    messages.push(
+        Message::user(format!(
+            "<automated_message type=\"file_attachment\">The user has attached the following document(s). If the reason is obvious, respond directly. If not, only confirm very briefly and await further instructions.</automated_message>{}", 
+            doc_contents.join("\n\n"))
+        )
+    );
+    Ok(())
+}
+
 pub fn simple_rag<F: FnMut(&Message) + Send>(prompt: &str, limit: usize, mut on_message: F) -> Job<Vec<Message>, impl AsyncFnOnce(&mut Assets) -> Result<Vec<Message>, RunJobError> + Send> {
     let search_job = search_job(prompt, limit);
 
@@ -81,6 +113,6 @@ pub fn simple_rag<F: FnMut(&Message) + Send>(prompt: &str, limit: usize, mut on_
             Message::user(prompt.to_string()),
         ];
 
-        chat(messages, on_message)
+        chat(messages, on_message, |_| ())
     })
 }

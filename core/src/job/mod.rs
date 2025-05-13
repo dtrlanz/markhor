@@ -429,6 +429,9 @@ pub enum RunJobError {
     #[error("Job failed due to prompt error: {0}")]
     Prompt(#[from] crate::chat::prompter::PromptError),
 
+    #[error("Job failed due to storage error: {0}")]
+    Storage(#[from] storage::Error),
+
     #[error("Job failed: {0}")]
     Other(Box<dyn std::error::Error + Send + Sync>),
 }

@@ -138,25 +138,26 @@ impl Markhor {
         }
         let ChatArgs { prompt, docs, scope, .. } = args;
 
-        // System message
-        let mut messages = vec![Message::system("You are a helpful assistant.")];
-        
-        // Load document contents
-        let docs = self.open_documents(docs).await?;
-        if !docs.is_empty() {
-            attach_docs(&mut messages, docs).await?;
-            messages.push(Message::assistant("I have reviewed the documents. How can I assist?"));
-        }
-
         println!("\nEnter empty string to exit\n");
         
+        // Prep messages
+        let mut messages = vec![Message::system("You are a helpful assistant.")];
         if let Some(prompt) = prompt {
             messages.push(Message::user(prompt.to_string()));
         }
 
         
-        let job  = job::chat(messages, print_assistant_message)
-            .with_extensions(self.extensions.iter().cloned());
+        let mut job  = job::chat(
+                messages, 
+                print_assistant_message, 
+                print_attachment_message
+            ).with_extensions(self.extensions.iter().cloned());
+
+        // Load document contents
+        let docs = self.open_documents(docs).await?;
+        for doc in docs {
+            job.add_document(doc);
+        }
         
         job.run().await?;
 
@@ -177,28 +178,9 @@ fn print_assistant_message(msg: &Message) {
     }
 }
 
-async fn attach_docs(messages: &mut Vec<Message>, docs: Vec<Document>) -> Result<(), anyhow::Error> {
-    let mut doc_contents = vec![];
-    for doc in docs {
-        let mut content = vec![];
-        for file in doc.primary_content_files().await? {
-            content.push(file.read_string().await.unwrap());
-        }
-        doc_contents.push(
-            format!(
-                "<document name=\"{}\">\n{}\n</document>", 
-                doc.path().with_extension("").display(),
-                content.join("\n\n"),
-            )
-        );
-        println!(" 📄{}", doc.path().with_extension("").display());
+fn print_attachment_message(documents: &[Document]) {
+    for doc in documents {
+        println!(" 📄{}", doc.path().display());
     }
-
-    messages.push(
-        Message::user(format!(
-            "<automated_message type=\"file_attachment\">The user has attached the following document(s). If the reason is obvious from prior messages, respond directly. If not, only confirm very briefly and await further instructions.</automated_message>{}", 
-            doc_contents.join("\n\n"))
-        )
-    );
-    Ok(())
+    println!();
 }
