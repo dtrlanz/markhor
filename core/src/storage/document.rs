@@ -473,10 +473,10 @@ fn parse_basename(stem: &str) -> Result<(String, Option<String>)> {
 /// Checks if a filename matches the pattern for belonging to a document
 /// with the given basename (`basename.*` or `basename.{hex}.*`).
 fn is_potential_content_file(filename: &str, doc_basename: &str) -> bool {
-    if !filename.starts_with(doc_basename) {
+    if !filename.to_lowercase().starts_with(&doc_basename.to_lowercase()) {
         return false;
     }
-    if filename.ends_with(&format!(".{}", MARKHOR_EXTENSION)) {
+    if filename.to_lowercase().ends_with(&format!(".{}", MARKHOR_EXTENSION)) {
         return false; // Exclude .markhor files themselves
     }
 
@@ -818,6 +818,13 @@ mod tests {
         assert!(!is_potential_content_file("mydoc.markhor", "mydoc")); // Usually handled separately
         assert!(!is_potential_content_file("mydoc.v1.txt", "mydoc")); // "v1" is not hex
 
+        // Should be case-insensitive
+        assert!(is_potential_content_file("mydoc.pdf", "MYDOC"));
+        assert!(is_potential_content_file("mydoc.a1.txt", "MYDOC"));
+        assert!(is_potential_content_file("mydoc.A1.txt", "MYDOC"));
+        assert!(is_potential_content_file("MYDOC.00ff.dat", "mydoc"));
+        assert!(is_potential_content_file("MYDOC.a1", "mydoc"));
+        assert!(is_potential_content_file("mydoc.A1", "mydoc"));
 
         // Suffixed doc: "report.v1.a0"
         let basename = "report.v1.a0";
