@@ -49,8 +49,9 @@ In terms of implementation strategy, the following items are currently non-goals
 
 ### Alpha
 
-- [ ] RAG
-- [ ] File inline data
+- [x] RAG
+- [ ] File output
+- [ ] Workflows
 - [ ] Privacy metadata
 - [ ] App & workspace configuration
 - [ ] Tools
@@ -58,8 +59,6 @@ In terms of implementation strategy, the following items are currently non-goals
 
 ### Beta
 
-- [ ] File output
-- [ ] Workflows
 - [ ] Plugins
 - [ ] MCP client
 - [ ] ...
