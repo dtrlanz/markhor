@@ -1,4 +1,4 @@
-use std::{path::{Path, PathBuf}, sync::Arc};
+use std::{path::{Path, PathBuf}, sync::{atomic::{AtomicBool, Ordering}, Arc}};
 
 use markhor_core::{chat::chat::Message, extension::{ActiveExtension, Extension}, job::{self, Job}, storage::{Content, Document, Folder, Storage, Workspace}};
 use markhor_extensions::cli::CliExtension;
@@ -139,7 +139,8 @@ impl Markhor {
         }
         let ChatArgs { prompt, docs, scope, .. } = args;
 
-        println!("\nEnter empty string to exit\n");
+        println!();
+        let printer = MessagePrinter::new();
         
         // Prep messages
         let mut messages = vec![Message::system("You are a helpful assistant.")];
@@ -147,11 +148,10 @@ impl Markhor {
             messages.push(Message::user(prompt.to_string()));
         }
 
-
         let mut job  = job::chat(
                 messages, 
-                print_assistant_message, 
-                print_attachment_message
+                |msg| printer.print_message(msg), 
+                |docs| printer.print_attachment(docs),
             ).with_extensions(self.extensions.iter().cloned());
 
         // Load document contents
@@ -160,28 +160,40 @@ impl Markhor {
             job.add_document(doc);
         }
         
-        job.run().await?;
+        let _messages = job.run().await?;
 
         Ok(())
     }
 }
 
-fn print_assistant_message(msg: &Message) {
-    match msg {
-        Message::Assistant {..} => {
-            let term_width = Term::stdout().size().1 as usize;
-            println!();
-            for line in wrap(&msg.text_content(), term_width) {
-                println!("{}", line);
-            }
-        }
-        _ => (),
-    }
-}
+struct MessagePrinter;
 
-fn print_attachment_message(documents: &[Document]) {
-    for doc in documents {
-        println!(" 📄{}", doc.path().display());
+impl MessagePrinter {
+    fn new() -> Self {
+        Self
     }
-    println!();
+
+    fn print_message(&self, msg: &Message) {
+        match msg {
+            Message::Assistant {..} => {
+                println!();
+                let term_width = Term::stdout().size().1 as usize;
+                for line in wrap(&msg.text_content(), term_width) {
+                    println!("{}", line);
+                }
+            }
+            Message::User(..) => {
+                // We don't need to print user messages since they are already printed by the 
+                // prompter.
+            }
+            _ => (),
+        }
+    }
+
+    fn print_attachment(&self, documents: &[Document]) {
+        println!();
+        for doc in documents {
+            println!(" 📄{}", doc.path().display());
+        }
+    }
 }

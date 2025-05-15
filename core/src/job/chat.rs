@@ -5,14 +5,16 @@ use crate::{chat::{chat::{ContentPart, Message}, prompter::PromptError}, extensi
 use super::{search::{search_job, SearchResults}, Assets, Job, RunJobError};
 
 
-pub fn chat<F1: FnMut(&Message) + Send, F2: FnMut(&[Document]) + Send>(mut messages: Vec<Message>, mut on_message: F1, on_attachment: F2) -> Job<Vec<Message>, impl AsyncFnOnce(&mut Assets) -> Result<Vec<Message>, RunJobError> + Send> {
+pub fn chat<F1: FnMut(&Message) + Send, F2: FnMut(&[Document]) + Send>(mut messages: Vec<Message>, mut on_message: F1, mut on_attachment: F2) -> Job<Vec<Message>, impl AsyncFnOnce(&mut Assets) -> Result<Vec<Message>, RunJobError> + Send> {
     Job::new(async move |assets| {
         let chat_model = assets.chat_model(None).await?;
-        let prompter = assets.prompters().into_iter().nth(0)
+        let mut prompter = assets.prompters().into_iter().nth(0)
             .ok_or(UseExtensionError::PrompterNotAvailable)?;
 
+        prompter.set_asset_sender(Some(assets.asset_sender())).ok();
+
         if !assets.documents.is_empty() {
-            attach_docs(&mut messages, &assets.documents, on_attachment).await?;
+            messages.push(attach_docs("", &assets.documents, &mut on_attachment).await?);
             messages.push(Message::assistant("I have reviewed the documents. How can I assist?"));
         }
 
@@ -36,7 +38,14 @@ pub fn chat<F1: FnMut(&Message) + Send, F2: FnMut(&[Document]) + Send>(mut messa
                 _ => {
                     // Get user input
                     match prompter.prompt("").await {
-                        Ok(input) => Message::user(input),
+                        Ok(input) => {
+                            let new_docs = assets.refresh().documents().collect::<Vec<_>>();
+                            if new_docs.is_empty() {
+                                Message::user(input)
+                            } else {
+                                attach_docs(&input, &new_docs, &mut on_attachment).await?
+                            }
+                        },
                         Err(PromptError::Canceled) => {
                             return Ok(messages);
                         }
@@ -55,10 +64,15 @@ pub fn chat<F1: FnMut(&Message) + Send, F2: FnMut(&[Document]) + Send>(mut messa
 
 
 
-async fn attach_docs<F: FnMut(&[Document]) + Send>(messages: &mut Vec<Message>, docs: &[Document], mut on_attachment: F) -> Result<(), storage::Error> {
+async fn attach_docs<F: FnMut(&[Document]) + Send>(user_message: &str, docs: &[Document], on_attachment: &mut F) -> Result<Message, storage::Error> {
     let mut doc_contents = vec![];
     for doc in docs {
         let mut content = vec![];
+        let files = doc.primary_content_files().await?;
+        if files.is_empty() {
+            tracing::warn!("No text content files found for document: {}", doc.path().display());
+            continue;
+        }
         for file in doc.primary_content_files().await? {
             content.push(file.read_string().await.unwrap());
         }
@@ -73,13 +87,12 @@ async fn attach_docs<F: FnMut(&[Document]) + Send>(messages: &mut Vec<Message>, 
 
     on_attachment(&docs);
 
-    messages.push(
-        Message::user(format!(
-            "<automated_message type=\"file_attachment\">The user has attached the following document(s). If the reason is obvious, respond directly. If not, only confirm very briefly and await further instructions.</automated_message>{}", 
-            doc_contents.join("\n\n"))
-        )
-    );
-    Ok(())
+    let msg = Message::user(format!(
+        "<automated_message type=\"file_attachment\">The user has attached the following document(s). If the reason is obvious, respond directly. If not, only confirm very briefly and await further instructions.</automated_message>\n{}\n\n{}", 
+        doc_contents.join("\n\n"),
+        user_message,
+    ));
+    Ok(msg)
 }
 
 pub fn simple_rag<F: FnMut(&Message) + Send>(prompt: &str, limit: usize, mut on_message: F) -> Job<Vec<Message>, impl AsyncFnOnce(&mut Assets) -> Result<Vec<Message>, RunJobError> + Send> {

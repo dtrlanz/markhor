@@ -1,6 +1,6 @@
 mod active_extension;
 
-use std::{fmt::Display, ops::Deref};
+use std::{fmt::Display, ops::{Deref, DerefMut}};
 
 pub use active_extension::{ActiveExtension, ExtensionConfig};
 
@@ -71,6 +71,12 @@ impl<T: ?Sized> Deref for F11y<T> {
 
     fn deref(&self) -> &Self::Target {
         &*self.trait_object
+    }
+}
+
+impl<T: ?Sized> DerefMut for F11y<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.trait_object
     }
 }
 

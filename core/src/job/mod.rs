@@ -164,7 +164,7 @@ impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> 
             documents: self.documents,
             scopes: self.scopes,
             extensions: self.extensions,
-            receiver: self.asset_channel.take().map(|(_, receiver)| receiver),
+            asset_channel: self.asset_channel.take(),
         };
 
         // Call the callback function with the assets
@@ -177,7 +177,7 @@ pub struct Assets {
     documents: Vec<Document>,
     scopes: Vec<Scope>,
     extensions: Arc<Vec<ActiveExtension>>,
-    receiver: Option<UnboundedReceiver<AssetItem>>,
+    asset_channel: Option<(AssetSender, UnboundedReceiver<AssetItem>)>,
 }
 
 impl Assets {
@@ -193,7 +193,7 @@ impl Assets {
         let scope_idx = self.scopes.len();
 
         // Check if there are any new assets to add
-        if let Some(receiver) = &mut self.receiver {
+        if let Some((_, receiver)) = &mut self.asset_channel {
             while let Ok(item) = receiver.try_recv() {
                 match item {
                     AssetItem::Document(document) => self.documents.push(document),
@@ -225,6 +225,25 @@ impl Assets {
     /// Get the extensions available to the job.
     pub fn extensions(&self) -> &Vec<ActiveExtension> {
         &self.extensions
+    }
+
+    /// Get an asset sender for this job.
+    /// 
+    /// The asset sender can be used to send documents, folders, and extensions to the job's 
+    /// assets. In this way, it is possible to add assets from within the job's callback function.
+    /// 
+    /// Note that any assets sent will not be available until `Assets::refresh` is called.
+    pub fn asset_sender(&mut self) -> AssetSender {
+        if let Some(sender) = &self.asset_channel {
+            return sender.0.clone();
+        }
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<AssetItem>();
+        
+        let sender = AssetSender {
+            inner: sender,
+        };
+        self.asset_channel = Some((sender.clone(), receiver));
+        sender
     }
 
     /// Convert a document using the available extensions.

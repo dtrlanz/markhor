@@ -2,27 +2,28 @@ use std::ops::Range;
 
 use async_trait::async_trait;
 
-use markhor_core::{chat::prompter::{PromptError, Prompter}, storage::Folder};
+use markhor_core::{chat::prompter::{PromptError, Prompter}, job::AssetSender, storage::Folder};
 use nu_ansi_term::{Color, Style};
 use reedline::{default_emacs_keybindings, ColumnarMenu, Completer, DefaultPrompt, DefaultPromptSegment, Emacs, Highlighter, KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal, Span, StyledText, Suggestion};
+use tokio::sync::Mutex;
 
 pub struct ConsolePrompter {
     folder: Option<Folder>,
-    on_attach: Option<Box<dyn Fn(&[&str]) + Send + Sync>>,
+    asset_sender: Option<AssetSender>,
 }
 
 impl ConsolePrompter {
     pub fn new(folder: Option<Folder>) -> Self {
         Self { 
             folder,
-            on_attach: None,
+            asset_sender: None,
         }
     }
 
     pub fn with_attach_callback(self, callback: Box<dyn Fn(&[&str]) + Send + Sync>) -> Self {
         Self {
             folder: self.folder,
-            on_attach: Some(callback),
+            asset_sender: None,
         }
     }
     
@@ -47,6 +48,33 @@ impl ConsolePrompter {
                     .unwrap_or(input.len());
                 if end > start + 1 {
                     result.push(start + 1..end);
+                }
+                next_slash = input[end..].find('/').map(|i| i + end);
+            }
+        }
+        result
+    }
+
+    pub fn isolate_document_names_with_prefix_suffix(input: &str) -> Vec<(Range<usize>, Range<usize>, Range<usize>)> {
+        let mut result = vec![];
+        
+        let mut next_slash = input.find('/');
+        while let Some(start) = next_slash {
+            // Check if name is enclosed in quotation marks
+            if input[start..].chars().nth(1) == Some('"') {
+                // If next char is quotation mark, look for closing quotation mark
+                if let Some(end) = input[start + 2..].find('"').map(|i| i + start + 2) {
+                    result.push((start..start + 2, start + 2..end, end..end + 1));
+                    next_slash = input[end..].find('/').map(|i| i + end);
+                } else {
+                    return result;
+                }
+            } else {
+                // If not, look for the next space or end of string
+                let end = input[start..].find(' ').map(|i| i + start)
+                    .unwrap_or(input.len());
+                if end > start + 1 {
+                    result.push((start..start + 1, start + 1..end, end..end));
                 }
                 next_slash = input[end..].find('/').map(|i| i + end);
             }
@@ -107,7 +135,7 @@ impl Prompter for ConsolePrompter {
             right_prompt: DefaultPromptSegment::Empty,
         };
         
-        let result = tokio::task::spawn_blocking(move || {
+        let mut result = tokio::task::spawn_blocking(move || {
             match line_editor.read_line(&prompt) {
                 Ok(Signal::Success(line)) => Ok(line),
                 Ok(Signal::CtrlD) => Err(PromptError::Canceled),
@@ -116,16 +144,46 @@ impl Prompter for ConsolePrompter {
             }
         }).await?;
 
-        if let Ok(input) = result.as_ref() {
-            if let Some(callback) = &self.on_attach {
-                let names = ConsolePrompter::isolate_document_names(&input)
-                    .iter()
-                    .map(|range| &input[range.clone()])
-                    .collect::<Vec<_>>();
-                callback(&names);
+        if let (
+                Ok(input), 
+                Some(folder), 
+                Some(sender)
+            ) = (
+                result.as_mut(), 
+                self.folder.as_ref(), 
+                self.asset_sender.as_ref()
+            ) {
+            let mut prefix_suffix = vec![];
+            for (prefix,range, suffix) in  ConsolePrompter::isolate_document_names_with_prefix_suffix(&input) {
+                prefix_suffix.push((prefix, suffix));
+                let file_name = &input[range];
+                match folder.document_by_name(file_name).await {
+                    Ok(doc) => {
+                        // Send document to job via the asset sender
+                        sender.send_document(doc).unwrap_or_else(|e| {
+                            tracing::warn!("Could not attach document: {} ({})", file_name, e);
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!("Could not attach document: {} ({})", file_name, e);
+                    }
+                }
+            }
+            // Replace our slash-based convention with something that more clearly communicates
+            // intent to reference a document
+            //   /my_doc   -> [[my_doc]]
+            //   /"my_doc" -> [[my_doc]]
+            while let Some((prefix, suffix)) = prefix_suffix.pop() {
+                input.replace_range(suffix, "]]");
+                input.replace_range(prefix, "[[");
             }
         }
         result
+    }
+
+    fn set_asset_sender(&mut self, sender: Option<AssetSender>) -> Result<(), PromptError> {
+        self.asset_sender = sender;
+        Ok(())
     }
 }
 
