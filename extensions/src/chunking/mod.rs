@@ -2,7 +2,6 @@ use markhor_core::extension::Extension;
 use plaintext::PlainTextChunker;
 use tracing::error;
 
-pub mod markdown;
 pub mod plaintext;
 
 
