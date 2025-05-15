@@ -1,6 +1,4 @@
 pub mod plugin;
-pub mod chat;
-pub mod embedding;
 pub mod ocr;
 pub mod gemini;
 pub mod chunking;
