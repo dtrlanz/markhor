@@ -36,7 +36,6 @@ async fn main() -> Result<()> {
 
     let mut extensions: Vec<ActiveExtension> = vec![
         ActiveExtension::new(Chunkers, Default::default()),
-        ActiveExtension::new(CliExtension, Default::default()),
     ];
 
     // Process env vars
@@ -87,6 +86,13 @@ async fn main() -> Result<()> {
         }
         Err(e) => None
     };
+
+    // Pass folder to CLI extension to enable auto-completion of document names
+    extensions.push(ActiveExtension::new(
+        CliExtension::new(folder.clone()),
+        Default::default(),
+    ));
+
     let app = Markhor {
         storage,
         workspace,

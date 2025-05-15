@@ -1,6 +1,7 @@
 use std::{path::{Path, PathBuf}, sync::Arc};
 
 use markhor_core::{chat::chat::Message, extension::{ActiveExtension, Extension}, job::{self, Job}, storage::{Content, Document, Folder, Storage, Workspace}};
+use markhor_extensions::cli::CliExtension;
 use tokio::io::{AsyncRead, BufReader};
 use tracing::error;
 use console::Term;
@@ -146,7 +147,7 @@ impl Markhor {
             messages.push(Message::user(prompt.to_string()));
         }
 
-        
+
         let mut job  = job::chat(
                 messages, 
                 print_assistant_message, 

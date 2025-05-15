@@ -1,29 +1,237 @@
+use std::ops::Range;
+
 use async_trait::async_trait;
-use dialoguer::{Input, theme::ColorfulTheme};
 
-use markhor_core::chat::prompter::{Prompter, PromptError};
+use markhor_core::{chat::prompter::{PromptError, Prompter}, storage::Folder};
+use nu_ansi_term::{Color, Style};
+use reedline::{default_emacs_keybindings, ColumnarMenu, Completer, DefaultPrompt, DefaultPromptSegment, Emacs, Highlighter, KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal, Span, StyledText, Suggestion};
 
-pub struct ConsolePrompter;
+pub struct ConsolePrompter {
+    folder: Option<Folder>,
+    on_attach: Option<Box<dyn Fn(&[&str]) + Send + Sync>>,
+}
+
+impl ConsolePrompter {
+    pub fn new(folder: Option<Folder>) -> Self {
+        Self { 
+            folder,
+            on_attach: None,
+        }
+    }
+
+    pub fn with_attach_callback(self, callback: Box<dyn Fn(&[&str]) + Send + Sync>) -> Self {
+        Self {
+            folder: self.folder,
+            on_attach: Some(callback),
+        }
+    }
+    
+
+    pub fn isolate_document_names(input: &str) -> Vec<Range<usize>> {
+        let mut result = vec![];
+        
+        let mut next_slash = input.find('/');
+        while let Some(start) = next_slash {
+            // Check if name is enclosed in quotation marks
+            if input[start..].chars().nth(1) == Some('"') {
+                // If next char is quotation mark, look for closing quotation mark
+                if let Some(end) = input[start + 2..].find('"').map(|i| i + start + 2) {
+                    result.push(start + 2..end);
+                    next_slash = input[end..].find('/').map(|i| i + end);
+                } else {
+                    return result;
+                }
+            } else {
+                // If not, look for the next space or end of string
+                let end = input[start..].find(' ').map(|i| i + start)
+                    .unwrap_or(input.len());
+                if end > start + 1 {
+                    result.push(start + 1..end);
+                }
+                next_slash = input[end..].find('/').map(|i| i + end);
+            }
+        }
+        result
+    }
+}
 
 #[async_trait]
 impl Prompter for ConsolePrompter {
     async fn prompt(&self, message: &str) -> Result<String, PromptError> {
-        let message_clone = message.to_string();
+
+        // ** Auto-complete the document names **
+
+        // Create a list of document names from the folder
+        let doc_names = if let Some(folder) = self.folder.as_ref() {
+            folder.list_documents().await.unwrap_or_default()
+                .iter().map(|doc| doc.name().to_lowercase())
+                .collect::<Vec<_>>()
+        } else {
+            vec![]
+        };
+
+        // Set up completer
+        let completer = Box::new(DocNameCompleter { doc_names });
+
+        // Use the interactive menu to select options from the completer
+        let completion_menu = Box::new(ColumnarMenu::default().with_name("completion_menu"));
+        
+        // Set up keybindings
+        // TAB to select completion
+        let mut keybindings = default_emacs_keybindings();
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Tab,
+            ReedlineEvent::UntilFound(vec![
+                ReedlineEvent::Menu("completion_menu".to_string()),
+                ReedlineEvent::MenuNext,
+            ]),
+        );
+        // ESC to cancel
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Esc, 
+            ReedlineEvent::CtrlC,
+        );
+
+        let edit_mode = Box::new(Emacs::new(keybindings));
+
+        let mut line_editor = Reedline::create()
+            .with_completer(completer)
+            .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
+            .with_edit_mode(edit_mode)
+            .with_highlighter(Box::new(DocNameHighlighter));
+
+        let prompt = DefaultPrompt {
+            left_prompt: DefaultPromptSegment::Basic(message.to_string()),
+            right_prompt: DefaultPromptSegment::Empty,
+        };
+        
         let result = tokio::task::spawn_blocking(move || {
-            Input::<String>::with_theme(&ColorfulTheme::default())
-                .with_prompt(message_clone)
-                .allow_empty(true)
-                .interact_text()
-                .map_err(|e| match e {
-                    dialoguer::Error::IO(err) => PromptError::Io(err),
-                })
+            match line_editor.read_line(&prompt) {
+                Ok(Signal::Success(line)) => Ok(line),
+                Ok(Signal::CtrlD) => Err(PromptError::Canceled),
+                Ok(Signal::CtrlC) => Err(PromptError::Canceled),
+                Err(err) => Err(PromptError::Io(err)),
+            }
         }).await?;
 
-        if result.as_ref().is_ok_and(|s| s == "") {
-            Err(PromptError::Canceled)
+        if let Ok(input) = result.as_ref() {
+            if let Some(callback) = &self.on_attach {
+                let names = ConsolePrompter::isolate_document_names(&input)
+                    .iter()
+                    .map(|range| &input[range.clone()])
+                    .collect::<Vec<_>>();
+                callback(&names);
+            }
+        }
+        result
+    }
+}
+
+
+struct DocNameCompleter {
+    doc_names: Vec<String>,
+}
+
+impl Completer for DocNameCompleter {
+    fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+        // Find last slash before the cursor position
+        if let Some(last_slash) = line[..pos].rfind('/') {
+            // Get the substring after the last slash
+            let prefix = &line[last_slash + 1..pos].to_lowercase();
+
+            // Filter the document names based on the prefix
+            let suggestions = self.doc_names.iter()
+                .filter(|name| name.starts_with(prefix))
+                .filter_map(|name| {
+                    // Check if name contains whitespace
+                    if name.contains(' ') {
+                        // Check if name contains quotation mark
+                        if name.contains('"') {
+                            // Nothing we can do here
+                            return None;
+                        } else {
+                            // Escape the name with quotation marks
+                            return Some(format!("\"{}\"", name));
+                        }
+                    } else {
+                        // No need to escape
+                        return Some(name.clone());
+                    }
+                })
+                .map(|name| {
+                    Suggestion {
+                        value: name,
+                        description: None,
+                        style: None,
+                        extra: None,
+                        span: Span {
+                            start: last_slash + 1,
+                            end: pos,
+                        },
+                        append_whitespace: true,
+                    }
+                })
+                .collect();
+
+            suggestions
         } else {
-            result
+            return vec![];
         }
     }
 }
 
+struct DocNameHighlighter;
+
+impl Highlighter for DocNameHighlighter {
+    fn highlight(&self, line: &str, cursor: usize) -> reedline::StyledText {
+        let ranges = ConsolePrompter::isolate_document_names(line);
+        let mut buffer = vec![];
+        let mut last_end = 0;
+        for mut range in ranges {
+            range.start = range.start.max(last_end);
+            let (open, close) = if line[range.start - 1..range.start].chars().last() == Some('/') {
+                (range.start - 1..range.start, range.end..range.end)
+            } else {
+                (range.start - 2..range.start, range.end..range.end + 1)
+            };
+
+            buffer.push((
+                Style {
+                    ..Default::default()
+                },
+                line[last_end..open.start].to_string()
+            ));
+            buffer.push((
+                Style {
+                    foreground: Some(Color::Cyan),
+                    ..Default::default()
+                },
+                line[open].to_string()
+            ));
+            buffer.push((
+                Style {
+                    foreground: Some(Color::Cyan),
+                    ..Default::default()
+                },
+                line[range.start..range.end].to_string()
+            ));
+            buffer.push((
+                Style {
+                    foreground: Some(Color::Cyan),
+                    ..Default::default()
+                },
+                line[close.clone()].to_string()
+            ));
+            last_end = close.end;
+        }
+        buffer.push((
+            Style {
+                ..Default::default()
+            },
+            line[last_end..].to_string()
+        ));
+        StyledText { buffer }
+    }
+}

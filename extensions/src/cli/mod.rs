@@ -1,9 +1,23 @@
-use markhor_core::{chat::prompter::Prompter, extension::Extension};
+use markhor_core::{chat::prompter::Prompter, extension::Extension, storage::Folder};
 
 pub mod prompter;
 
 
-pub struct CliExtension;
+pub struct CliExtension {
+    folder: Option<Folder>,
+}
+
+impl CliExtension {
+    pub fn new(folder: Option<Folder>) -> Self {
+        Self { folder }
+    }
+}
+
+impl Default for CliExtension {
+    fn default() -> Self {
+        Self { folder: None }
+    }
+}
 
 impl Extension for CliExtension {
     fn name(&self) -> &str {
@@ -19,6 +33,6 @@ impl Extension for CliExtension {
     }
 
     fn prompters(&self) -> Vec<Box<dyn Prompter>> {
-        vec![Box::new(prompter::ConsolePrompter)]
+        vec![Box::new(prompter::ConsolePrompter::new(self.folder.clone()))]
     }
 }
