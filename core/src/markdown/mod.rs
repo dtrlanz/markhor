@@ -1,6 +1,7 @@
 use std::ops::Range;
-
 use pulldown_cmark::{html, CowStr, Event, HeadingLevel, OffsetIter, Options, Parser, Tag, TextMergeWithOffset};
+
+mod xml;
 
 #[derive(Debug)]
 struct Markdown<'a> {
