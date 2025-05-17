@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use markhor_core::{convert::{ConversionError, Converter}, extension::Functionality, storage::Content};
+use markhor_core::{convert::{ConversionError, Converter}, storage::Content};
 use mime::Mime;
 use tokio::io::AsyncRead;
 
@@ -9,16 +9,6 @@ use super::client::{MistralClientInner, URI};
 
 
 pub struct MistralOcr(pub(crate) Arc<MistralClientInner>);
-
-impl Functionality for MistralOcr {    
-    fn extension_uri(&self) -> &str {
-        URI
-    }
-
-    fn id(&self) -> &str {
-        "OCR"
-    }
-}
 
 #[async_trait]
 impl Converter for MistralOcr {

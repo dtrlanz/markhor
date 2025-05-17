@@ -10,4 +10,4 @@ members = [
 resolver = "3" # Use the edition 2024 resolver
 
 [workspace.package]
-version = "0.1.0-alpha.0.1"
+version = "0.1.0-alpha.0.2"

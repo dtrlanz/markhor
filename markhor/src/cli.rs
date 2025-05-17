@@ -70,17 +70,21 @@ pub struct ImportArgs {
 
 #[derive(Args, Debug)]
 pub struct ChatArgs {
+    /// Documents to chat with.
+    #[arg(required = false)]
+    pub docs: Vec<String>,
+
     /// Initial prompt to start the chat with.
     #[arg(long, short)]
     pub prompt: Option<String>,
 
+    /// Limit the chat scope to specific folders or tags.
+    #[arg(long)]
+    pub scope: Vec<String>, // TODO: Define syntax (e.g., tag:meeting, doc:report.pdf)
+
     /// Specify the chat model to use (overrides default).
     #[arg(long, short)]
     pub model: Option<String>,
-
-    /// Limit the chat scope to specific documents or tags.
-    #[arg(long)]
-    pub scope: Vec<String>, // TODO: Define syntax (e.g., tag:meeting, doc:report.pdf)
 
     /// Enable specific plugins for this session.
     #[arg(long)]
@@ -90,8 +94,8 @@ pub struct ChatArgs {
 
 #[derive(Args, Debug)]
 pub struct ShowArgs {
-    /// ID or path of the document to show details for. If omitted, shows workspace info.
-    pub document_id: Option<String>,
+    /// Path of the document to show details for. If omitted, shows workspace info.
+    pub document: Option<String>,
 
     /// Show document metadata.
     #[arg(long, short)]

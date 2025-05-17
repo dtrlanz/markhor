@@ -1,63 +1,51 @@
 mod error;
 mod embedder;
-mod chunker;
+mod vector_store;
 
-pub use error::EmbeddingError;
+pub use error::{EmbeddingError};
 pub use embedder::{Embedder, EmbeddingUseCase};
-pub use chunker::Chunker;
+pub use vector_store::{VectorStore, ChunkDataResult};
 
 use serde::{Deserialize, Serialize};
 
-/// Represents a batch of embedding vectors.
+/// Represents an embedding vector.
 ///
-/// This struct wraps a `Vec<Vec<f32>>` where each inner vector is an embedding.
-/// The order corresponds to the order of the input texts provided to the `Embedder`.
+/// This struct simply wraps a `Vec<f32>`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Embeddings(pub Vec<Vec<f32>>);
-
-impl Embeddings {
-    /// Returns the number of embeddings in the batch.
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    /// Returns true if the batch contains no embeddings.
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// Returns an iterator over the embedding vectors.
-    pub fn iter(&self) -> std::slice::Iter<'_, Vec<f32>> {
-        self.0.iter()
-    }
-
-    /// Returns a slice of the embedding vectors.
-    pub fn as_slice(&self) -> &[Vec<f32>] {
-        &self.0
-    }
-
-    /// Consumes the `Embeddings` wrapper and returns the inner `Vec<Vec<f32>>`.
-    pub fn into_inner(self) -> Vec<Vec<f32>> {
-        self.0
-    }
-}
+pub struct Embedding(pub Vec<f32>);
 
 // Allow easy conversion from the raw Vec<Vec<f32>> for implementers.
-impl From<Vec<Vec<f32>>> for Embeddings {
-    fn from(vecs: Vec<Vec<f32>>) -> Self {
-        Embeddings(vecs)
+impl From<Vec<f32>> for Embedding {
+    fn from(vec: Vec<f32>) -> Self {
+        Embedding(vec)
     }
 }
 
-// Optional: Allow borrowing the inner data directly if desired later
-// impl std::ops::Deref for Embeddings {
-//     type Target = Vec<Vec<f32>>;
-//     fn deref(&self) -> &Self::Target {
-//         &self.0
-//     }
-// }
-// impl std::ops::DerefMut for Embeddings {
-//     fn deref_mut(&mut self) -> &mut Self::Target {
-//         &mut self.0
-//     }
-// }
+impl Embedding {
+    /// Computes the cosine similarity between two embeddings.
+    ///
+    /// Returns an error if the vectors are empty or have mismatched lengths.
+    pub fn similarity(&self, other: &Embedding) -> Result<f32, EmbeddingError> {
+        if self.0.is_empty() || other.0.is_empty() {
+            // TODO: fix errors
+            //return Err(EmbeddingError::ZeroLength);
+            panic!("zero length vector");
+        }
+
+        if self.0.len() != other.0.len() {
+            //return Err(EmbeddingError::MismatchedLengths);
+            panic!("mismatched vector lengths");
+        }
+
+        let dot_product: f32 = self.0.iter().zip(&other.0).map(|(a, b)| a * b).sum();
+        let norm_self: f32 = self.0.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let norm_other: f32 = other.0.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+        if norm_self == 0.0 || norm_other == 0.0 {
+            //return Err(EmbeddingError::ZeroLength);
+            panic!("zero length vector");
+        }
+
+        Ok(dot_product / (norm_self * norm_other))
+    }
+}

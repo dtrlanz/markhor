@@ -21,6 +21,8 @@ tokio = { version = "1.44.1", features = ["fs", "macros", "rt-multi-thread", "sy
 tracing = "0.1.41"
 trait-variant = "0.1.2"
 uuid = { version = "1.16.0", features = ["v4", "serde"] }
+clap = { version = "4.5.35", features = ["cargo"] }
+
 
 [dev-dependencies]
 tempfile = "3.19.1"

@@ -1,27 +1,36 @@
-use crate::storage::{metadata, ConflictError, Error, Result};
+use crate::storage::{ConflictError, Error, Result};
 use crate::storage::metadata::DocumentMetadata;
 use crate::storage::ContentFile;
 use regex::Regex;
 use tokio::io::{AsyncRead, AsyncWriteExt};
+use tokio::sync::MutexGuard;
 use uuid::Uuid;
+use std::borrow::Cow;
 use std::ffi::OsStr;
-use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs::{self, OpenOptions};
 use tracing::{debug, instrument, warn};
 
-use super::Workspace; // Optional: for logging
+use super::workspace::NUM_METADATA_FILE_LOCKS;
+use super::Workspace;
 
 const MARKHOR_EXTENSION: &str = "markhor";
+
+
 
 /// Represents a Markhor document, defined by a `.markhor` metadata file
 /// and consisting of associated files in the same directory.
 #[derive(Debug, Clone)]
 pub struct Document {
-    // Absolute path to the .markhor file
+    /// Absolute path to the .markhor file
     pub(crate) absolute_path: PathBuf,
-    // Workspace owning this document
+
+    /// Unique ID
+    pub id: Uuid,
+
+    /// Workspace owning this document
     workspace: Arc<Workspace>,
     metadata: DocumentMetadata,
 }
@@ -35,7 +44,7 @@ impl Document {
         validate_markhor_path(&absolute_path)?;
 
         // Ensure the file exists and we can read it (basic check)
-        // `read_metadata` will perform the actual read.
+        // `read_metadata_internal` will perform the actual read.
         if !fs::try_exists(&absolute_path).await.map_err(Error::Io)? {
             return Err(Error::FileNotFound(absolute_path));
         }
@@ -45,9 +54,10 @@ impl Document {
 
         // Try reading metadata to confirm it's a valid document structure
         let metadata = Self::read_metadata_internal(&absolute_path).await?;
+        let id = metadata.id;
 
         debug!("Document opened successfully");
-        Ok(Document { absolute_path, workspace, metadata })
+        Ok(Document { absolute_path, id, workspace, metadata })
     }
 
     /// Creates a new document with a `.markhor` file at the specified path.
@@ -66,6 +76,7 @@ impl Document {
 
         debug!("Conflict check passed. Creating new document.");
         let metadata = DocumentMetadata::new();
+        let id = metadata.id;
         let content = serde_json::to_string_pretty(&metadata)?;
 
         fs::write(&absolute_path, content)
@@ -73,7 +84,7 @@ impl Document {
             .map_err(Error::Io)?;
 
         debug!("Document metadata file created successfully.");
-        Ok(Document { absolute_path, workspace, metadata })
+        Ok(Document { absolute_path, id, workspace, metadata })
     }
 
     /// Returns the relative path to the document's `.markhor` file within the workspace.
@@ -93,37 +104,59 @@ impl Document {
 
     /// Reads and deserializes the document's metadata from its `.markhor` file.
     #[instrument(skip(self))]
-    pub(crate) async fn read_metadata(&self) -> Result<DocumentMetadata> {
+    pub async fn read_metadata(&self) -> Result<DocumentMetadata> {
+        let _lock = self.lock_metadata_file().await;
         Self::read_metadata_internal(&self.absolute_path).await
+    }
+
+    /// Reads and potentially updates document's metadata.
+    #[instrument(skip(self, f))]
+    pub(crate) async fn with_metadata<F, T>(&self, f: F) -> Result<T>
+    where
+        F: AsyncFnOnce(&mut Cow<DocumentMetadata>) -> T,
+    {
+        // Read metadata
+        let _lock = self.lock_metadata_file().await;
+        let metadata = Self::read_metadata_internal(&self.absolute_path).await?;
+
+        // Pass borrow of metadata to callback
+        let mut cow = Cow::Borrowed(&metadata);
+        let value = f(&mut cow).await;
+
+        // If metadata was mutated, update file
+        if let Cow::Owned(updated_metadata) = cow {
+            debug!("Saving metadata to {}", self.absolute_path.display());
+            let content = serde_json::to_string_pretty(&updated_metadata)?;
+            fs::write(&self.absolute_path, content)
+                .await
+                .map_err(Error::Io)?;
+            debug!("Metadata saved successfully.");
+        };
+
+        // Return the result
+        Ok(value)
     }
 
     /// Internal helper for reading metadata
     async fn read_metadata_internal(path: &Path) -> Result<DocumentMetadata> {
-         debug!("Reading metadata from {}", path.display());
-         let content = fs::read(path)
-             .await
-             .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    Error::FileNotFound(path.to_path_buf())
-                } else {
-                    Error::Io(e)
-                }
-             })?;
-         let metadata: DocumentMetadata = serde_json::from_slice(&content)?;
-         Ok(metadata)
+        debug!("Reading metadata from {}", path.display());
+        let content = fs::read(path)
+            .await
+            .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Error::FileNotFound(path.to_path_buf())
+            } else {
+                Error::Io(e)
+            }
+            })?;
+        let metadata: DocumentMetadata = serde_json::from_slice(&content)?;
+        Ok(metadata)
     }
 
-
-    /// Serializes and writes the provided metadata to the document's `.markhor` file.
-    #[instrument(skip(self, metadata))]
-    pub(crate) async fn save_metadata(&self, metadata: &DocumentMetadata) -> Result<()> {
-        debug!("Saving metadata to {}", self.absolute_path.display());
-        let content = serde_json::to_string_pretty(metadata)?;
-        fs::write(&self.absolute_path, content)
-            .await
-            .map_err(Error::Io)?;
-        debug!("Metadata saved successfully.");
-        Ok(())
+    #[instrument(skip(self))]
+    async fn lock_metadata_file(&self) -> MutexGuard<()> {
+        let index = usize::try_from(self.id.as_fields().0).unwrap() % NUM_METADATA_FILE_LOCKS;
+        self.workspace.metadata_file_locks[index].lock().await
     }
 
     /// Moves the document (including its `.markhor` file and all associated files)
@@ -219,12 +252,19 @@ impl Document {
         }
     }
 
+    pub async fn file(&self, file_name: &str) -> Result<ContentFile> {
+        // TODO: No need to iterate all files if we know the name
+        let files = self.list_content_files_internal(None).await?;
+        files.into_iter()
+            .find(|file| file.file_name() == file_name)
+            .ok_or_else(|| Error::FileNotFound(self.absolute_path.with_file_name(file_name)))
+    }
 
     /// Returns a list of all files associated with this document
     /// (excluding the `.markhor` file itself).
     #[instrument(skip(self))]
     pub async fn files(&self) -> Result<Vec<ContentFile>> {
-         self.list_content_files_internal(None).await
+        self.list_content_files_internal(None).await
     }
 
     /// Returns a list of associated files filtered by a specific extension.
@@ -232,6 +272,14 @@ impl Document {
     #[instrument(skip(self))]
     pub async fn files_by_extension(&self, extension: &str) -> Result<Vec<ContentFile>> {
         self.list_content_files_internal(Some(extension)).await
+    }
+
+    /// Returns a list of files representing the primary content of this document.
+    /// 
+    /// The current implementation simply returns all Markdown (.md) files, but this behavior will
+    /// be refined in the future.
+    pub async fn primary_content_files(&self) -> Result<Vec<ContentFile>> {
+        self.list_content_files_internal(Some("md")).await
     }
 
     /// Adds a new file to the document with the specified extension.
@@ -301,12 +349,12 @@ impl Document {
         let (dir, basename) = get_dir_and_basename(&self.absolute_path)?;
         let mut files = Vec::new();
         let mut read_dir = fs::read_dir(&dir).await.map_err(|e| {
-             if e.kind() == std::io::ErrorKind::NotFound {
+            if e.kind() == std::io::ErrorKind::NotFound {
                 Error::DirectoryNotFound(dir.clone())
-             } else {
-                 Error::Io(e)
-             }
-         })?;
+            } else {
+                Error::Io(e)
+            }
+        })?;
 
         while let Some(entry) = read_dir.next_entry().await.map_err(Error::Io)? {
             let path = entry.path();
@@ -324,8 +372,8 @@ impl Document {
                                 files.push(ContentFile::new(path, self));
                             }
                         } else {
-                             // No filter, add the file
-                             files.push(ContentFile::new(path, self));
+                            // No filter, add the file
+                            files.push(ContentFile::new(path, self));
                         }
                     }
                 }
@@ -352,6 +400,20 @@ impl Document {
             }
         }
         Ok(paths)
+    }
+}
+
+impl PartialEq for Document {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for Document {}
+
+impl Hash for Document {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
     }
 }
 
@@ -411,10 +473,10 @@ fn parse_basename(stem: &str) -> Result<(String, Option<String>)> {
 /// Checks if a filename matches the pattern for belonging to a document
 /// with the given basename (`basename.*` or `basename.{hex}.*`).
 fn is_potential_content_file(filename: &str, doc_basename: &str) -> bool {
-    if !filename.starts_with(doc_basename) {
+    if !filename.to_lowercase().starts_with(&doc_basename.to_lowercase()) {
         return false;
     }
-    if filename.ends_with(&format!(".{}", MARKHOR_EXTENSION)) {
+    if filename.to_lowercase().ends_with(&format!(".{}", MARKHOR_EXTENSION)) {
         return false; // Exclude .markhor files themselves
     }
 
@@ -756,6 +818,13 @@ mod tests {
         assert!(!is_potential_content_file("mydoc.markhor", "mydoc")); // Usually handled separately
         assert!(!is_potential_content_file("mydoc.v1.txt", "mydoc")); // "v1" is not hex
 
+        // Should be case-insensitive
+        assert!(is_potential_content_file("mydoc.pdf", "MYDOC"));
+        assert!(is_potential_content_file("mydoc.a1.txt", "MYDOC"));
+        assert!(is_potential_content_file("mydoc.A1.txt", "MYDOC"));
+        assert!(is_potential_content_file("MYDOC.00ff.dat", "mydoc"));
+        assert!(is_potential_content_file("MYDOC.a1", "mydoc"));
+        assert!(is_potential_content_file("mydoc.A1", "mydoc"));
 
         // Suffixed doc: "report.v1.a0"
         let basename = "report.v1.a0";

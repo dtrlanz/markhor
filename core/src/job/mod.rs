@@ -1,10 +1,15 @@
 use std::sync::Arc;
 
-use crate::{chat::{chat::ChatApi, ChatError}, convert::{ConversionError, Converter}, extension::{Extension, UseExtensionError}, storage::{Content, Document, Folder}};
+use crate::{chat::{chat::ChatApi, prompter::Prompter, ChatError}, chunking::Chunker, convert::{ConversionError, Converter}, embedding::{Embedder, EmbeddingError}, extension::{ActiveExtension, Extension, F11y, UseExtensionError}, storage::{self, Content, Document, Folder, Scope}};
 use mime::Mime;
 use thiserror::Error;
 use tokio::{io::AsyncRead, sync::mpsc::{error::SendError, UnboundedReceiver, UnboundedSender}, task::JoinHandle};
+use tracing::instrument;
 
+pub mod search;
+mod chat;
+
+pub use chat::{chat, simple_rag};
 
 /// A unit of work that can be executed asynchronously.
 /// 
@@ -12,8 +17,10 @@ use tokio::{io::AsyncRead, sync::mpsc::{error::SendError, UnboundedReceiver, Unb
 /// access to these assets and can use them to perform some work.
 pub struct Job<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> {
     callback: F,
-    assets: Assets,
-    asset_sender: Option<AssetSender>,
+    documents: Vec<Document>,
+    scopes: Vec<Scope>,
+    asset_channel: Option<(AssetSender, UnboundedReceiver<AssetItem>)>,
+    extensions: Arc<Vec<ActiveExtension>>,
 }
 
 impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> {
@@ -21,32 +28,109 @@ impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> 
     pub fn new(callback: F) -> Self {
         Self {
             callback,
-            assets: Assets {
-                documents: Vec::new(),
-                folders: Vec::new(),
-                extensions: Vec::new(),
-                receiver: None,
+            documents: Vec::new(),
+            scopes: Vec::new(),
+            asset_channel: None,
+            extensions: Arc::new(Vec::new()),
+        }
+    }
+
+    pub fn and_then<T2, C: AsyncFnOnce(&mut Assets, T) -> Result<T2, RunJobError> + Send>(self, callback: C) -> Job<T2, impl AsyncFnOnce(&mut Assets) -> Result<T2, RunJobError> + Send> {
+        let callback0 = self.callback;
+        Job {
+            callback: async move |assets| {
+                let result0 = callback0(assets).await?;
+                callback(assets, result0).await
             },
-            asset_sender: None,
+            documents: self.documents,
+            scopes: self.scopes,
+            asset_channel: self.asset_channel,
+            extensions: self.extensions,
+        }
+    }
+
+    pub fn and_chain<T2, F2: AsyncFnOnce(&mut Assets) -> Result<T2, RunJobError> + Send, C: FnOnce(T) -> Job<T2, F2> + Send>(self, callback: C) -> Job<T2, impl AsyncFnOnce(&mut Assets) -> Result<T2, RunJobError> + Send> {
+        let callback0 = self.callback;
+        Job {
+            callback: async move |assets| {
+                let result0 = callback0(assets).await?;
+                let mut next_job = callback(result0)
+                    // apply same extensions to the next job
+                    .with_extensions(assets.extensions.iter().cloned());
+
+                // Add assets to chained job
+                for doc in assets.documents.drain(..) {
+                    next_job.add_document(doc);
+                }
+                next_job.run().await
+            },
+            documents: self.documents,
+            scopes: self.scopes,
+            asset_channel: self.asset_channel,
+            extensions: self.extensions,
+        }
+    }
+
+    pub fn and_chain_async<T2, F2: AsyncFnOnce(&mut Assets) -> Result<T2, RunJobError> + Send, C: AsyncFnOnce(T) -> Job<T2, F2> + Send>(self, callback: C) -> Job<T2, impl AsyncFnOnce(&mut Assets) -> Result<T2, RunJobError> + Send> {
+        let callback0 = self.callback;
+        Job {
+            callback: async move |assets| {
+                let result0 = callback0(assets).await?;
+                let mut next_job = callback(result0).await
+                    // apply same extensions to the next job
+                    .with_extensions(assets.extensions.iter().cloned());
+
+                // Add assets to chained job
+                for doc in assets.documents.drain(..) {
+                    next_job.add_document(doc);
+                }
+                next_job.run().await
+            },
+            documents: self.documents,
+            scopes: self.scopes,
+            asset_channel: self.asset_channel,
+            extensions: self.extensions,
+        }
+    }
+
+    /// Configure the extensions available to the job.
+    /// 
+    /// Note that any `AssetSender`s created before this method is called will be invalidated.
+    pub fn with_extensions<I: Iterator<Item = ActiveExtension>>(self, extensions: I) -> Self {
+        Job {
+            callback: self.callback,
+            documents: self.documents,
+            scopes: self.scopes,
+            asset_channel: None,
+            extensions: Arc::new(extensions.collect()),
         }
     }
 
     /// Add a document to the job's assets.
     pub fn add_document(&mut self, document: Document) -> &mut Self {
-        self.assets.documents.push(document);
+        self.documents.push(document);
         self
     }
 
-    /// Add a folder to the job's assets.
-    pub fn add_folder(&mut self, folder: Folder) -> &mut Self {
-        self.assets.folders.push(folder);
-        self
+    /// Add all documents in a folder to the job's assets.
+    pub async fn add_folder(&mut self, folder: Folder) -> Result<&mut Self, storage::Error> {
+        for doc in folder.list_documents().await? {
+            self.add_document(doc);
+        }
+        for folder in folder.list_folders().await? {
+            Box::pin(self.add_folder(folder)).await?;
+        }
+        Ok(self)
     }
 
-    /// Add an extension to the job's assets.
-    pub fn add_extension(&mut self, extension: Arc<dyn Extension>) -> &mut Self {
-        self.assets.extensions.push(extension);
-        self
+    /// Get the assets available to the job.
+    pub fn documents(&self) -> &[Document] {
+        &self.documents
+    }
+
+    /// Get the scopes available to the job.
+    pub fn scopes(&self) -> &[Scope] {
+        &self.scopes
     }
 
     /// Get an asset sender for this job.
@@ -58,16 +142,15 @@ impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> 
     /// Note that any assets sent after the job has started will not be available to the callback
     /// function until it calls `Assets::refresh`.
     pub fn asset_sender(&mut self) -> AssetSender {
-        if let Some(sender) = &self.asset_sender {
-            return sender.clone();
+        if let Some(sender) = &self.asset_channel {
+            return sender.0.clone();
         }
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<AssetItem>();
         
-        self.assets.receiver = Some(receiver);
         let sender = AssetSender {
             inner: sender,
         };
-        self.asset_sender = Some(sender.clone());
+        self.asset_channel = Some((sender.clone(), receiver));
         sender
     }
 
@@ -77,33 +160,55 @@ impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> 
     /// 
     /// Returns the result of the callback function that was used to create the job.
     pub async fn run(mut self) -> Result<T, RunJobError> {
-        // Refresh the assets before running the callback
-        self.assets.refresh();
+        let mut assets = Assets {
+            documents: self.documents,
+            scopes: self.scopes,
+            extensions: self.extensions,
+            asset_channel: self.asset_channel.take(),
+        };
 
         // Call the callback function with the assets
-        (self.callback)(&mut self.assets).await
+        (self.callback)(&mut assets).await
     }
 }
 
 /// A collection of assets that can be used by a job.
 pub struct Assets {
     documents: Vec<Document>,
-    folders: Vec<Folder>,
-    extensions: Vec<Arc<dyn Extension>>,
-    receiver: Option<UnboundedReceiver<AssetItem>>,
+    scopes: Vec<Scope>,
+    extensions: Arc<Vec<ActiveExtension>>,
+    asset_channel: Option<(AssetSender, UnboundedReceiver<AssetItem>)>,
 }
 
 impl Assets {
     /// Refresh the available assets, ensuring that any newly sent assets are included.
-    pub fn refresh(&mut self) {
-        if let Some(receiver) = &mut self.receiver {
+    /// 
+    /// This method checks if any new documents or scopes have been sent to the job since it 
+    /// started running or since the last refresh. If so, it adds them to the job's assets.
+    /// 
+    /// Returns an iterator over the newly added assets.
+    #[instrument(skip(self))]
+    pub fn refresh(&mut self) -> Refresh<'_> {
+        let doc_idx = self.documents.len();
+        let scope_idx = self.scopes.len();
+
+        // Check if there are any new assets to add
+        if let Some((_, receiver)) = &mut self.asset_channel {
             while let Ok(item) = receiver.try_recv() {
                 match item {
                     AssetItem::Document(document) => self.documents.push(document),
-                    AssetItem::Folder(folder) => self.folders.push(folder),
-                    AssetItem::Extension(extension) => self.extensions.push(extension),
+                    AssetItem::Scope(scope) => self.scopes.push(scope),
                 }
             }
+        }
+
+        tracing::debug!("Added {} documents", self.documents.len() - doc_idx);
+        tracing::debug!("Added {} scopes", self.scopes.len() - scope_idx);
+
+        Refresh {
+            assets: self,
+            doc_idx,
+            scope_idx,
         }
     }
 
@@ -113,13 +218,32 @@ impl Assets {
     }
 
     /// Get the folders available to the job.
-    pub fn folders(&self) -> &[Folder] {
-        &self.folders
+    pub fn scopes(&self) -> &[Scope] {
+        &self.scopes
     }
 
     /// Get the extensions available to the job.
-    pub fn extensions(&self) -> &Vec<Arc<dyn Extension>> {
+    pub fn extensions(&self) -> &Vec<ActiveExtension> {
         &self.extensions
+    }
+
+    /// Get an asset sender for this job.
+    /// 
+    /// The asset sender can be used to send documents, folders, and extensions to the job's 
+    /// assets. In this way, it is possible to add assets from within the job's callback function.
+    /// 
+    /// Note that any assets sent will not be available until `Assets::refresh` is called.
+    pub fn asset_sender(&mut self) -> AssetSender {
+        if let Some(sender) = &self.asset_channel {
+            return sender.0.clone();
+        }
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<AssetItem>();
+        
+        let sender = AssetSender {
+            inner: sender,
+        };
+        self.asset_channel = Some((sender.clone(), receiver));
+        sender
     }
 
     /// Convert a document using the available extensions.
@@ -131,8 +255,8 @@ impl Assets {
         tracing::debug!("Converting content to {}", output_type);
         let converters = self.extensions.iter()
             .filter_map(|ext| 
-                if let Some(converter) = ext.converter() {
-                    Some(converter.clone())
+                if let Some(converter) = ext.converters().nth(0) {
+                    Some(converter)
                 } else {
                     None
                 }
@@ -153,32 +277,120 @@ impl Assets {
         Err(ConversionError::UnsupportedMimeType(output_type))
     }
 
-    pub async fn chat_model(&self, model: Option<String>) -> Result<Arc<dyn ChatApi>, ChatError> {
+    pub async fn chat_model(&self, model: Option<String>) -> Result<F11y<dyn ChatApi>, ChatError> {
         tracing::debug!("Getting chat model");
         // Iterate through extensions and find the specified model
-        for ext in &self.extensions {
+        for ext in self.extensions.iter() {
             tracing::debug!("Checking extension {}", ext.name());
-            if let Some(chat_client) = ext.chat_model() {
+            if let Some(chat_client) = ext.chat_providers().nth(0) {
                 tracing::debug!("Found chat model in extension {}", ext.name());
                 if let Some(requested_model) = &model {
                     tracing::debug!("Looking for model {}", requested_model);
-                    for model in chat_client.list_models().await.map_err(|e| ChatError::Other(Box::new(e)))? {
+                    // TODO reconsider error variant
+                    for model in chat_client.list_models().await.map_err(|e| ChatError::Provider(Box::new(e)))? {
                         if *model.id == *requested_model {
                             tracing::debug!("Found model {}", requested_model);
-                            return Ok(chat_client.clone());
+                            return Ok(chat_client);
                         }
                     }
                 } else {
                     tracing::debug!("No model specified, returning default model");
-                    return Ok(chat_client.clone());
+                    return Ok(chat_client);
                 }
             }
         }
-        Err(ChatError::Other("No chat model found".into()))
+        // TODO reconsider error variant
+        Err(ChatError::Provider("No chat model found".into()))
+    }
+
+    pub fn embedders(&self) -> Vec<F11y<dyn Embedder>> {
+        tracing::debug!("Getting embedders");
+        let mut embedders = Vec::new();
+        for ext in self.extensions.iter() {
+            if let Some(embedder) = ext.embedders().nth(0) {
+                embedders.push(embedder);
+            }
+        }
+        embedders
+    }
+
+    pub fn chunkers(&self) -> Vec<F11y<dyn Chunker>> {
+        tracing::debug!("Getting chunkers");
+        let mut chunkers = Vec::new();
+        for ext in self.extensions.iter() {
+            if let Some(chunker) = ext.chunkers().nth(0) {
+                chunkers.push(chunker);
+            }
+        }
+        chunkers
+    }
+
+    /// Get the available prompters from the extensions.
+    #[instrument(skip(self))]
+    pub fn prompters(&self) -> Vec<F11y<dyn Prompter>> {
+        tracing::debug!("Getting prompters");
+        let mut prompters = Vec::new();
+        for ext in self.extensions.iter() {
+            let len_before = prompters.len();
+            prompters.extend(ext.prompters());
+            let len_after = prompters.len();
+            tracing::debug!("Found {} prompters in extension {}", len_after - len_before, ext.name());
+        }
+        prompters
     }
 }
 
+/// An iterator over the assets that have been newly added to a job.
+/// 
+/// This struct is returned by the `Assets::refresh` method.
+pub struct Refresh<'a> {
+    assets: &'a Assets,
+    doc_idx: usize,
+    scope_idx: usize,
+}
 
+impl<'a> Refresh<'a> {
+    /// Get the documents that have been newly added to the job.
+    pub fn documents(self) -> impl Iterator<Item = Document> {
+        self.filter_map(|item| {
+            if let AssetItem::Document(doc) = item {
+                Some(doc)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Get the scopes that have been newly added to the job.
+    pub fn scopes(self) -> impl Iterator<Item = Scope> {
+        self.filter_map(|item| {
+            if let AssetItem::Scope(scope) = item {
+                Some(scope)
+            } else {
+                None
+            }
+        })
+    }
+}
+
+impl<'a> Iterator for Refresh<'a> {
+    type Item = AssetItem;
+
+    /// Get the next asset.
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.doc_idx < self.assets.documents.len() {
+            let item = AssetItem::Document(self.assets.documents[self.doc_idx].clone());
+            self.doc_idx += 1;
+            Some(item)
+        } else if self.scope_idx < self.assets.scopes.len() {
+            let item = AssetItem::Scope(self.assets.scopes[self.scope_idx].clone());
+            self.scope_idx += 1;
+            Some(item)
+        } else {
+            None
+        }
+    }
+}
 
 
 /// A sender for assets that can be used to send documents, folders, and extensions to a job.
@@ -199,34 +411,24 @@ impl AssetSender {
         })
     }
 
-    /// Send a folder to the job.
+    /// Send a scope to the job.
     /// 
-    /// The folder will be added to the assets of the job when the job is run or when the job's
+    /// The scope will be added to the assets of the job when the job is run or when the job's
     /// callback function calls `Assets::refresh`.
-    pub fn send_folder(&self, folder: Folder) -> Result<(), SendError<Folder>> {
-        self.inner.send(AssetItem::Folder(folder)).map_err(|e| match e.0 {
-            AssetItem::Folder(folder) => SendError(folder),
-            _ => unreachable!(),
-        })
-    }
-
-    /// Send an extension to the job.
     /// 
-    /// The extension will be added to the assets of the job when the job is run or when the job's
-    /// callback function calls `Assets::refresh`.
-    pub fn send_extension(&self, extension: Arc<dyn Extension>) -> Result<(), SendError<Arc<dyn Extension>>> {
-        self.inner.send(AssetItem::Extension(extension)).map_err(|e| match e.0 {
-            AssetItem::Extension(extension) => SendError(extension),
+    /// A scope is a set of documents (e.g., a folder and its subfolders).
+    pub fn send_scope(&self, scope: Scope) -> Result<(), SendError<Scope>> {
+        self.inner.send(AssetItem::Scope(scope)).map_err(|e| match e.0 {
+            AssetItem::Scope(folder) => SendError(folder),
             _ => unreachable!(),
         })
     }
 }
 
 /// An item that can be sent to a job's assets.
-enum AssetItem {
+pub enum AssetItem {
     Document(Document),
-    Folder(Folder),
-    Extension(Arc<dyn Extension>),
+    Scope(Scope),
 }
 
 #[derive(Debug, Error)]
@@ -234,144 +436,21 @@ pub enum RunJobError {
     #[error("Job failed due to extension error: {0}")]
     Extension(#[from] UseExtensionError),
 
-    #[error("Job failed due to document error: {0}")]
+    #[error("Job failed due to chat error: {0}")]
     Chat(#[from] ChatError),
+
+    #[error("Job failed due to embedding error: {0}")]
+    Embedding(#[from] EmbeddingError),
 
     #[error("Job failed due to conversion error: {0}")]
     Conversion(#[from] ConversionError),
 
+    #[error("Job failed due to prompt error: {0}")]
+    Prompt(#[from] crate::chat::prompter::PromptError),
+
+    #[error("Job failed due to storage error: {0}")]
+    Storage(#[from] storage::Error),
+
     #[error("Job failed: {0}")]
     Other(Box<dyn std::error::Error + Send + Sync>),
-}
-
-#[cfg(test)]
-mod tests {
-    use async_trait::async_trait;
-    
-    use super::*;
-    use crate::{chat::{ChatModel, Message}, extension::{Extension, Functionality}};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    struct TestChatModel {
-        idx: AtomicUsize,
-    }
-
-    impl TestChatModel {
-        fn new() -> Self {
-            Self { idx: AtomicUsize::new(0) }
-        }
-    }
-
-    impl Functionality for TestChatModel {
-        fn extension_uri(&self) -> &str { "test" }
-        fn id(&self) -> &str { "test" }
-        fn name(&self) -> &str { "Test Chat Model" }
-    }
-
-    #[async_trait]
-    impl ChatModel for TestChatModel {
-        async fn generate(&self, _messages: &Vec<Message>) -> Result<String, crate::chat::ChatError> {
-            let idx = self.idx.fetch_add(1, Ordering::SeqCst);
-            Ok(format!("Test Chat Model {}", idx))
-        }
-
-        async fn chat(
-            &self,
-            messages: &[Message],
-            model:Option<&str>,
-            config:Option<std::collections::HashMap<String,serde_json::Value>>,
-        ) -> Result<crate::chat::Completion, ChatError> {
-            let idx = self.idx.fetch_add(1, Ordering::SeqCst);
-            Ok(crate::chat::Completion {
-                message: Message::assistant(format!("Test Chat Model {}", idx)),
-                usage: None,
-            })
-        }
-    }
-
-    struct TestExtension {
-        model: Arc<TestChatModel>,
-    }
-
-    impl TestExtension {
-        fn new() -> Self {
-            Self { model: Arc::from(TestChatModel::new()) }
-        }
-    }
-
-    // impl Extension for TestExtension {
-    //     fn uri(&self) -> &str {
-    //         "test"
-    //     }
-    //     fn name(&self) -> &str {
-    //         "Test Extension"
-    //     }
-    //     fn description(&self) -> &str {
-    //         "Test Extension"
-    //     }
-    //     fn chat_model(&self) -> Option<Arc<dyn ChatModel>> {
-    //         Some(self.model.clone())
-    //     }
-    // }
-
-    // #[tokio::test]
-    // #[traced_test]
-    // async fn test_job_run() {
-    //     let mut job = Job::new(async |assets: &mut Assets| {
-    //         let model = assets.extensions().first().unwrap().chat_model().unwrap();
-    //         let messages = vec![Message::user("Hello")];
-    //         let response = model.generate(&messages).await?;
-    //         Ok(response)
-    //         // Ok(())
-    //     });
-    //     let extension = Arc::new(TestExtension::new());
-    //     job.add_extension(extension);
-    //     let result = job.run().await.unwrap();
-    //     assert_eq!(result, "Test Chat Model 0");
-    // }
-
-    // #[tokio::test]
-    // #[traced_test]
-    // async fn test_job_asset_sender() {
-    //     let extension = Arc::new(TestExtension::new());
-
-    //     // Create a new job depending on an extension
-    //     let mut job = Job::new(async |assets: &mut Assets| {
-    //         let model = assets.extensions().first().unwrap().chat_model().unwrap();
-    //         let messages = vec![Message::user("Hello")];
-    //         let response = model.generate(&messages).await?;
-    //         Ok(response)
-    //     });
-    //     // Send the extension to the job's assets *before* running the job
-    //     let asset_sender = job.asset_sender();
-    //     asset_sender.send_extension(extension.clone()).unwrap();
-    //     let result = job.run().await.unwrap();
-    //     assert_eq!(result, "Test Chat Model 0");
-
-    //     // Create a new job depending on an extension with delay
-    //     let mut job = Job::new(async |assets: &mut Assets| {
-    //         // wait for the extension to be sent
-    //         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    //         // Refresh the assets to include any newly sent extensions
-    //         assets.refresh();
-    //         // Now we can use the extension
-    //         let model = assets.extensions().first().unwrap().chat_model().unwrap();
-    //         let messages = vec![Message::user("Hello")];
-    //         let response = model.generate(&messages).await?;
-    //         Ok(response)
-    //     });
-    //     // Start job in the background
-    //     let asset_sender = job.asset_sender();
-    //     let job_handle = tokio::spawn(async move {
-    //         job.run().await.unwrap()
-    //     });
-    //     tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
-    //     // Send the extension to the job's assets *after* starting the job
-    //     asset_sender.send_extension(extension).unwrap();
-    //     // Wait for the job to finish
-    //     let result = job_handle.await.unwrap();
-    //     assert_eq!(result, "Test Chat Model 1");
-    // }
-
-
 }

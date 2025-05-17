@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use super::{error::EmbeddingError, Embeddings};
+use super::{error::EmbeddingError, Embedding};
 
 /// Trait for asynchronous text embedding generation.
 ///
@@ -19,11 +19,11 @@ pub trait Embedder: Send + Sync {
     /// # Returns
     ///
     /// A `Result` containing either:
-    /// * `Ok(Embeddings)`: Wrapper containing vectors for each input text chunk.
+    /// * `Ok(Vec<Embedding>)`: Wrapper containing vectors for each input text chunk.
     /// * `Err(EmbeddingError)`: An error encountered during the process. Implementations
     ///   should use specific variants like `InputTooLong` or `BatchTooLarge` when
     ///   input limits are exceeded.
-    async fn embed(&self, texts: &[&str]) -> Result<Embeddings, EmbeddingError>;
+    async fn embed(&self, texts: &[&str]) -> Result<Vec<Embedding>, EmbeddingError>;
 
     /// Returns the number of dimensions in the embedding vectors produced by this embedder.
     ///

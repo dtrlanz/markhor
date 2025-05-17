@@ -6,6 +6,7 @@ pub mod storage;
 pub mod job;
 pub mod convert;
 pub mod tool;
+pub mod chunking;
 
 pub mod error {
     use thiserror::Error;

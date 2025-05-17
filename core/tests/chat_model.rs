@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::{atomic::{AtomicUsize, Ordering}, Arc}};
 
 use async_trait::async_trait;
-use markhor_core::{chat::{self, chat::{ChatApi, ChatOptions, ChatResponse, ChatStream, ContentPart, Message, ModelInfo}, ApiError, ChatError, ChatModel}, extension::{Extension, Functionality}};
+use markhor_core::{chat::{chat::{ChatApi, ChatOptions, ChatResponse, ChatStream, ContentPart, Message, ModelInfo}, ChatError}, extension::Extension};
 
 
 const SONNET_18: [&str; 14] = [
@@ -31,42 +31,9 @@ impl ShakespeareChatModel {
     }
 }
 
-impl Functionality for ShakespeareChatModel {
-    fn extension_uri(&self) -> &str { "test" }
-    fn id(&self) -> &str { "shakespeare" }
-    fn name(&self) -> &str { "William Shakespeare" }
-}
-
-#[async_trait]
-impl ChatModel for ShakespeareChatModel {
-    async fn generate(&self, _messages: &Vec<chat::Message>) -> Result<String, ChatError> {
-        if self.idx.load(Ordering::SeqCst) >= SONNET_18.len() {
-            return Err(ChatError::ModelError(String::from("Out of lines")));
-        }
-        let idx = self.idx.fetch_add(1, Ordering::SeqCst);
-        Ok(String::from(SONNET_18[idx]))
-    }
-
-    async fn chat(
-        &self,
-        messages: &[chat::Message],
-        _model: Option<&str>,
-        _config: Option<HashMap<String, serde_json::Value>>,
-    ) -> Result<markhor_core::chat::Completion, ChatError> {
-        if self.idx.load(Ordering::SeqCst) >= SONNET_18.len() {
-            return Err(ChatError::ModelError(String::from("Out of lines")));
-        }
-        let idx = self.idx.fetch_add(1, Ordering::SeqCst);
-        Ok(markhor_core::chat::Completion {
-            message: chat::Message::assistant(SONNET_18[idx].to_string()),
-            usage: None,
-        })
-    }
-}
-
 #[async_trait]
 impl ChatApi for ShakespeareChatModel {
-    async fn list_models(&self) -> Result<Vec<ModelInfo>, ApiError> {
+    async fn list_models(&self) -> Result<Vec<ModelInfo>, ChatError> {
         Ok(vec![ModelInfo {
             id: "shakespeare".to_string(),
             description: Some("Chat with Shakespeare".to_string()),
@@ -75,9 +42,9 @@ impl ChatApi for ShakespeareChatModel {
         }])
     }
 
-    async fn generate(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatResponse, ApiError> {
+    async fn generate(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatResponse, ChatError> {
         if self.idx.load(Ordering::SeqCst) >= SONNET_18.len() {
-            return Err(ApiError::RateLimited);
+            return Err(ChatError::RateLimited);
         }
         let idx = self.idx.fetch_add(1, Ordering::SeqCst);
         Ok(ChatResponse {
@@ -89,21 +56,17 @@ impl ChatApi for ShakespeareChatModel {
         })
     }
 
-    async fn generate_stream(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatStream, ApiError> {
+    async fn generate_stream(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatStream, ChatError> {
         unimplemented!()
     }
 }
 
 
-struct ShakespeareChatExtension {
-    model: Arc<ShakespeareChatModel>,
-}
+struct ShakespeareChatExtension;
 
 impl ShakespeareChatExtension {
     fn new() -> Self {
-        Self { 
-            model: Arc::new(ShakespeareChatModel::new())
-        }
+        Self
     }
 }
 
@@ -117,8 +80,8 @@ impl Extension for ShakespeareChatExtension {
     fn description(&self) -> &str {
         "Chat with Shakespeare"
     }
-    fn chat_model(&self) -> Option<Arc<dyn ChatApi>> {
-        Some(self.model.clone())
+    fn chat_model(&self) -> Option<Box<dyn ChatApi>> {
+        Some(Box::new(ShakespeareChatModel::new()))
     }
 }
 
@@ -126,23 +89,11 @@ impl Extension for ShakespeareChatExtension {
 async fn shakespeare_chat_model() {
     let model = ShakespeareChatModel::new();
     let messages = vec![
-        chat::Message::user("Tell me a sonnet"),
-        chat::Message::assistant("Sure, here is one:"),
+        Message::user("Tell me a sonnet"),
+        Message::assistant("Sure, here is one:"),
     ];
-    let response = ChatModel::generate(&model,&messages).await.unwrap();
-    assert_eq!(response, "Shall I compare thee to a summer’s day?");
-    let response = ChatModel::generate(&model, &messages).await.unwrap();
-    assert_eq!(response, "Thou art more lovely and more temperate.");
+    let response = ChatApi::generate(&model,&messages, &Default::default()).await.unwrap();
+    assert_eq!(response.content.join(""), "Shall I compare thee to a summer’s day?");
+    let response = ChatApi::generate(&model, &messages, &Default::default()).await.unwrap();
+    assert_eq!(response.content.join(""), "Thou art more lovely and more temperate.");
 }
-
-// #[tokio::test]
-// async fn shakespeare_extension() {
-//     let extension = ShakespeareChatExtension::new();
-//     let model = extension.chat_model().unwrap();
-//     let messages = vec![
-//         Message::user("Tell me a sonnet"),
-//     ];
-//     let response = model.generate(&messages).await.unwrap();
-//     assert_eq!(response, "Shall I compare thee to a summer’s day?");
-// }
-

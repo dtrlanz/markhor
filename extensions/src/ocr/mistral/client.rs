@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use markhor_core::convert::{ConversionError, Converter};
-use markhor_core::extension::{Extension, Functionality};
+use markhor_core::extension::Extension;
 use mime::Mime;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::multipart::{Form, Part};
@@ -632,7 +632,7 @@ impl Extension for MistralClient {
         DESCRIPTION
     }
 
-    fn converter(&self) -> Option<std::sync::Arc<dyn Converter>> {
-        Some(Arc::new(MistralOcr(Arc::clone(&self.inner))))
+    fn converter(&self) -> Option<Box<dyn Converter>> {
+        Some(Box::new(MistralOcr(Arc::clone(&self.inner))))
     }
 }

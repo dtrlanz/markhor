@@ -1,22 +1,25 @@
-//mod extension_set;
+mod active_extension;
 
-use std::sync::Arc;
+use std::{fmt::Display, ops::{Deref, DerefMut}};
 
-//pub use extension_set::ExtensionSet;
+pub use active_extension::{ActiveExtension, ExtensionConfig};
+
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{chat::{chat::ChatApi, ChatModel}, convert::Converter, embedding::{Chunker, Embedder}};
+use crate::{chat::{chat::ChatApi, prompter::Prompter}, chunking::Chunker, convert::Converter, embedding::Embedder};
 
 pub trait Extension: Send + Sync {
     fn uri(&self) -> &str;
     fn name(&self) -> &str;
     fn description(&self) -> &str;
 
-    fn chat_model(&self) -> Option<Arc<dyn ChatApi>> { None }
-    fn embedding_model(&self) -> Option<Arc<dyn Embedder>> { None }
-    fn chunker(&self) -> Option<Arc<dyn Chunker>> { None }
-    fn converter(&self) -> Option<Arc<dyn Converter>> { None }
-    fn tools(&self) -> Vec<Arc<dyn crate::tool::Tool>> { vec![] }
+    fn chat_model(&self) -> Option<Box<dyn ChatApi>> { None }
+    fn embedding_model(&self) -> Option<Box<dyn Embedder>> { None }
+    fn chunker(&self) -> Option<Box<dyn Chunker>> { None }
+    fn converter(&self) -> Option<Box<dyn Converter>> { None }
+    fn prompters(&self) -> Vec<Box<dyn Prompter>> { vec![] }
+    fn tools(&self) -> Vec<Box<dyn crate::tool::Tool>> { vec![] }
 }
 
 #[derive(Debug, Error)]
@@ -33,30 +36,66 @@ pub enum UseExtensionError {
     #[error("Converter not available in extension")]
     ConverterNotAvailable,
 
+    #[error("Prompter not available in extension")]
+    PrompterNotAvailable,
+
     #[error("Tool not available in extension")]
     ToolNotAvailable,
 }
 
-/// Trait for identifying extension functionalities
-/// 
-/// An extension might have any number of functionalities. For example, a chat model extension
-/// might offer several different models; an SDK wrapper might implement different kinds of 
-/// functionalities (chat, embedding, conversion).
-/// 
-/// This trait helps identify and distinguish the various functinalities offered by extensions.
-/// 
-/// The combination of `extension_uri` and `id` must be unique.
-pub trait Functionality {
-    /// The unique URI of the extension that this functionality belongs to.
-    fn extension_uri(&self) -> &str;
+pub struct F11y<T: ?Sized> {
+    trait_object: Box<T>,
+    functionality_type: FunctionalityType,
+    extension: ActiveExtension,
+}
 
-    /// Identifier that is unique among the extension's functionalities.
-    fn id(&self) -> &str;
+impl<T: ?Sized> F11y<T> {
+    pub fn extension(&self) -> &ActiveExtension {
+        &self.extension
+    }
 
-    /// A name that might help the user identify this functionality (e.g., name of chat model).
-    /// 
-    /// The default implementation returns `self.id()`.
-    fn name(&self) -> &str {
-        self.id()
+    pub fn functionality_type(&self) -> FunctionalityType {
+        self.functionality_type
+    }
+
+    pub fn metadata_id(&self) -> String {
+        let suffix = match self.functionality_type {
+            _ => "",
+        };
+        format!("{} {}{}", self.extension.uri(), self.functionality_type, suffix)
     }
 }
+
+impl<T: ?Sized> Deref for F11y<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.trait_object
+    }
+}
+
+impl<T: ?Sized> DerefMut for F11y<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.trait_object
+    }
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FunctionalityType {
+    ChatProvider,
+    Embedder,
+    Chunker,
+    Converter,
+    Prompter,
+    Tool,
+}
+
+impl Display for FunctionalityType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        serde_json::to_string(self)
+            .map_err(|_| std::fmt::Error)?
+            .fmt(f)
+    }
+}
+

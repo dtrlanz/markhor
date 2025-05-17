@@ -9,10 +9,11 @@ use clap::Parser;
 use markhor::app::Markhor;
 use markhor::cli::{Cli, Commands};
 use markhor::commands;
-use markhor_core::extension::Extension;
+use markhor_core::extension::{ActiveExtension, Extension};
 use markhor_core::storage::{Storage, Workspace};
-use async_once_cell::OnceCell;
-use markhor_extensions::chat::gemini::GeminiClientExtension;
+use markhor_extensions::chunking::Chunkers;
+use markhor_extensions::cli::CliExtension;
+use markhor_extensions::gemini::GeminiClientExtension;
 use markhor_extensions::ocr::mistral::client::MistralClient;
 use reqwest::Client;
 use tracing::{debug, error, info, Level};
@@ -24,17 +25,18 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // --- Tracing Initialization ---
+    
+    // Initialize tracing
     setup_tracing(cli.verbose, cli.quiet);
 
     // Log that tracing is set up (this will now be captured)
     tracing::debug!(args = ?cli, "Markhor CLI arguments parsed");
 
-    // TODO: Initialize configuration loading (env vars, config files) -> store in some AppContext struct?
-
     // --- Configuration Loading ---
 
-    let mut extensions: Vec<Arc<dyn Extension>> = vec![];
-    let client = Client::new();
+    let mut extensions: Vec<ActiveExtension> = vec![
+        ActiveExtension::new(Chunkers, Default::default()),
+    ];
 
     // Process env vars
     dotenv::dotenv().ok();
@@ -43,7 +45,12 @@ async fn main() -> Result<()> {
     match std::env::var("GOOGLE_API_KEY") {
         Ok(key) => {
             info!("Google API key loaded from environment variables");
-            extensions.push(Arc::new(GeminiClientExtension::new(key, client)));
+            match GeminiClientExtension::new(key) {
+                Ok(ext) => extensions.push(ActiveExtension::new(ext, Default::default())),
+                Err(e) => {
+                    error!("Failed to construct Gemini extension: {}", e);
+                }
+            }
         },
         Err(_) => {
             debug!("Google API key not found in environment variables");
@@ -54,15 +61,18 @@ async fn main() -> Result<()> {
     match std::env::var("MISTRAL_API_KEY") {
         Ok(key) => {
             info!("Mistral API key loaded from environment variables");
-            extensions.push(Arc::new(MistralClient::new(key)));
+            extensions.push(ActiveExtension::new(
+                MistralClient::new(key),
+                Default::default(),
+            ));
         },
         Err(_) => {
             debug!("Mistral API key not found in environment variables");
         }
     };
 
-
     // --- Workspace Initialization ---
+
     let storage = Arc::new(Storage::new());
     let workspace = get_workspace(&storage, cli.workspace.clone()).await;
     // If the workspace is found, use current directory as default folder
@@ -76,12 +86,21 @@ async fn main() -> Result<()> {
         }
         Err(e) => None
     };
+
+    // Pass folder to CLI extension to enable auto-completion of document names
+    extensions.push(ActiveExtension::new(
+        CliExtension::new(folder.clone()),
+        Default::default(),
+    ));
+
     let app = Markhor {
         storage,
         workspace,
         folder,
         extensions,
     };
+
+    // --- Command Dispatching ---
 
     // Match the command and call the appropriate handler function
     tracing::debug!(command = ?cli.command, "Dispatching command");
@@ -96,7 +115,7 @@ async fn main() -> Result<()> {
         }
         Commands::Show(args) => {
             println!("Showing info with args: {:?}", args);
-            commands::handle_show(args).await
+            commands::handle_show(args, app).await
         }
         Commands::Open(args) => {
             println!("Opening document with args: {:?}", args);
@@ -104,7 +123,7 @@ async fn main() -> Result<()> {
         }
         Commands::Search(args) => {
             println!("Searching with args: {:?}", args);
-            commands::handle_search(args).await
+            commands::handle_search(args, app).await
         }
         Commands::Install(args) => {
             println!("Installing plugin with args: {:?}", args);
@@ -122,7 +141,8 @@ async fn main() -> Result<()> {
         }
     };
 
-    // --- Handle Command Result ---
+    // --- Command Result Handling ---
+
     if let Err(e) = command_result {
         // Log the detailed error using tracing
         // The {:?} format for anyhow::Error provides the context chain.

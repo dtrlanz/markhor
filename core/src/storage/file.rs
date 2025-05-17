@@ -22,6 +22,11 @@ impl<'a> ContentFile<'a> {
         &self.file_path
     }
 
+    /// Returns the document to which this file belongs.
+    pub fn document(&self) -> &Document {
+        self.document
+    }
+
     /// Asynchronously reads the entire content of the file into a byte vector.
     pub async fn read_content(&self) -> Result<Vec<u8>> {
         tokio::fs::read(&self.file_path)
@@ -48,12 +53,12 @@ impl<'a> ContentFile<'a> {
             })
     }
 
-    pub fn file_name(&self) -> Option<&str> {
-        self.file_path.file_name()?.to_str()
+    pub fn file_name(&self) -> &str {
+        self.file_path.file_name().unwrap().to_str().unwrap()
     }
 
-    pub fn extension(&self) -> Option<&str> {
-        self.file_path.extension()?.to_str()
+    pub fn extension(&self) -> &str {
+        self.file_path.extension().unwrap().to_str().unwrap()
     }
 }
 

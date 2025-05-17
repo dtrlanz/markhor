@@ -4,11 +4,14 @@ use crate::storage::folder::Folder; // Adjust path as needed
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use serde::{Deserialize, Serialize};
+use tokio::sync::{Mutex, MutexGuard};
 use uuid::Uuid;
 use tokio::fs;
 use tracing::{debug, instrument, warn};
 
 use super::{Document, Storage};
+
+pub(crate) const NUM_METADATA_FILE_LOCKS: usize = 10;
 
 
 /// Represents the root workspace directory containing documents and folders,
@@ -20,6 +23,7 @@ pub struct Workspace {
     pub(crate) absolute_path: PathBuf,
     pub(crate) internal_dir: PathBuf,
     pub on: WorkspaceEvents,
+    pub(crate) metadata_file_locks: [Mutex<()>; NUM_METADATA_FILE_LOCKS],
 }
 
 // Proof of concept for now, will be expanded later
@@ -177,6 +181,7 @@ impl Workspace {
             absolute_path, 
             internal_dir,
             on: WorkspaceEvents::new(),
+            metadata_file_locks: Default::default(),
         });
         Ok(arc)
     }
@@ -249,6 +254,7 @@ impl Workspace {
             absolute_path,
             internal_dir,
             on: WorkspaceEvents::new(),
+            metadata_file_locks: Default::default(),
         }))
     }
 }
