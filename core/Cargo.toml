@@ -22,6 +22,7 @@ tracing = "0.1.41"
 trait-variant = "0.1.2"
 uuid = { version = "1.16.0", features = ["v4", "serde"] }
 clap = { version = "4.5.35", features = ["cargo"] }
+pulldown-cmark = "0.13.0"
 
 
 [dev-dependencies]
