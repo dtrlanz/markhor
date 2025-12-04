@@ -1,7 +1,9 @@
 use std::ops::Range;
 use pulldown_cmark::{html, CowStr, Event, HeadingLevel, OffsetIter, Options, Parser, Tag, TextMergeWithOffset};
 
+mod parser;
 mod xml;
+mod parser2;
 
 #[derive(Debug)]
 struct Markdown<'a> {
@@ -99,6 +101,32 @@ impl<'a> Iterator for Sections<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn just_experimenting() {
+        let markdown = Markdown::from(
+"# Heading
+
+This is a nice paragraph
+
+<tag_name>
+Text
+</tag_name>
+
+Another paragraph
+
+<tag-name2>
+Text
+</tag-name2>
+
+");
+
+        for (event, range) in markdown.parser().into_offset_iter() {
+            println!("Event: {:?}, Range: {:?}", event, range);
+        }
+        assert!(false);
+    
+    }
 
     #[test]
     fn headings_lvl1_lvl1_with_leading_text() {

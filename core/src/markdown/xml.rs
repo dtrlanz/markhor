@@ -1,7 +1,7 @@
 
 // The enum to represent the parsed tag
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Tag<'a> {
+pub enum XmlTag<'a> {
     Start {
         name: CowStr<'a>,
         attributes: Vec<(CowStr<'a>, Option<CowStr<'a>>)>,
@@ -15,12 +15,64 @@ pub enum Tag<'a> {
     },
 }
 
+/// Parses the XML tags in a string and returns an iterator over them.
+/// 
+/// The iterator returns each XML tag along with the context of other text in its respective line.
+/// See [`TagWithContest`] for details.
+pub fn iter_tags_with_context<'a>(s: &'a str) -> impl Iterator<Item = TagWithContext<'a>> {
+    let mut index = 0;
+
+    std::iter::from_fn(move || {
+        if index >= s.len() {
+            return None; // No more tags to parse
+        }
+
+        // Parse the next tag
+        if let Some((range, tag)) = parse_tag(&s[index..]) {
+            let tag_start_absolute = index + range.start;
+            let tag_end_absolute = index + range.end;
+
+            // Extract the text before tag from start of line
+            let line_start = s[..tag_start_absolute].rfind('\n')
+                // Do not include line break character
+                .map(|byte_idx| byte_idx + 1)
+                .unwrap_or(0);
+            let before = &s[line_start..tag_start_absolute];
+
+            // Extract the text after tag to end of line
+            let line_end = s[tag_end_absolute..].find('\n')
+                .unwrap_or(s.len() - tag_end_absolute) + tag_end_absolute;
+            let after = &s[tag_end_absolute..line_end];
+
+            // Update index to continue searching after this tag
+            index = tag_end_absolute;
+
+            Some(TagWithContext {
+                tag,
+                range: range.start..range.end,
+                before,
+                after,
+            })
+        } else {
+            None // No valid tag found
+        }
+    })
+}
+
+/// Struct representing an XML tag along with the context of the line it is in
+pub struct TagWithContext<'a> {
+    pub tag: XmlTag<'a>,
+    pub range: Range<usize>,
+    pub before: &'a str,
+    pub after: &'a str,
+}
+
 
 /// Parses the first valid XML element tag (<tag>, </tag>, <tag/>) found in the string.
 /// Skips leading text and ignores XML declarations, processing instructions, and comments.
 /// Returns the range of the entire tag and the parsed Tag enum if successful.
 /// Returns None if no valid tag is found or if an encountered tag is invalid.
-pub fn parse_tag<'a>(s: &'a str) -> Option<(Range<usize>, Tag<'a>)> {
+pub fn parse_tag<'a>(s: &'a str) -> Option<(Range<usize>, XmlTag<'a>)> {
     let mut index = 0;
 
     while index < s.len() {
@@ -56,7 +108,7 @@ pub fn parse_tag<'a>(s: &'a str) -> Option<(Range<usize>, Tag<'a>)> {
                         if s[current_pos..].chars().nth(0) == Some('>') {
                             let tag_end = current_pos + 1;
                             // Successfully parsed end tag, return it
-                            return Some((tag_start_absolute..tag_end, Tag::End { name }));
+                            return Some((tag_start_absolute..tag_end, XmlTag::End { name }));
                         } else {
                             // Invalid character after name in end tag
                             continue; // Outer loop moves to next potential '<'
@@ -106,11 +158,11 @@ pub fn parse_tag<'a>(s: &'a str) -> Option<(Range<usize>, Tag<'a>)> {
                                 if s[current_pos..].starts_with("/>") {
                                     let tag_end = current_pos + 2;
                                     // Successfully parsed empty tag
-                                    return Some((tag_start_absolute..tag_end, Tag::Empty { name, attributes }));
+                                    return Some((tag_start_absolute..tag_end, XmlTag::Empty { name, attributes }));
                                 } else if s[current_pos..].chars().nth(0) == Some('>') {
                                     let tag_end = current_pos + 1;
                                     // Successfully parsed start tag
-                                    return Some((tag_start_absolute..tag_end, Tag::Start { name, attributes }));
+                                    return Some((tag_start_absolute..tag_end, XmlTag::Start { name, attributes }));
                                 } else {
                                     // Invalid characters after attributes
                                     continue; // Outer loop moves to next potential '<'
@@ -143,7 +195,7 @@ pub fn parse_tag<'a>(s: &'a str) -> Option<(Range<usize>, Tag<'a>)> {
 
 use std::ops::Range;
 
-use pulldown_cmark::CowStr;
+use pulldown_cmark::{CowStr, Tag};
 
 /// Checks if a character is valid at the start of an XML name (simplified).
 /// Allows letters, _, and :
@@ -382,35 +434,35 @@ mod tests {
     fn test_basic_start_tag() {
         let s = "<tag>";
         let result = parse_tag(s);
-        assert_eq!(result, Some((0..5, Tag::Start { name: i_cow("tag"), attributes: vec![] })));
+        assert_eq!(result, Some((0..5, XmlTag::Start { name: i_cow("tag"), attributes: vec![] })));
     }
 
     #[test]
     fn test_basic_end_tag() {
         let s = "</tag>";
         let result = parse_tag(s);
-        assert_eq!(result, Some((0..6, Tag::End { name: i_cow("tag") })));
+        assert_eq!(result, Some((0..6, XmlTag::End { name: i_cow("tag") })));
     }
 
     #[test]
     fn test_basic_empty_tag() {
         let s = "<tag/>";
         let result = parse_tag(s);
-        assert_eq!(result, Some((0..6, Tag::Empty { name: i_cow("tag"), attributes: vec![] })));
+        assert_eq!(result, Some((0..6, XmlTag::Empty { name: i_cow("tag"), attributes: vec![] })));
     }
 
     #[test]
     fn test_tag_with_leading_text() {
         let s = "some text <tag>";
         let result = parse_tag(s);
-        assert_eq!(result, Some((10..15, Tag::Start { name: i_cow("tag"), attributes: vec![] })));
+        assert_eq!(result, Some((10..15, XmlTag::Start { name: i_cow("tag"), attributes: vec![] })));
     }
 
      #[test]
     fn test_tag_with_trailing_text() {
         let s = "<tag> some text";
         let result = parse_tag(s);
-        assert_eq!(result, Some((0..5, Tag::Start { name: i_cow("tag"), attributes: vec![] })));
+        assert_eq!(result, Some((0..5, XmlTag::Start { name: i_cow("tag"), attributes: vec![] })));
     }
 
     #[test]
@@ -421,7 +473,7 @@ mod tests {
             (i_cow("name"), Some(i_cow("value"))),
             (i_cow("other"), Some(i_cow("val2"))),
         ];
-        assert_eq!(result, Some((0..31, Tag::Start { name: i_cow("tag"), attributes: expected_attrs })));
+        assert_eq!(result, Some((0..31, XmlTag::Start { name: i_cow("tag"), attributes: expected_attrs })));
     }
 
      #[test]
@@ -432,7 +484,7 @@ mod tests {
             (i_cow("name"), Some(i_cow("value"))),
             (i_cow("other"), Some(i_cow("val2"))),
         ];
-        assert_eq!(result, Some((0..32, Tag::Empty { name: i_cow("tag"), attributes: expected_attrs })));
+        assert_eq!(result, Some((0..32, XmlTag::Empty { name: i_cow("tag"), attributes: expected_attrs })));
     }
 
     #[test]
@@ -442,7 +494,7 @@ mod tests {
         let expected_attrs = vec![
             (i_cow("attr"), Some(i_cow("value"))),
         ];
-        assert_eq!(result, Some((2..28, Tag::Empty { name: i_cow("tag"), attributes: expected_attrs })));
+        assert_eq!(result, Some((2..28, XmlTag::Empty { name: i_cow("tag"), attributes: expected_attrs })));
     }
 
     #[test]
@@ -452,7 +504,7 @@ mod tests {
         let expected_attrs = vec![
             (i_cow("attr"), Some(CowStr::from("val&<>\'\""))),
         ];
-        assert_eq!(result, Some((0..41, Tag::Start { name: i_cow("tag"), attributes: expected_attrs })));
+        assert_eq!(result, Some((0..41, XmlTag::Start { name: i_cow("tag"), attributes: expected_attrs })));
     }
 
     #[test]
@@ -463,35 +515,35 @@ mod tests {
             (i_cow("required"), None),
             (i_cow("optional"), Some(i_cow("false"))),
         ];
-        assert_eq!(result, Some((0..31, Tag::Start { name: i_cow("tag"), attributes: expected_attrs })));
+        assert_eq!(result, Some((0..31, XmlTag::Start { name: i_cow("tag"), attributes: expected_attrs })));
     }
 
     #[test]
     fn test_first_tag_only() {
         let s = "<a></a><b></b>";
         let result = parse_tag(s);
-        assert_eq!(result, Some((0..3, Tag::Start { name: i_cow("a"), attributes: vec![] })));
+        assert_eq!(result, Some((0..3, XmlTag::Start { name: i_cow("a"), attributes: vec![] })));
     }
 
     #[test]
     fn test_ignore_comment() {
         let s = "<!-- comment --> <tag/>";
         let result = parse_tag(s);
-        assert_eq!(result, Some((17..23, Tag::Empty { name: i_cow("tag"), attributes: vec![] })));
+        assert_eq!(result, Some((17..23, XmlTag::Empty { name: i_cow("tag"), attributes: vec![] })));
     }
 
     #[test]
     fn test_ignore_pi() {
         let s = "<?xml version='1.0'?> <tag/>";
         let result = parse_tag(s);
-        assert_eq!(result, Some((22..28, Tag::Empty { name: i_cow("tag"), attributes: vec![] })));
+        assert_eq!(result, Some((22..28, XmlTag::Empty { name: i_cow("tag"), attributes: vec![] })));
     }
 
      #[test]
     fn test_ignore_doctype() {
         let s = "<!DOCTYPE foo> <tag/>";
         let result = parse_tag(s);
-        assert_eq!(result, Some((15..21, Tag::Empty { name: i_cow("tag"), attributes: vec![] })));
+        assert_eq!(result, Some((15..21, XmlTag::Empty { name: i_cow("tag"), attributes: vec![] })));
     }
 
     #[test]
@@ -565,7 +617,7 @@ mod tests {
             (i_cow("attr"), Some(i_cow("val"))),
         ];
         // Should parse the <root> tag first
-        assert_eq!(result, Some((16..33, Tag::Start { name: i_cow("root"), attributes: expected_attrs })));
+        assert_eq!(result, Some((16..33, XmlTag::Start { name: i_cow("root"), attributes: expected_attrs })));
     }
 
      #[test]
@@ -603,7 +655,7 @@ mod tests {
     fn test_tag_name_chars() {
         let s = "<a.b-c_d:e>";
         let result = parse_tag(s);
-        assert_eq!(result, Some((0..11, Tag::Start { name: i_cow("a.b-c_d:e"), attributes: vec![] })));
+        assert_eq!(result, Some((0..11, XmlTag::Start { name: i_cow("a.b-c_d:e"), attributes: vec![] })));
      }
 
     #[test]
@@ -613,7 +665,7 @@ mod tests {
         let expected_attrs = vec![
             (i_cow("attr.name-ok_yes:no"), Some(i_cow("val"))),
         ];
-         assert_eq!(result, Some((0..32, Tag::Empty { name: i_cow("tag"), attributes: expected_attrs })));
+         assert_eq!(result, Some((0..32, XmlTag::Empty { name: i_cow("tag"), attributes: expected_attrs })));
      }
 
     #[test]
@@ -625,7 +677,7 @@ mod tests {
         let result = parse_tag(&s);
 
         match result {
-            Some((range, Tag::Start { name, attributes })) => {
+            Some((range, XmlTag::Start { name, attributes })) => {
                 assert_eq!(&*name, long_name);
                 assert!(matches!(name, CowStr::Borrowed(_)), "Long name should be borrowed"); // Or Boxed if from String
                 assert_eq!(attributes.len(), 1);
@@ -666,7 +718,7 @@ mod tests {
             (i_cow("attr"), None),
             (i_cow("val"), None),
         ];
-        assert_eq!(result, Some((0..15, Tag::Empty { name: i_cow("tag"), attributes: expected_attrs })));
+        assert_eq!(result, Some((0..15, XmlTag::Empty { name: i_cow("tag"), attributes: expected_attrs })));
 
         let s = "<tag attr = val/>"; // Missing quotes around value
         assert_eq!(parse_tag(s), None); // parse_attribute expects quotes after '='
