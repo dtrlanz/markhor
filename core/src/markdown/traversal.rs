@@ -1,6 +1,6 @@
-use std::ops::Range;
+use std::{collections::VecDeque, ops::Range};
 
-use pulldown_cmark::{CowStr, Event, HeadingLevel, OffsetIter, Parser, TagEnd};
+use pulldown_cmark::{CowStr, Event, HeadingLevel, OffsetIter, Parser, Tag, TagEnd};
 use tracing::{debug, warn};
 
 use crate::markdown::xml::{self, XmlTag};
@@ -15,7 +15,7 @@ pub struct Traverse<'a> {
     parser: OffsetIter<'a>,
     cfg: TraversalCfg<'a>,
     node_stack: Vec<TraversalNode<'a>>,
-    event_stack: Vec<TraversalEvent<'a>>,
+    event_queue: VecDeque<TraversalEvent<'a>>,
 }
 
 impl<'a> Traverse<'a> {
@@ -32,7 +32,7 @@ impl<'a> Traverse<'a> {
             parser,
             cfg,
             node_stack: Vec::new(),
-            event_stack: Vec::new(),
+            event_queue: VecDeque::new(),
         }
     }
 
@@ -74,9 +74,10 @@ impl<'a> Traverse<'a> {
                 // used.
                 let parser = range_parser.as_mut().unwrap_or(&mut self.parser);
                 while let Some((event, _)) = parser.next() {
-                    let done = event == Event::End(TagEnd::Paragraph);
-                    self.event_stack.push(TraversalEvent::Markdown(event));
-                    if done { break; }
+                    if event == Event::End(TagEnd::Paragraph) { 
+                        break; 
+                    }
+                    self.event_queue.push_back(TraversalEvent::Markdown(event));
                 }
                 return;
             };
@@ -104,7 +105,7 @@ impl<'a> Traverse<'a> {
             if range.end <= xml_range.start {
                 // Entire markdown node is before the XML tag
                 // Keep calm and carry on
-                self.event_stack.push(TraversalEvent::Markdown(event));
+                self.event_queue.push_back(TraversalEvent::Markdown(event));
                 continue;
             } else if range.start < xml_range.start {
                 // Markdown node overlaps with start of XML tag
@@ -130,7 +131,7 @@ impl<'a> Traverse<'a> {
                         (text_event, xml_range.start)
                     }
                 };
-                self.event_stack.push(node_event);
+                self.event_queue.push_back(node_event);
 
                 if node_end == xml_range.start {
                     // Proceed to process the XML tag
@@ -156,7 +157,7 @@ impl<'a> Traverse<'a> {
                 // Handle effects on node stack
                 self.handle_start_marker(TraversalNode::Xml(name));
                 // Create XML start event
-                self.event_stack.push(TraversalEvent::XmlStart {
+                self.event_queue.push_back(TraversalEvent::XmlStart {
                     name: name,
                     attributes: attributes,
                 });
@@ -172,14 +173,14 @@ impl<'a> Traverse<'a> {
                     self.handle_start_marker(TraversalNode::Region(unit.clone()));
 
                     // Create milestone event
-                    self.event_stack.push(TraversalEvent::RegionStart {
+                    self.event_queue.push_back(TraversalEvent::RegionStart {
                         unit: unit,
                         value: value,
                         attributes: other_attrs,
                     });
                 } else {
                     // Create XML empty event
-                    self.event_stack.push(TraversalEvent::XmlEmpty {
+                    self.event_queue.push_back(TraversalEvent::XmlEmpty {
                         name: name,
                         attributes: attributes,
                     });
@@ -268,7 +269,7 @@ impl<'a> Traverse<'a> {
                 // Remove node from stack and push end event
                 let target_node = self.node_stack.remove(target_node_index);
                 let end_event = target_node.to_end();
-                self.event_stack.push(end_event);
+                self.event_queue.push_back(end_event);
             }
             TraversalEffect::CloseNodeAndNotifyDescendants => {
                 // Remove node from stack
@@ -276,19 +277,19 @@ impl<'a> Traverse<'a> {
 
                 // Notify descendants about parent closing
                 for i in (target_node_index..self.node_stack.len()).rev() {
-                    let descendant_effect = self.node_stack[i].on_parent_closing(&target_node);
+                    let descendant_effect = self.node_stack[i].on_parent_closing();
                     self.process_effect(i, descendant_effect);
                 }
 
                 // Push end event
                 let end_event = target_node.to_end();
-                self.event_stack.push(end_event);
+                self.event_queue.push_back(end_event);
             }
             TraversalEffect::CloseNodeAndContinue => {
                 // Remove node from stack and push end event
                 let target_node = self.node_stack.remove(target_node_index);
                 let end_event = target_node.to_end();
-                self.event_stack.push(end_event);
+                self.event_queue.push_back(end_event);
                 // Continue processing
                 return true;
             }
@@ -296,10 +297,10 @@ impl<'a> Traverse<'a> {
                 // Remove node from stack
                 let target_node = self.node_stack.remove(target_node_index);
                 // Push error event
-                self.event_stack.push(TraversalEvent::Error(err));
+                self.event_queue.push_back(TraversalEvent::Error(err));
                 // Push end event
                 let end_event = target_node.to_end();
-                self.event_stack.push(end_event);
+                self.event_queue.push_back(end_event);
             }
         }
         return false;
@@ -310,11 +311,55 @@ impl<'a> Iterator for Traverse<'a> {
     type Item = TraversalEvent<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(event) = self.event_stack.pop() {
+        // Return queued events first
+        if let Some(event) = self.event_queue.pop_front() {
             return Some(event);
         }
         
-        None
+        // Process next markdown event
+        if let Some((event, range)) = self.parser.next() {
+            match event {
+                Event::Start(Tag::Heading{ level, id, classes, attrs }) => {
+                    // Handle effects on node stack
+                    self.handle_start_marker(TraversalNode::Section(level));
+                    // Recreate heading start event
+                    // Cloning attributes etc. is a bit inelegant. But downstream consumers may
+                    // need them either on the section node or on the heading event. We might 
+                    // change this later if it turns out to be unnecessary in practice. 
+                    // Regardless, real-world performance impact is probably negligible. 
+                    self.event_queue.push_back(TraversalEvent::Markdown(Event::Start(
+                        Tag::Heading { level, id: id.clone(), classes: classes.clone(), attrs: attrs.clone() }
+                    )));
+                    // Emit section start event first, heading events later
+                    return Some(TraversalEvent::SectionStart {
+                        level,
+                        id,
+                        classes,
+                        attrs,
+                    });
+                },
+                Event::Start(Tag::Paragraph) => {
+                    // Parse paragraph for possible XML tags
+                    // This will create all relevant events between start and end of paragraph
+                    self.parse_paragraph(range, false);
+                    // Create paragraph end event for later
+                    self.event_queue.push_back(TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)));
+                    // Emit paragraph start event
+                    return Some(TraversalEvent::Markdown(Event::Start(Tag::Paragraph)));
+                },
+                _ => {
+                    // Other events are passed through as is
+                    return Some(TraversalEvent::Markdown(event));
+                },
+            }
+        }
+
+        // Handle end of document: Close any remaining open nodes
+        for i in (0..self.node_stack.len()).rev() {
+            let effect = self.node_stack[i].on_parent_closing();
+            self.process_effect(i, effect);
+        }
+        return self.event_queue.pop_front();
     }
 }
 
@@ -358,11 +403,17 @@ impl<'a> TraversalNode<'a> {
         }
     }
 
-    fn on_parent_closing(&self, other: &TraversalNode<'a>) -> TraversalEffect<'a> {
-        match (self, other) {
-            (TraversalNode::Xml(self_name), TraversalNode::Xml(other_name)) => {
-                xml_node::on_parent_closing(self_name, other_name)
-            }
+    fn on_parent_closing(&self) -> TraversalEffect<'a> {
+        match self {
+            TraversalNode::Xml(self_name) => {
+                xml_node::on_parent_closing(self_name)
+            },
+            TraversalNode::Section(_) => {
+                section_node::on_parent_closing()
+            },
+            TraversalNode::Region(_) => {
+                region_node::on_parent_closing()
+            },
             _ => TraversalEffect::None,
         }
     }
@@ -391,7 +442,6 @@ mod xml_node {
 
     pub fn on_parent_closing<'a>(
         self_name: &'a str,
-        _other_name: &'a str,
     ) -> TraversalEffect<'a> {
         TraversalEffect::CloseNodeAndError(TraverseMarkdownError::ExpectedXmlEnd(
             CowStr::from(self_name),
@@ -402,10 +452,10 @@ mod xml_node {
 mod section_node {
     use super::*;
 
-    pub fn on_start_marker<'a>(
+    pub fn on_start_marker(
         self_level: HeadingLevel,
         other_level: HeadingLevel,
-    ) -> TraversalEffect<'a> {
+    ) -> TraversalEffect<'static> {
         if other_level < self_level {
             TraversalEffect::CloseNodeAndContinue
         } else if other_level == self_level {
@@ -413,6 +463,10 @@ mod section_node {
         } else {
             TraversalEffect::None
         }
+    }
+
+    pub fn on_parent_closing() -> TraversalEffect<'static> {
+        TraversalEffect::CloseNode
     }
 }
 
@@ -429,8 +483,13 @@ mod region_node {
             TraversalEffect::None
         }
     }
+
+    pub fn on_parent_closing() -> TraversalEffect<'static> {
+        TraversalEffect::CloseNode
+    }
 }
 
+#[derive(Debug)]
 enum TraversalEffect<'a> {
     None,
     CloseNode,
@@ -439,6 +498,7 @@ enum TraversalEffect<'a> {
     CloseNodeAndError(TraverseMarkdownError<'a>),
 }
 
+#[derive(Debug, PartialEq, Clone)]
 pub enum TraversalEvent<'a> {
     XmlStart {
         name: &'a str,
@@ -472,6 +532,7 @@ pub enum TraversalEvent<'a> {
     Error(TraverseMarkdownError<'a>),
 }
 
+#[derive(Debug, PartialEq, Clone)]
 pub enum TraverseMarkdownError<'a> {
     ExpectedXmlEnd(CowStr<'a>),
 }
@@ -497,4 +558,57 @@ pub struct MilestoneSection<'a> {
     value: CowStr<'a>,
     start_offset: usize,
     end_offset: usize,
+}
+
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+
+    #[test]
+    fn test_traversal_basic() {
+        let content = r#"# Heading 1
+
+Some paragraph text.
+
+## Heading 2
+
+More text."#;
+
+        let mut expected = vec![
+            TraversalEvent::SectionStart { level: HeadingLevel::H1, id: None, classes: vec![], attrs: vec![]},
+            TraversalEvent::Markdown(Event::Start(Tag::Heading { level: HeadingLevel::H1, id: None, classes: vec![], attrs: vec![] })),
+            TraversalEvent::Markdown(Event::Text(CowStr::from("Heading 1"))),
+            TraversalEvent::Markdown(Event::End(TagEnd::Heading(HeadingLevel::H1))),
+            TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
+            TraversalEvent::Markdown(Event::Text(CowStr::from("Some paragraph text."))),
+            TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
+            TraversalEvent::SectionStart { level: HeadingLevel::H2, id: None,classes: vec![], attrs: vec![] },
+            TraversalEvent::Markdown(Event::Start(Tag::Heading { level: HeadingLevel::H2, id: None, classes: vec![], attrs: vec![] })),
+            TraversalEvent::Markdown(Event::Text(CowStr::from("Heading 2"))),
+            TraversalEvent::Markdown(Event::End(TagEnd::Heading(HeadingLevel::H2))),
+            TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
+            TraversalEvent::Markdown(Event::Text(CowStr::from("More text."))),
+            TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
+            TraversalEvent::SectionEnd { level: HeadingLevel::H2 },
+            TraversalEvent::SectionEnd { level: HeadingLevel::H1 },
+        ];
+
+        let cfg = TraversalCfg {
+            xml_filter: None,
+            enable_milestones: false,
+        };
+
+        let mut traverse = Traverse::new(content, cfg);
+
+        while let Some(event) = traverse.next() {
+            let expected_event = expected.remove(0);
+            assert_eq!(event, expected_event);
+            println!("✔ {:?}", event);
+        }
+
+        if !expected.is_empty() {
+            panic!("Expected events remaining: {:?}", expected);
+        }
+    }
 }
