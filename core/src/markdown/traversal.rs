@@ -322,30 +322,77 @@ impl<'a> Iterator for Traverse<'a> {
                 Event::Start(Tag::Heading{ level, id, classes, attrs }) => {
                     // Handle effects on node stack
                     self.handle_start_marker(TraversalNode::Section(level));
-                    // Recreate heading start event
+                    // Queue section start event first, heading event later
                     // Cloning attributes etc. is a bit inelegant. But downstream consumers may
                     // need them either on the section node or on the heading event. We might 
                     // change this later if it turns out to be unnecessary in practice. 
                     // Regardless, real-world performance impact is probably negligible. 
-                    self.event_queue.push_back(TraversalEvent::Markdown(Event::Start(
-                        Tag::Heading { level, id: id.clone(), classes: classes.clone(), attrs: attrs.clone() }
-                    )));
-                    // Emit section start event first, heading events later
-                    return Some(TraversalEvent::SectionStart {
+                    self.event_queue.push_back(TraversalEvent::SectionStart {
                         level,
-                        id,
-                        classes,
-                        attrs,
+                        id: id.clone(),
+                        classes: classes.clone(),
+                        attrs: attrs.clone(),
                     });
+                    // Recreate heading start event
+                    self.event_queue.push_back(TraversalEvent::Markdown(Event::Start(
+                        Tag::Heading { level, id, classes, attrs }
+                    )));
+                    // Emit event from queue. This may be a section end event if the preceding 
+                    // section was closed.
+                    return self.event_queue.pop_front();
                 },
                 Event::Start(Tag::Paragraph) => {
                     // Parse paragraph for possible XML tags
                     // This will create all relevant events between start and end of paragraph
                     self.parse_paragraph(range, false);
-                    // Create paragraph end event for later
-                    self.event_queue.push_back(TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)));
-                    // Emit paragraph start event
-                    return Some(TraversalEvent::Markdown(Event::Start(Tag::Paragraph)));
+                    // Determine index for paragraph start event. Some paragraph-initial events 
+                    // should be queued before it (e.g., xml start & empty tags).
+                    let mut start_index = 0;
+                    while start_index < self.event_queue.len() {
+                        match self.event_queue[start_index] {
+                            TraversalEvent::XmlStart { .. } => (),
+                            TraversalEvent::XmlEmpty { .. } => (),
+                            TraversalEvent::RegionStart { .. } => (),
+                            _ => {
+                                break;
+                            }
+                        }
+                        start_index += 1;
+                    }
+                    // Determine index for paragraph end event. Some paragraph-final events
+                    // should be queued after it (e.g., xml end tags).
+                    let mut end_index = self.event_queue.len();
+                    while end_index > start_index {
+                        match self.event_queue[end_index - 1] {
+                            TraversalEvent::XmlEnd { .. } => (),
+                            TraversalEvent::RegionEnd { .. } => (),
+                            _ => {
+                                break;
+                            }
+                        }
+                        end_index -= 1;
+                    }
+                    // Do not create empty paragraphs
+                    if start_index < end_index {
+                        // Trim trailing whitespace from last text node, if any
+                        if let TraversalEvent::Markdown(event) = &mut self.event_queue[end_index - 1] {
+                            let trimmed = if let Event::Text(text) = event {
+                                Some(CowStr::from(text.trim_end()).into_static())
+                            } else {
+                                None
+                            };
+                            if let Some(trimmed) = trimmed {
+                                *event = Event::Text(trimmed);
+                            }
+                        }
+                        // Insert paragraph start event at start_index
+                        self.event_queue.insert(start_index, TraversalEvent::Markdown(Event::Start(Tag::Paragraph)));
+                        // Insert paragraph end event at end_index + 1 (to account for the start event)
+                        self.event_queue.insert(end_index + 1, TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)));
+                    }
+                    // Emit event from queue.
+                    assert!(!self.event_queue.is_empty(), "Event queue should not be empty after parsing paragraph");
+                    return self.event_queue.pop_front();
                 },
                 _ => {
                     // Other events are passed through as is
@@ -563,52 +610,133 @@ pub struct MilestoneSection<'a> {
 
 #[cfg(test)]
 pub mod tests {
+    use std::vec;
+
     use super::*;
 
-    #[test]
-    fn test_traversal_basic() {
-        let content = r#"# Heading 1
-
-Some paragraph text.
-
-## Heading 2
-
-More text."#;
-
-        let mut expected = vec![
-            TraversalEvent::SectionStart { level: HeadingLevel::H1, id: None, classes: vec![], attrs: vec![]},
-            TraversalEvent::Markdown(Event::Start(Tag::Heading { level: HeadingLevel::H1, id: None, classes: vec![], attrs: vec![] })),
-            TraversalEvent::Markdown(Event::Text(CowStr::from("Heading 1"))),
-            TraversalEvent::Markdown(Event::End(TagEnd::Heading(HeadingLevel::H1))),
-            TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
-            TraversalEvent::Markdown(Event::Text(CowStr::from("Some paragraph text."))),
-            TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
-            TraversalEvent::SectionStart { level: HeadingLevel::H2, id: None,classes: vec![], attrs: vec![] },
-            TraversalEvent::Markdown(Event::Start(Tag::Heading { level: HeadingLevel::H2, id: None, classes: vec![], attrs: vec![] })),
-            TraversalEvent::Markdown(Event::Text(CowStr::from("Heading 2"))),
-            TraversalEvent::Markdown(Event::End(TagEnd::Heading(HeadingLevel::H2))),
-            TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
-            TraversalEvent::Markdown(Event::Text(CowStr::from("More text."))),
-            TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
-            TraversalEvent::SectionEnd { level: HeadingLevel::H2 },
-            TraversalEvent::SectionEnd { level: HeadingLevel::H1 },
-        ];
-
-        let cfg = TraversalCfg {
-            xml_filter: None,
-            enable_milestones: false,
-        };
-
+    fn assert_events(cfg: TraversalCfg, content: &str, expected: Vec<TraversalEvent>) {
         let mut traverse = Traverse::new(content, cfg);
+        let mut expected = expected;
 
-        while let Some(event) = traverse.next() {
+        while let Some(actual_event) = traverse.next() {
             let expected_event = expected.remove(0);
-            assert_eq!(event, expected_event);
-            println!("✔ {:?}", event);
+            assert_eq!(actual_event, expected_event);
+            println!("✔ {:?}", actual_event);
         }
 
         if !expected.is_empty() {
             panic!("Expected events remaining: {:?}", expected);
         }
     }
+
+    fn cfg_headings_only() -> TraversalCfg<'static> {
+        TraversalCfg {
+            xml_filter: None,
+            enable_milestones: false,
+        }
+    }
+
+    fn cfg_all_xmls_tags() -> TraversalCfg<'static> {
+        TraversalCfg {
+            xml_filter: Some(&|_tag: &XmlTag<'_>| true),
+            enable_milestones: true,
+        }
+    }
+
+    #[test]
+    fn nested_headings() {
+        assert_events(cfg_headings_only(), 
+            r#"# Heading 1
+
+Some paragraph text.
+
+## Heading 2
+
+More text."#, 
+            vec![
+                TraversalEvent::SectionStart { level: HeadingLevel::H1, id: None, classes: vec![], attrs: vec![]},
+                TraversalEvent::Markdown(Event::Start(Tag::Heading { level: HeadingLevel::H1, id: None, classes: vec![], attrs: vec![] })),
+                TraversalEvent::Markdown(Event::Text(CowStr::from("Heading 1"))),
+                TraversalEvent::Markdown(Event::End(TagEnd::Heading(HeadingLevel::H1))),
+                TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
+                TraversalEvent::Markdown(Event::Text(CowStr::from("Some paragraph text."))),
+                TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
+                TraversalEvent::SectionStart { level: HeadingLevel::H2, id: None,classes: vec![], attrs: vec![] },
+                TraversalEvent::Markdown(Event::Start(Tag::Heading { level: HeadingLevel::H2, id: None, classes: vec![], attrs: vec![] })),
+                TraversalEvent::Markdown(Event::Text(CowStr::from("Heading 2"))),
+                TraversalEvent::Markdown(Event::End(TagEnd::Heading(HeadingLevel::H2))),
+                TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
+                TraversalEvent::Markdown(Event::Text(CowStr::from("More text."))),
+                TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
+                TraversalEvent::SectionEnd { level: HeadingLevel::H2 },
+                TraversalEvent::SectionEnd { level: HeadingLevel::H1 },
+            ]
+        );
+    }
+
+    #[test]
+    fn inverted_headings() {
+        assert_events(cfg_headings_only(), 
+            r#"## Heading 2
+
+Some paragraph text.
+
+# Heading 1
+
+More text."#, 
+            vec![
+                TraversalEvent::SectionStart { level: HeadingLevel::H2, id: None, classes: vec![], attrs: vec![]},
+                TraversalEvent::Markdown(Event::Start(Tag::Heading { level: HeadingLevel::H2, id: None, classes: vec![], attrs: vec![] })),
+                TraversalEvent::Markdown(Event::Text(CowStr::from("Heading 2"))),
+                TraversalEvent::Markdown(Event::End(TagEnd::Heading(HeadingLevel::H2))),
+                TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
+                TraversalEvent::Markdown(Event::Text(CowStr::from("Some paragraph text."))),
+                TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
+                TraversalEvent::SectionEnd { level: HeadingLevel::H2 },
+                TraversalEvent::SectionStart { level: HeadingLevel::H1, id: None,classes: vec![], attrs: vec![] },
+                TraversalEvent::Markdown(Event::Start(Tag::Heading { level: HeadingLevel::H1, id: None, classes: vec![], attrs: vec![] })),
+                TraversalEvent::Markdown(Event::Text(CowStr::from("Heading 1"))),
+                TraversalEvent::Markdown(Event::End(TagEnd::Heading(HeadingLevel::H1))),
+                TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
+                TraversalEvent::Markdown(Event::Text(CowStr::from("More text."))),
+                TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
+                TraversalEvent::SectionEnd { level: HeadingLevel::H1 },
+            ]
+        );
+    }
+
+    #[test]
+    fn xml_as_separate_paragraphs() {
+        assert_events(cfg_all_xmls_tags(), 
+            r#"<my_tag>
+
+Some paragraph text.
+
+</my_tag>"#, 
+            vec![
+                TraversalEvent::XmlStart { name: "my_tag", attributes: vec![] },
+                TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
+                TraversalEvent::Markdown(Event::Text(CowStr::from("Some paragraph text."))),
+                TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
+                TraversalEvent::XmlEnd { name: "my_tag" },
+            ]
+        );
+    }
+
+    #[test]
+    fn xml_as_separate_lines() {
+        assert_events(cfg_all_xmls_tags(), 
+            r#"<my_tag>
+Some paragraph text.
+</my_tag>"#, 
+            vec![
+                TraversalEvent::XmlStart { name: "my_tag", attributes: vec![] },
+                TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
+                TraversalEvent::Markdown(Event::Text(CowStr::from("Some paragraph text."))),
+                TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
+                TraversalEvent::XmlEnd { name: "my_tag" },
+            ]
+        );
+    }
+
 }
