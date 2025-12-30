@@ -43,7 +43,7 @@ impl<'a> Traverse<'a> {
             // Iterate main parser until paragraph end to ensure it resumes from the 
             // correct position afterwards.
             while let Some((event, _)) = self.parser.next() {
-                if event == Event::End(TagEnd::Paragraph) {
+                if event == Event::End(TagEnd::Paragraph) || event == Event::End(TagEnd::HtmlBlock) {
                     break;
                 }
             }
@@ -74,7 +74,7 @@ impl<'a> Traverse<'a> {
                 // used.
                 let parser = range_parser.as_mut().unwrap_or(&mut self.parser);
                 while let Some((event, _)) = parser.next() {
-                    if event == Event::End(TagEnd::Paragraph) { 
+                    if event == Event::End(TagEnd::Paragraph) || event == Event::End(TagEnd::HtmlBlock) { 
                         break; 
                     }
                     self.event_queue.push_back(TraversalEvent::Markdown(event));
@@ -99,7 +99,7 @@ impl<'a> Traverse<'a> {
 
         // Process markdown nodes up to the XML tag
         while let Some((event, range)) = next_event() {
-            if event == Event::End(TagEnd::Paragraph) {
+            if event == Event::End(TagEnd::Paragraph) || event == Event::End(TagEnd::HtmlBlock) {
                 break;
             }
             if range.end <= xml_range.start {
@@ -190,6 +190,70 @@ impl<'a> Traverse<'a> {
 
         // Parse rest of paragraph after XML tag
         self.parse_paragraph(xml_range.end..range.end, true);
+    }
+
+    /// Creates paragraph start and end events around the current event queue, reordering certain
+    /// structural markers to be outside the paragraph.
+    /// 
+    /// Assumes that the event queue contains only events for a single paragraph, not including the
+    /// paragraph start and end events.
+    fn fix_paragraph_delimitation(&mut self) {
+        // Remove any extraneous paragraph start events within the paragraph. These may be created
+        // when constructing a new parser to resume parsing after an XML tag (when `parse_exact_range`
+        // is true).
+        self.event_queue.retain(|event| {
+            match event {
+                TraversalEvent::Markdown(Event::Start(Tag::Paragraph)) => false,
+                TraversalEvent::Markdown(Event::Start(Tag::HtmlBlock)) => false,
+                _ => true,
+            }
+        });
+
+        // Determine index for paragraph start event. Some paragraph-initial events 
+        // should be queued before it (e.g., xml start & empty tags).
+        let mut start_index = 0;
+        while start_index < self.event_queue.len() {
+            match self.event_queue[start_index] {
+                TraversalEvent::XmlStart { .. } => (),
+                TraversalEvent::XmlEmpty { .. } => (),
+                TraversalEvent::RegionStart { .. } => (),
+                _ => {
+                    break;
+                }
+            }
+            start_index += 1;
+        }
+        // Determine index for paragraph end event. Some paragraph-final events
+        // should be queued after it (e.g., xml end tags).
+        let mut end_index = self.event_queue.len();
+        while end_index > start_index {
+            match self.event_queue[end_index - 1] {
+                TraversalEvent::XmlEnd { .. } => (),
+                TraversalEvent::RegionEnd { .. } => (),
+                _ => {
+                    break;
+                }
+            }
+            end_index -= 1;
+        }
+        // Do not create empty paragraphs
+        if start_index < end_index {
+            // Trim trailing whitespace from last text node, if any
+            if let TraversalEvent::Markdown(event) = &mut self.event_queue[end_index - 1] {
+                let trimmed = if let Event::Text(text) = event {
+                    Some(CowStr::from(text.trim_end()).into_static())
+                } else {
+                    None
+                };
+                if let Some(trimmed) = trimmed {
+                    *event = Event::Text(trimmed);
+                }
+            }
+            // Insert paragraph start event at start_index
+            self.event_queue.insert(start_index, TraversalEvent::Markdown(Event::Start(Tag::Paragraph)));
+            // Insert paragraph end event at end_index + 1 (to account for the start event)
+            self.event_queue.insert(end_index + 1, TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)));
+        }        
     }
 
     fn parse_milestone(&self, name: &'a str, attributes: &Vec<(&'a str, Option<CowStr<'a>>)>) -> Option<(CowStr<'a>, CowStr<'a>, Vec<(&'a str, Option<CowStr<'a>>)>)> {
@@ -345,51 +409,37 @@ impl<'a> Iterator for Traverse<'a> {
                     // Parse paragraph for possible XML tags
                     // This will create all relevant events between start and end of paragraph
                     self.parse_paragraph(range, false);
-                    // Determine index for paragraph start event. Some paragraph-initial events 
-                    // should be queued before it (e.g., xml start & empty tags).
-                    let mut start_index = 0;
-                    while start_index < self.event_queue.len() {
-                        match self.event_queue[start_index] {
-                            TraversalEvent::XmlStart { .. } => (),
-                            TraversalEvent::XmlEmpty { .. } => (),
-                            TraversalEvent::RegionStart { .. } => (),
-                            _ => {
-                                break;
-                            }
+
+                    self.fix_paragraph_delimitation();
+
+                    // Emit event from queue.
+                    assert!(!self.event_queue.is_empty(), "Event queue should not be empty after parsing paragraph");
+                    return self.event_queue.pop_front();
+                },
+                Event::Start(Tag::HtmlBlock) => {
+                    // We're treating HTML blocks as paragraphs for XML parsing purposes. That's
+                    // not correct, of course. But it's a reasonable approximation for most texts
+                    // we're likely to encounter, and it simplifies the implementation 
+                    // significantly.
+
+                    // Parse paragraph for possible XML tags
+                    // This will create all relevant events between start and end of paragraph
+                    self.parse_paragraph(range, false);
+
+                    // Convert HTML line nodes to text nodes within the paragraph
+                    for event in self.event_queue.iter_mut() {
+                        match event {
+                            TraversalEvent::Markdown(markdown_event) => {
+                                if let Event::Html(html_content) = markdown_event {
+                                    *markdown_event = Event::Text(CowStr::from(html_content.as_ref()).into_static());
+                                }
+                            },
+                            _ => {}
                         }
-                        start_index += 1;
                     }
-                    // Determine index for paragraph end event. Some paragraph-final events
-                    // should be queued after it (e.g., xml end tags).
-                    let mut end_index = self.event_queue.len();
-                    while end_index > start_index {
-                        match self.event_queue[end_index - 1] {
-                            TraversalEvent::XmlEnd { .. } => (),
-                            TraversalEvent::RegionEnd { .. } => (),
-                            _ => {
-                                break;
-                            }
-                        }
-                        end_index -= 1;
-                    }
-                    // Do not create empty paragraphs
-                    if start_index < end_index {
-                        // Trim trailing whitespace from last text node, if any
-                        if let TraversalEvent::Markdown(event) = &mut self.event_queue[end_index - 1] {
-                            let trimmed = if let Event::Text(text) = event {
-                                Some(CowStr::from(text.trim_end()).into_static())
-                            } else {
-                                None
-                            };
-                            if let Some(trimmed) = trimmed {
-                                *event = Event::Text(trimmed);
-                            }
-                        }
-                        // Insert paragraph start event at start_index
-                        self.event_queue.insert(start_index, TraversalEvent::Markdown(Event::Start(Tag::Paragraph)));
-                        // Insert paragraph end event at end_index + 1 (to account for the start event)
-                        self.event_queue.insert(end_index + 1, TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)));
-                    }
+
+                    self.fix_paragraph_delimitation();
+
                     // Emit event from queue.
                     assert!(!self.event_queue.is_empty(), "Event queue should not be empty after parsing paragraph");
                     return self.event_queue.pop_front();
@@ -735,6 +785,53 @@ Some paragraph text.
                 TraversalEvent::Markdown(Event::Text(CowStr::from("Some paragraph text."))),
                 TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
                 TraversalEvent::XmlEnd { name: "my_tag" },
+            ]
+        );
+    }
+    #[test]
+    fn xml_in_html_block() {
+        assert_events(cfg_all_xmls_tags(), 
+            r#"<div>
+Some paragraph text.
+<my_tag></my_tag>
+</div>"#, 
+            vec![
+                TraversalEvent::XmlStart { name: "div", attributes: vec![] },
+                TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
+                TraversalEvent::Markdown(Event::Text(CowStr::from("Some paragraph text.\n"))),
+                TraversalEvent::XmlStart { name: "my_tag", attributes: vec![] },
+                TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
+                TraversalEvent::XmlEnd { name: "my_tag" },
+                TraversalEvent::XmlEnd { name: "div" },
+            ]
+        );
+    }
+
+
+    #[test]
+    fn milestones() {
+        assert_events(cfg_all_xmls_tags(), 
+            r#"<milestone unit="chapter" n="1"/>
+Some paragraph text.
+<milestone unit="chapter" n="2"/>
+More text."#,
+            vec![
+                TraversalEvent::RegionStart { 
+                    unit: CowStr::from("chapter"), 
+                    value: CowStr::from("1"), 
+                    attributes: vec![] 
+                },
+                TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
+                TraversalEvent::Markdown(Event::Text(CowStr::from("Some paragraph text.\n"))),
+                TraversalEvent::RegionEnd { unit: CowStr::from("chapter") },
+                TraversalEvent::RegionStart { 
+                    unit: CowStr::from("chapter"), 
+                    value: CowStr::from("2"), 
+                    attributes: vec![] 
+                },
+                TraversalEvent::Markdown(Event::Text(CowStr::from("More text."))),
+                TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
+                TraversalEvent::RegionEnd { unit: CowStr::from("chapter") },
             ]
         );
     }
