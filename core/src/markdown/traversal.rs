@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, ops::Range};
+use std::{collections::VecDeque, fmt::Debug, ops::Range};
 
 use pulldown_cmark::{CowStr, Event, HeadingLevel, OffsetIter, Parser, Tag, TagEnd};
 use tracing::{debug, warn};
@@ -10,6 +10,31 @@ pub struct TraversalCfg<'a> {
     enable_milestones: bool,
 }
 
+impl<'a> Debug for TraversalCfg<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TraversalCfg")
+            .field("xml_filter", &self.xml_filter.as_ref().map(|_| "Some(filter)"))
+            .field("enable_milestones", &self.enable_milestones)
+            .finish()
+    }
+}
+
+const TRAVERSAL_WITHOUT_XML: TraversalCfg<'static> = TraversalCfg {
+    xml_filter: None,
+    enable_milestones: false,
+};
+
+const TRAVERSAL_WITH_MILESTONES: TraversalCfg<'static> = TraversalCfg {
+    xml_filter: Some(&|tag: &XmlTag<'_>| 
+        if let XmlTag::Empty { name, .. } = tag {
+            *name == "milestone"
+        } else {
+            false
+        }),
+    enable_milestones: true,
+};
+
+#[derive(Debug)]
 pub struct Traverse<'a> {
     content: &'a str,
     parser: OffsetIter<'a>,
