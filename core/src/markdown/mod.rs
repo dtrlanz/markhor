@@ -1,5 +1,8 @@
+use std::fmt::{Debug, Display};
 use std::ops::Range;
 use pulldown_cmark::{html, CowStr, Event, HeadingLevel, OffsetIter, Options, Parser, Tag, TextMergeWithOffset};
+
+use crate::markdown::traversal::{WITHOUT_XML, TraversalCfg, TraversalEvent, Traverse};
 
 mod xml;
 mod markdown;
@@ -11,41 +14,15 @@ struct Markdown<'a> {
 }
 
 impl<'a> Markdown<'a> {
-    fn sections(&self) -> Sections<'_> {
-        let mut heading_level = None;
-        let mut section_ranges = Vec::new();
+    pub(crate) fn traverse<'b>(&'b self, cfg: TraversalCfg<'b>) -> Traverse<'b> {
+        Traverse::new(&self.content, cfg)
+    }
 
-        let mut section_start = 0;
-
-        for (event, range) in self.parser().into_offset_iter() {
-            match event {
-                Event::Start(Tag::Heading { level, .. }) => {
-                    if let Some(current_top) = heading_level {
-                        if level < current_top {
-                            heading_level = Some(level);
-                            section_start = 0;
-                            section_ranges.truncate(0);
-                        }
-                    } else {
-                        heading_level = Some(level);
-                    }
-                    if section_start != range.start {
-                        section_ranges.push(section_start..range.start);
-                        section_start = range.start;
-                    }
-                }
-                _ => {}
-            }
-        }
-        section_ranges.push(section_start..self.content.len());
-        println!("Sections: {:?}", section_ranges);
-        // Use as queue, not stack
-        section_ranges.reverse();
-
+    pub fn sections(&self) -> Sections<'_> {
         Sections {
-            content: &*self.content,
-            heading_level,
-            section_ranges,
+            iter: self.traverse(WITHOUT_XML),
+            open: Vec::new(),
+            closed: Vec::new(),
         }
     }
 
@@ -73,27 +50,94 @@ impl<'a, T: Into<CowStr<'a>>,> From<T> for Markdown<'a> {
     }
 }
 
-struct Sections<'a> {
-    content: &'a str,
-    heading_level: Option<HeadingLevel>,
-    section_ranges: Vec<Range<usize>>,
+#[derive(Eq, Clone)]
+struct Section<'a> {
+    source_str: &'a str,
+    level: HeadingLevel,
+    id: Option<CowStr<'a>>,
+    classes: Vec<CowStr<'a>>,
+    attrs: Vec<(CowStr<'a>, Option<CowStr<'a>>)>,
+    range: Range<usize>,
 }
 
-impl<'a> Sections<'a> {
-    pub fn heading_level(&self) -> Option<HeadingLevel> {
-        self.heading_level
+impl<'a> Section<'a> {
+    pub fn content(&self) -> &'a str {
+        &self.source_str[self.range.clone()]
     }
 }
 
+impl<'a> Debug for Section<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Section")
+            .field("level", &self.level)
+            .field("id", &self.id)
+            .field("classes", &self.classes)
+            .field("attrs", &self.attrs)
+            .field("range", &self.range)
+            .finish()
+    }
+}
+
+impl<'a> Display for Section<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.content())
+    }
+}
+
+impl<'a> PartialEq for Section<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.content() == other.content()
+    }
+}
+
+struct Sections<'a> {
+    iter: Traverse<'a>,
+    open: Vec<Section<'a>>,
+    closed: Vec<Section<'a>>,
+}
+
 impl<'a> Iterator for Sections<'a> {
-    type Item = Markdown<'a>;
+    type Item = Section<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(range) = self.section_ranges.pop() {
-            Some(self.content[range].into())
-        } else {
-            None
+        if let Some(section) = self.closed.pop() {
+            return Some(section);
         }
+
+        while let Some((event, range)) = self.iter.next() {
+            match event {
+                TraversalEvent::SectionStart { level, id, classes, attrs } => {
+                    let section = Section {
+                        source_str: &self.iter.content,
+                        level,
+                        id,
+                        classes,
+                        attrs,
+                        range: range,
+                    };
+                    self.open.push(section);
+                },
+                TraversalEvent::SectionEnd { level } => {
+                    if let Some(mut section) = self.open.pop() {
+                        assert_eq!(section.level, level);
+                        section.range.end = range.end;
+                        if self.open.len() == 0 {
+                            return Some(section);
+                        } else {
+                            // Pre-order traversal: Children should be yielded after their 
+                            // parents. Since children are closed first, we push them onto a
+                            // stack to yield after the parent is yielded.
+                            self.closed.push(section);
+                            continue;
+                        }
+                    }
+                    panic!("Mismatched section end");
+                },
+                _ => {},
+            }
+        }
+        assert_eq!(self.open.len(), 0, "Unclosed sections remain");
+        None
     }
 }
 
@@ -103,117 +147,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn just_experimenting() {
-        let markdown = Markdown::from(
-"# Heading
+    fn sections() {
+        const text: &str = r#"# Heading 1
 
-This is a nice paragraph
+Some paragraph text.
 
-<tag_name>
-Text
-</tag_name>
+## Heading 2
 
-Another paragraph
+More text."#;
 
-<tag-name2>
-Text
-</tag-name2>
-
-");
-
-        for (event, range) in markdown.parser().into_offset_iter() {
-            println!("Event: {:?}, Range: {:?}", event, range);
-        }
-        assert!(false);
-    
-    }
-
-    #[test]
-    fn headings_lvl1_lvl1_with_leading_text() {
-        let markdown = Markdown::from(
-"Text without heading
-
-# 1
-Text under 1
-
-# 2
-Text under 2");
-
-        let sections = markdown.sections();
-        assert_eq!(sections.heading_level(), Some(HeadingLevel::H1));
-
-        let sections: Vec<_> = sections
-            .map(|md| md.to_html())
-            .collect::<Vec<_>>();
-
-        assert_eq!(sections.len(), 3);
-        assert_eq!(sections[0], "<p>Text without heading</p>\n");
-        assert_eq!(sections[1], "<h1>1</h1>\n<p>Text under 1</p>\n");
-        assert_eq!(sections[2], "<h1>2</h1>\n<p>Text under 2</p>\n");
-    }
-
-    #[test]
-    fn headings_lvl1_lvl1_without_leading_text() {
-        let markdown = Markdown::from(
-"# 1
-Text under 1
-
-# 2
-Text under 2");
-
-        let sections = markdown.sections();
-        assert_eq!(sections.heading_level(), Some(HeadingLevel::H1));
-
-        let sections: Vec<_> = sections
-            .map(|md| md.to_html())
-            .collect::<Vec<_>>();
+        let md = Markdown::from(text);
+        let sections: Vec<Section> = md.sections().collect();
 
         assert_eq!(sections.len(), 2);
-        assert_eq!(sections[0], "<h1>1</h1>\n<p>Text under 1</p>\n");
-        assert_eq!(sections[1], "<h1>2</h1>\n<p>Text under 2</p>\n");
-    }
+        println!("{:#?}", sections[0]);
+        assert_eq!(sections[0].level, HeadingLevel::H1);
+        assert_eq!(&sections[0].source_str[sections[0].range.clone()], "# Heading 1\n\nSome paragraph text.\n\n## Heading 2\n\nMore text.");
+        println!("{:#?}", sections[1]);
+        assert_eq!(sections[1].level, HeadingLevel::H2);
+        assert_eq!(&sections[1].source_str[sections[1].range.clone()], "## Heading 2\n\nMore text.");
 
-    #[test]
-    fn headings_lvl2_lvl1() {
-        let markdown = Markdown::from(
-"Text without heading
-
-## 0.1
-Text under 0.1
-
-# 1
-Text under 1");
-
-        let sections = markdown.sections();
-        assert_eq!(sections.heading_level(), Some(HeadingLevel::H1));
-
-        let sections: Vec<_> = sections
-            .map(|md| md.to_html())
-            .collect::<Vec<_>>();
-
-        assert_eq!(sections.len(), 2);
-        assert_eq!(sections[0], "<p>Text without heading</p>\n<h2>0.1</h2>\n<p>Text under 0.1</p>\n");
-        assert_eq!(sections[1], "<h1>1</h1>\n<p>Text under 1</p>\n");
-    }
-
-    #[test]
-    fn headings_lvl3_lvl3() {
-        let markdown = Markdown::from(
-"### 0.0.1
-Text under 0.0.1
-
-### 0.0.2
-Text under 0.0.2");
-
-        let sections = markdown.sections();
-        assert_eq!(sections.heading_level(), Some(HeadingLevel::H3));
-
-        let sections: Vec<_> = sections
-            .map(|md| md.to_html())
-            .collect::<Vec<_>>();
-
-        assert_eq!(sections.len(), 2);
-        assert_eq!(sections[0], "<h3>0.0.1</h3>\n<p>Text under 0.0.1</p>\n");
-        assert_eq!(sections[1], "<h3>0.0.2</h3>\n<p>Text under 0.0.2</p>\n");
     }
 }

@@ -19,12 +19,12 @@ impl<'a> Debug for TraversalCfg<'a> {
     }
 }
 
-const TRAVERSAL_WITHOUT_XML: TraversalCfg<'static> = TraversalCfg {
+pub const WITHOUT_XML: TraversalCfg<'static> = TraversalCfg {
     xml_filter: None,
     enable_milestones: false,
 };
 
-const TRAVERSAL_WITH_MILESTONES: TraversalCfg<'static> = TraversalCfg {
+pub const WITH_MILESTONES: TraversalCfg<'static> = TraversalCfg {
     xml_filter: Some(&|tag: &XmlTag<'_>| 
         if let XmlTag::Empty { name, .. } = tag {
             *name == "milestone"
@@ -36,7 +36,7 @@ const TRAVERSAL_WITH_MILESTONES: TraversalCfg<'static> = TraversalCfg {
 
 #[derive(Debug)]
 pub struct Traverse<'a> {
-    content: &'a str,
+    pub(crate) content: &'a str,
     parser: OffsetIter<'a>,
     cfg: TraversalCfg<'a>,
     node_stack: Vec<TraversalNode<'a>>,
