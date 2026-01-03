@@ -120,7 +120,8 @@ impl<'a> Iterator for Sections<'a> {
                 TraversalEvent::SectionEnd { level } => {
                     if let Some(mut section) = self.open.pop() {
                         assert_eq!(section.level, level);
-                        section.range.end = range.end;
+                        // End of previous section equals start of next section
+                        section.range.end = range.start;
                         if self.open.len() == 0 {
                             return Some(section);
                         } else {
@@ -148,24 +149,31 @@ mod tests {
 
     #[test]
     fn sections() {
-        const text: &str = r#"# Heading 1
+        let text = r#"# Heading 1
 
 Some paragraph text.
 
 ## Heading 2
 
-More text."#;
+More text.
+
+# Heading 1
+
+And more."#;
 
         let md = Markdown::from(text);
         let sections: Vec<Section> = md.sections().collect();
 
-        assert_eq!(sections.len(), 2);
+        assert_eq!(sections.len(), 3);
         println!("{:#?}", sections[0]);
         assert_eq!(sections[0].level, HeadingLevel::H1);
-        assert_eq!(&sections[0].source_str[sections[0].range.clone()], "# Heading 1\n\nSome paragraph text.\n\n## Heading 2\n\nMore text.");
+        assert_eq!(&text[sections[0].range.clone()], "# Heading 1\n\nSome paragraph text.\n\n## Heading 2\n\nMore text.\n\n");
         println!("{:#?}", sections[1]);
         assert_eq!(sections[1].level, HeadingLevel::H2);
-        assert_eq!(&sections[1].source_str[sections[1].range.clone()], "## Heading 2\n\nMore text.");
+        assert_eq!(&text[sections[1].range.clone()], "## Heading 2\n\nMore text.\n\n");
+        println!("{:#?}", sections[2]);
+        assert_eq!(sections[2].level, HeadingLevel::H1);
+        assert_eq!(&text[sections[2].range.clone()], "# Heading 1\n\nAnd more.");
 
     }
 }
