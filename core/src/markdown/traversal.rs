@@ -5,12 +5,13 @@ use tracing::{debug, warn};
 
 use crate::markdown::xml::{self, XmlTag};
 
-pub struct TraversalCfg<'a> {
-    xml_filter: Option<&'a dyn Fn(&XmlTag<'_>) -> bool>,
-    enable_milestones: bool,
+pub struct Options<'a> {
+    pub md_options: pulldown_cmark::Options,
+    pub xml_filter: Option<&'a dyn Fn(&XmlTag<'_>) -> bool>,
+    pub enable_milestones: bool,
 }
 
-impl<'a> Debug for TraversalCfg<'a> {
+impl<'a> Debug for Options<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TraversalCfg")
             .field("xml_filter", &self.xml_filter.as_ref().map(|_| "Some(filter)"))
@@ -19,12 +20,18 @@ impl<'a> Debug for TraversalCfg<'a> {
     }
 }
 
-pub const WITHOUT_XML: TraversalCfg<'static> = TraversalCfg {
+pub const WITHOUT_XML: Options<'static> = Options {
+    md_options: pulldown_cmark::Options::ENABLE_GFM
+        .union(pulldown_cmark::Options::ENABLE_HEADING_ATTRIBUTES)
+        .union(pulldown_cmark::Options::ENABLE_YAML_STYLE_METADATA_BLOCKS),
     xml_filter: None,
     enable_milestones: false,
 };
 
-pub const WITH_MILESTONES: TraversalCfg<'static> = TraversalCfg {
+pub const WITH_MILESTONES: Options<'static> = Options {
+    md_options: pulldown_cmark::Options::ENABLE_GFM
+        .union(pulldown_cmark::Options::ENABLE_HEADING_ATTRIBUTES)
+        .union(pulldown_cmark::Options::ENABLE_YAML_STYLE_METADATA_BLOCKS),
     xml_filter: Some(&|tag: &XmlTag<'_>| 
         if let XmlTag::Empty { name, .. } = tag {
             *name == "milestone"
@@ -38,13 +45,13 @@ pub const WITH_MILESTONES: TraversalCfg<'static> = TraversalCfg {
 pub struct Traverse<'a> {
     pub(crate) content: &'a str,
     parser: OffsetIter<'a>,
-    cfg: TraversalCfg<'a>,
+    cfg: &'a Options<'a>,
     node_stack: Vec<TraversalNode<'a>>,
     event_queue: VecDeque<(TraversalEvent<'a>, Range<usize>)>,
 }
 
 impl<'a> Traverse<'a> {
-    pub fn new(content: &'a str, cfg: TraversalCfg<'a>) -> Self {
+    pub fn new(content: &'a str, cfg: &'a Options<'a>) -> Self {
         let parser_options: pulldown_cmark::Options = [
             pulldown_cmark::Options::ENABLE_GFM,
             pulldown_cmark::Options::ENABLE_HEADING_ATTRIBUTES
@@ -689,8 +696,8 @@ pub mod tests {
 
     use super::*;
 
-    fn assert_events(cfg: TraversalCfg, content: &str, expected: Vec<TraversalEvent>) {
-        let mut traverse = Traverse::new(content, cfg);
+    fn assert_events(cfg: Options, content: &str, expected: Vec<TraversalEvent>) {
+        let mut traverse = Traverse::new(content, &cfg);
         let mut expected = expected;
 
         while let Some((actual_event, _)) = traverse.next() {
@@ -704,15 +711,13 @@ pub mod tests {
         }
     }
 
-    fn cfg_headings_only() -> TraversalCfg<'static> {
-        TraversalCfg {
-            xml_filter: None,
-            enable_milestones: false,
-        }
+    fn cfg_headings_only() -> Options<'static> {
+        WITHOUT_XML
     }
 
-    fn cfg_all_xmls_tags() -> TraversalCfg<'static> {
-        TraversalCfg {
+    fn cfg_all_xmls_tags() -> Options<'static> {
+        Options {
+            md_options: WITHOUT_XML.md_options,
             xml_filter: Some(&|_tag: &XmlTag<'_>| true),
             enable_milestones: true,
         }

@@ -1,8 +1,8 @@
 use std::fmt::{Debug, Display};
 use std::ops::Range;
-use pulldown_cmark::{html, CowStr, Event, HeadingLevel, OffsetIter, Options, Parser, Tag, TextMergeWithOffset};
+use pulldown_cmark::{html, CowStr, Event, HeadingLevel, OffsetIter, Parser, Tag, TextMergeWithOffset};
 
-use crate::markdown::traversal::{TraversalCfg, TraversalEvent, Traverse, WITH_MILESTONES, WITHOUT_XML};
+use crate::markdown::traversal::{Options, TraversalEvent, Traverse, WITH_MILESTONES, WITHOUT_XML};
 
 mod xml;
 mod markdown;
@@ -10,17 +10,22 @@ mod traversal;
 
 #[derive(Debug)]
 pub struct Markdown<'a> {
-    content: CowStr<'a>,
+    content: &'a str,
+    options: Options<'a>,
 }
 
 impl<'a> Markdown<'a> {
-    pub(crate) fn traverse<'b>(&'b self, cfg: TraversalCfg<'b>) -> Traverse<'b> {
-        Traverse::new(&self.content, cfg)
+    pub fn options(&self) -> &Options<'a> {
+        &self.options
+    }
+
+    pub fn options_mut(&mut self) -> &mut Options<'a> {
+        &mut self.options
     }
 
     pub fn sections(&self) -> Sections<'_> {
         Sections {
-            iter: self.traverse(WITHOUT_XML),
+            iter: Traverse::new(&self.content, &self.options),
             open: Vec::new(),
             closed: Vec::new(),
         }
@@ -28,32 +33,28 @@ impl<'a> Markdown<'a> {
 
     pub fn regions(&self) -> Regions<'_> {
         Regions {
-            iter: self.traverse(WITH_MILESTONES),
+            iter: Traverse::new(&self.content, &self.options),
             open: Vec::new(),
             closed: Vec::new(),
         }
     }
 
-    fn parser(&self) -> Parser {
-        let parser_options: Options = [
-            Options::ENABLE_GFM,
-            Options::ENABLE_HEADING_ATTRIBUTES
-        ].into_iter().collect();
-
-        Parser::new_ext(&*self.content, parser_options)
+    pub fn parser(&self) -> Parser<'_> {
+        Parser::new_ext(self.content, self.options.md_options)
     }
 
-    fn to_html(&self) -> String {
+    pub fn to_html(&self) -> String {
         let mut html_buf = String::new();
         html::push_html(&mut html_buf, self.parser());
         html_buf
     }
 }
 
-impl<'a, T: Into<CowStr<'a>>,> From<T> for Markdown<'a> {
-    fn from(content: T) -> Self {
+impl<'a> From<&'a str> for Markdown<'a> {
+    fn from(content: &'a str) -> Self {
         Markdown {
-            content: content.into(),
+            content: content,
+            options: WITH_MILESTONES,
         }
     }
 }
@@ -311,6 +312,7 @@ More text.
 And more."#;
 
         let md = Markdown::from(text);
+
         let regions: Vec<Region> = md.regions().collect();
 
         assert_eq!(regions.len(), 2);
