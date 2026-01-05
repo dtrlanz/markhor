@@ -6,6 +6,7 @@ use crate::markdown::traversal::{TraversalEvent, Traversal};
 use crate::markdown::xml::XmlTag;
 
 mod xml;
+mod to_markdown;
 mod traversal;
 
 #[derive(Debug)]
@@ -47,15 +48,6 @@ impl<'a> Markdown<'a> {
         let mut html_buf = String::new();
         html::push_html(&mut html_buf, self.parser());
         html_buf
-    }
-}
-
-impl<'a> From<&'a str> for Markdown<'a> {
-    fn from(content: &'a str) -> Self {
-        Markdown {
-            content: content,
-            options: WITH_MILESTONES,
-        }
     }
 }
 
@@ -305,6 +297,8 @@ impl<'a> Iterator for Regions<'a> {
 
 #[cfg(test)]
 mod tests {
+    use crate::markdown::to_markdown::ToMarkdown;
+
     use super::*;
 
     #[test]
@@ -321,7 +315,7 @@ More text.
 
 And more."#;
 
-        let md = Markdown::from(text);
+        let md = text.to_markdown(WITHOUT_XML);
         let sections: Vec<Section> = md.sections().collect();
 
         assert_eq!(sections.len(), 3);
@@ -345,7 +339,7 @@ More text.
 <milestone unit="part" n="2"/>
 And more."#;
 
-        let md = Markdown::from(text);
+        let md = text.to_markdown(WITH_MILESTONES);
 
         let regions: Vec<Region> = md.regions().collect();
 
