@@ -3,30 +3,24 @@ use std::{collections::VecDeque, fmt::Debug, ops::Range};
 use pulldown_cmark::{CowStr, Event, HeadingLevel, OffsetIter, Parser, Tag, TagEnd};
 use tracing::{warn};
 
-use crate::markdown::{Options, xml::{self, XmlTag}};
+use crate::markdown::{Markdown, xml::{self, XmlTag}};
 
 #[derive(Debug)]
-pub struct Traverse<'a> {
-    pub(crate) content: &'a str,
+pub struct Traversal<'a> {
+    pub(crate) md: &'a Markdown<'a>,
     parser: OffsetIter<'a>,
-    cfg: &'a Options<'a>,
     node_stack: Vec<TraversalNode<'a>>,
     event_queue: VecDeque<(TraversalEvent<'a>, Range<usize>)>,
 }
 
-impl<'a> Traverse<'a> {
-    pub fn new(content: &'a str, cfg: &'a Options<'a>) -> Self {
-        let parser_options: pulldown_cmark::Options = [
-            pulldown_cmark::Options::ENABLE_GFM,
-            pulldown_cmark::Options::ENABLE_HEADING_ATTRIBUTES
-        ].into_iter().collect();
+impl<'a> Traversal<'a> {
+    pub fn new(md: &'a Markdown<'a>) -> Self {
+        let parser = pulldown_cmark::Parser::new_ext(md.content, md.options.md_options)
+            .into_offset_iter();
 
-        let parser = pulldown_cmark::Parser::new_ext(content, parser_options).into_offset_iter();
-
-        Traverse {
-            content,
+        Traversal {
+            md,
             parser,
-            cfg,
             node_stack: Vec::new(),
             event_queue: VecDeque::new(),
         }
@@ -45,7 +39,7 @@ impl<'a> Traverse<'a> {
             }
 
             // Create parser for paragraph range
-            Some(Parser::new(&self.content[range.clone()]).into_offset_iter())
+            Some(Parser::new(&self.md.content[range.clone()]).into_offset_iter())
         } else {
             None
         };
@@ -54,10 +48,10 @@ impl<'a> Traverse<'a> {
         let mut offset = 0;
         let (xml_range, xml_tag) = loop {
             // Search for next XML tag within the given range
-            let parse_result = xml::parse_tag(&self.content[range.start + offset..range.end]);
+            let parse_result = xml::parse_tag(&self.md.content[range.start + offset..range.end]);
             if let Some((xml_rel_range, xml_tag)) = parse_result {
                 // Check if XML tag passes filter
-                if self.cfg.xml_filter.as_ref().map_or(false, |filter| filter(&xml_tag)) {
+                if self.md.options.xml_filter.as_ref().map_or(false, |filter| filter(&xml_tag)) {
                     // convert relative range to absolute range
                     let xml_range = (range.start + xml_rel_range.start)..(range.start + xml_rel_range.end);
                     break (xml_range, xml_tag);
@@ -109,7 +103,7 @@ impl<'a> Traverse<'a> {
                 let (node_event, node_end) = match event {
                     // Text nodes are clipped to the start of the XML tag
                     Event::Text(_) => {
-                        let clipped_text = &self.content[range.start..xml_range.start];
+                        let clipped_text = &self.md.content[range.start..xml_range.start];
                         let text_event = TraversalEvent::Markdown(Event::Text(CowStr::from(clipped_text)));
                         (text_event, xml_range.start)
                     }
@@ -122,7 +116,7 @@ impl<'a> Traverse<'a> {
                     // For now, convert to text and trigger warning
                     _ => {
                         warn!("Markdown node {:?} overlaps with XML tag, converting to text", event);
-                        let clipped_text = &self.content[range.start..xml_range.start];
+                        let clipped_text = &self.md.content[range.start..xml_range.start];
                         let text_event = TraversalEvent::Markdown(Event::Text(CowStr::from(clipped_text)));
                         (text_event, xml_range.start)
                     }
@@ -254,7 +248,7 @@ impl<'a> Traverse<'a> {
     }
 
     fn parse_milestone(&self, name: &'a str, attributes: &Vec<(&'a str, Option<CowStr<'a>>)>) -> Option<(CowStr<'a>, CowStr<'a>, Vec<(&'a str, Option<CowStr<'a>>)>)> {
-        if self.cfg.enable_milestones && name == "milestone" {
+        if self.md.options.enable_milestones && name == "milestone" {
             // Extract the name and description from attributes
             let mut unit = None;
             let mut value = None;
@@ -368,7 +362,7 @@ impl<'a> Traverse<'a> {
     }
 }
 
-impl<'a> Iterator for Traverse<'a> {
+impl<'a> Iterator for Traversal<'a> {
     type Item = (TraversalEvent<'a>, Range<usize>);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -448,7 +442,7 @@ impl<'a> Iterator for Traverse<'a> {
         }
 
         // Handle end of document: Close any remaining open nodes
-        let content_end = self.content.len();
+        let content_end = self.md.content.len();
         for i in (0..self.node_stack.len()).rev() {
             let effect = self.node_stack[i].on_parent_closing();
             self.process_effect(i, effect, content_end..content_end);
@@ -633,12 +627,13 @@ pub enum TraverseMarkdownError<'a> {
 pub mod tests {
     use std::vec;
 
-    use crate::markdown::WITHOUT_XML;
+    use crate::markdown::{Options, WITHOUT_XML};
 
     use super::*;
 
-    fn assert_events(cfg: Options, content: &str, expected: Vec<TraversalEvent>) {
-        let mut traverse = Traverse::new(content, &cfg);
+    fn assert_events(options: Options, content: &str, expected: Vec<TraversalEvent>) {
+        let md = Markdown { content, options };
+        let mut traverse = Traversal::new(&md);
         let mut expected = expected;
 
         while let Some((actual_event, _)) = traverse.next() {

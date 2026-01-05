@@ -2,7 +2,7 @@ use std::fmt::{Debug, Display};
 use std::ops::Range;
 use pulldown_cmark::{html, CowStr, HeadingLevel, Parser};
 
-use crate::markdown::traversal::{TraversalEvent, Traverse};
+use crate::markdown::traversal::{TraversalEvent, Traversal};
 use crate::markdown::xml::XmlTag;
 
 mod xml;
@@ -10,8 +10,8 @@ mod traversal;
 
 #[derive(Debug)]
 pub struct Markdown<'a> {
-    content: &'a str,
-    options: Options<'a>,
+    pub content: &'a str,
+    pub options: Options<'a>,
 }
 
 impl<'a> Markdown<'a> {
@@ -25,7 +25,7 @@ impl<'a> Markdown<'a> {
 
     pub fn sections(&self) -> Sections<'_> {
         Sections {
-            iter: Traverse::new(&self.content, &self.options),
+            iter: Traversal::new(self),
             open: Vec::new(),
             closed: Vec::new(),
         }
@@ -33,7 +33,7 @@ impl<'a> Markdown<'a> {
 
     pub fn regions(&self) -> Regions<'_> {
         Regions {
-            iter: Traverse::new(&self.content, &self.options),
+            iter: Traversal::new(self),
             open: Vec::new(),
             closed: Vec::new(),
         }
@@ -174,7 +174,7 @@ impl<'a> PartialEq for Region<'a> {
 
 
 pub struct Sections<'a> {
-    iter: Traverse<'a>,
+    iter: Traversal<'a>,
     open: Vec<Section<'a>>,
     closed: Vec<Section<'a>>,
 }
@@ -191,7 +191,7 @@ impl<'a> Iterator for Sections<'a> {
             match event {
                 TraversalEvent::SectionStart { level, id, classes, attrs } => {
                     let section = Section {
-                        source_str: &self.iter.content,
+                        source_str: &self.iter.md.content,
                         level,
                         id,
                         classes,
@@ -226,7 +226,7 @@ impl<'a> Iterator for Sections<'a> {
 }
 
 pub struct Regions<'a> {
-    iter: Traverse<'a>,
+    iter: Traversal<'a>,
     open: Vec<Region<'a>>,
     closed: Vec<Region<'a>>,
 }
@@ -271,7 +271,7 @@ impl<'a> Iterator for Regions<'a> {
             match event {
                 TraversalEvent::RegionStart { unit, value, attributes } => {
                     let region = Region {
-                        source_str: &self.iter.content,
+                        source_str: &self.iter.md.content,
                         unit,
                         value,
                         attrs: attributes,
