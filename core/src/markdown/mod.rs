@@ -1,11 +1,11 @@
 use std::fmt::{Debug, Display};
 use std::ops::Range;
-use pulldown_cmark::{html, CowStr, Event, HeadingLevel, OffsetIter, Parser, Tag, TextMergeWithOffset};
+use pulldown_cmark::{html, CowStr, HeadingLevel, Parser};
 
-use crate::markdown::traversal::{Options, TraversalEvent, Traverse, WITH_MILESTONES, WITHOUT_XML};
+use crate::markdown::traversal::{TraversalEvent, Traverse};
+use crate::markdown::xml::XmlTag;
 
 mod xml;
-mod markdown;
 mod traversal;
 
 #[derive(Debug)]
@@ -59,8 +59,44 @@ impl<'a> From<&'a str> for Markdown<'a> {
     }
 }
 
+pub struct Options<'a> {
+    pub md_options: pulldown_cmark::Options,
+    pub xml_filter: Option<&'a dyn Fn(&XmlTag<'_>) -> bool>,
+    pub enable_milestones: bool,
+}
+
+impl<'a> Debug for Options<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TraversalCfg")
+            .field("xml_filter", &self.xml_filter.as_ref().map(|_| "Some(filter)"))
+            .field("enable_milestones", &self.enable_milestones)
+            .finish()
+    }
+}
+
+pub const WITHOUT_XML: Options<'static> = Options {
+    md_options: pulldown_cmark::Options::ENABLE_GFM
+        .union(pulldown_cmark::Options::ENABLE_HEADING_ATTRIBUTES)
+        .union(pulldown_cmark::Options::ENABLE_YAML_STYLE_METADATA_BLOCKS),
+    xml_filter: None,
+    enable_milestones: false,
+};
+
+pub const WITH_MILESTONES: Options<'static> = Options {
+    md_options: pulldown_cmark::Options::ENABLE_GFM
+        .union(pulldown_cmark::Options::ENABLE_HEADING_ATTRIBUTES)
+        .union(pulldown_cmark::Options::ENABLE_YAML_STYLE_METADATA_BLOCKS),
+    xml_filter: Some(&|tag: &XmlTag<'_>| 
+        if let XmlTag::Empty { name, .. } = tag {
+            *name == "milestone"
+        } else {
+            false
+        }),
+    enable_milestones: true,
+};
+
 #[derive(Eq, Clone)]
-struct Section<'a> {
+pub struct Section<'a> {
     source_str: &'a str,
     pub level: HeadingLevel,
     pub id: Option<CowStr<'a>>,
@@ -99,7 +135,7 @@ impl<'a> PartialEq for Section<'a> {
     }
 }
 
-struct Region<'a> {
+pub struct Region<'a> {
     source_str: &'a str,
     pub unit: CowStr<'a>,
     pub value: CowStr<'a>,
@@ -137,7 +173,7 @@ impl<'a> PartialEq for Region<'a> {
 }
 
 
-struct Sections<'a> {
+pub struct Sections<'a> {
     iter: Traverse<'a>,
     open: Vec<Section<'a>>,
     closed: Vec<Section<'a>>,
@@ -189,7 +225,7 @@ impl<'a> Iterator for Sections<'a> {
     }
 }
 
-struct Regions<'a> {
+pub struct Regions<'a> {
     iter: Traverse<'a>,
     open: Vec<Region<'a>>,
     closed: Vec<Region<'a>>,
@@ -269,8 +305,6 @@ impl<'a> Iterator for Regions<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
-
     use super::*;
 
     #[test]

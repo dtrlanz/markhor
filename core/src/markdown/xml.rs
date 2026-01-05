@@ -15,59 +15,6 @@ pub enum XmlTag<'a> {
     },
 }
 
-/// Parses the XML tags in a string and returns an iterator over them.
-/// 
-/// The iterator returns each XML tag along with the context of other text in its respective line.
-/// See [`TagWithContext`] for details.
-pub fn iter_tags_with_context<'a>(s: &'a str) -> impl Iterator<Item = TagWithContext<'a>> {
-    let mut index = 0;
-
-    std::iter::from_fn(move || {
-        if index >= s.len() {
-            return None; // No more tags to parse
-        }
-
-        // Parse the next tag
-        if let Some((range, tag)) = parse_tag(&s[index..]) {
-            let tag_start_absolute = index + range.start;
-            let tag_end_absolute = index + range.end;
-
-            // Extract the text before tag from start of line
-            let line_start = s[..tag_start_absolute].rfind('\n')
-                // Do not include line break character
-                .map(|byte_idx| byte_idx + 1)
-                .unwrap_or(0);
-            let before = &s[line_start..tag_start_absolute];
-
-            // Extract the text after tag to end of line
-            let line_end = s[tag_end_absolute..].find('\n')
-                .unwrap_or(s.len() - tag_end_absolute) + tag_end_absolute;
-            let after = &s[tag_end_absolute..line_end];
-
-            // Update index to continue searching after this tag
-            index = tag_end_absolute;
-
-            Some(TagWithContext {
-                tag,
-                range: range.start..range.end,
-                before,
-                after,
-            })
-        } else {
-            None // No valid tag found
-        }
-    })
-}
-
-/// Struct representing an XML tag along with the context of the line it is in
-pub struct TagWithContext<'a> {
-    pub tag: XmlTag<'a>,
-    pub range: Range<usize>,
-    pub before: &'a str,
-    pub after: &'a str,
-}
-
-
 /// Parses the first valid XML element tag (<tag>, </tag>, <tag/>) found in the string.
 /// Skips leading text and ignores XML declarations, processing instructions, and comments.
 /// Returns the range of the entire tag and the parsed Tag enum if successful.
@@ -195,7 +142,7 @@ pub fn parse_tag<'a>(s: &'a str) -> Option<(Range<usize>, XmlTag<'a>)> {
 
 use std::ops::Range;
 
-use pulldown_cmark::{CowStr, Tag};
+use pulldown_cmark::{CowStr};
 
 /// Checks if a character is valid at the start of an XML name (simplified).
 /// Allows letters, _, and :
@@ -413,22 +360,10 @@ mod tests {
 
     use super::*;
 
-    // Helper to create borrowed CowStr
-    fn b_cow(s: &str) -> CowStr<'_> {
-        CowStr::Borrowed(s)
-    }
-
     // Helper to create inlined CowStr
     fn i_cow(s: &str) -> CowStr<'_> {
         CowStr::Inlined(InlineStr::try_from(s).unwrap())
     }
-
-     // Helper to create boxed CowStr
-    fn x_cow(s: &str) -> CowStr<'_> {
-         CowStr::Boxed(s.to_string().into_boxed_str())
-    }
-
-
 
     #[test]
     fn test_basic_start_tag() {

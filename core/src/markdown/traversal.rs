@@ -1,45 +1,9 @@
 use std::{collections::VecDeque, fmt::Debug, ops::Range};
 
 use pulldown_cmark::{CowStr, Event, HeadingLevel, OffsetIter, Parser, Tag, TagEnd};
-use tracing::{debug, warn};
+use tracing::{warn};
 
-use crate::markdown::xml::{self, XmlTag};
-
-pub struct Options<'a> {
-    pub md_options: pulldown_cmark::Options,
-    pub xml_filter: Option<&'a dyn Fn(&XmlTag<'_>) -> bool>,
-    pub enable_milestones: bool,
-}
-
-impl<'a> Debug for Options<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TraversalCfg")
-            .field("xml_filter", &self.xml_filter.as_ref().map(|_| "Some(filter)"))
-            .field("enable_milestones", &self.enable_milestones)
-            .finish()
-    }
-}
-
-pub const WITHOUT_XML: Options<'static> = Options {
-    md_options: pulldown_cmark::Options::ENABLE_GFM
-        .union(pulldown_cmark::Options::ENABLE_HEADING_ATTRIBUTES)
-        .union(pulldown_cmark::Options::ENABLE_YAML_STYLE_METADATA_BLOCKS),
-    xml_filter: None,
-    enable_milestones: false,
-};
-
-pub const WITH_MILESTONES: Options<'static> = Options {
-    md_options: pulldown_cmark::Options::ENABLE_GFM
-        .union(pulldown_cmark::Options::ENABLE_HEADING_ATTRIBUTES)
-        .union(pulldown_cmark::Options::ENABLE_YAML_STYLE_METADATA_BLOCKS),
-    xml_filter: Some(&|tag: &XmlTag<'_>| 
-        if let XmlTag::Empty { name, .. } = tag {
-            *name == "milestone"
-        } else {
-            false
-        }),
-    enable_milestones: true,
-};
+use crate::markdown::{Options, xml::{self, XmlTag}};
 
 #[derive(Debug)]
 pub struct Traverse<'a> {
@@ -374,7 +338,7 @@ impl<'a> Traverse<'a> {
 
                 // Notify descendants about parent closing
                 for i in (target_node_index..self.node_stack.len()).rev() {
-                    let descendant_effect = self.node_stack[i].on_parent_closing(range.clone());
+                    let descendant_effect = self.node_stack[i].on_parent_closing();
                     self.process_effect(i, descendant_effect, range.clone());
                 }
 
@@ -486,7 +450,7 @@ impl<'a> Iterator for Traverse<'a> {
         // Handle end of document: Close any remaining open nodes
         let content_end = self.content.len();
         for i in (0..self.node_stack.len()).rev() {
-            let effect = self.node_stack[i].on_parent_closing(content_end..content_end);
+            let effect = self.node_stack[i].on_parent_closing();
             self.process_effect(i, effect, content_end..content_end);
         }
         return self.event_queue.pop_front();
@@ -533,7 +497,7 @@ impl<'a> TraversalNode<'a> {
         }
     }
 
-    fn on_parent_closing(&self, range: Range<usize>) -> TraversalEffect<'a> {
+    fn on_parent_closing(&self) -> TraversalEffect<'a> {
         match self {
             TraversalNode::Xml(self_name) => {
                 xml_node::on_parent_closing(self_name)
@@ -544,7 +508,6 @@ impl<'a> TraversalNode<'a> {
             TraversalNode::Region(_) => {
                 region_node::on_parent_closing()
             },
-            _ => TraversalEffect::None,
         }
     }
 }
@@ -666,33 +629,11 @@ pub enum TraverseMarkdownError<'a> {
     ExpectedXmlEnd(CowStr<'a>),
 }
 
-
-pub struct XmlNode<'a> {
-    tag: XmlTag<'a>,
-    start_offset: usize,
-    end_offset: usize,
-}
-
-pub struct HeadingSection<'a> {
-    level: HeadingLevel,
-    id: Option<CowStr<'a>>,
-    classes: Vec<CowStr<'a>>,
-    attrs: Vec<(CowStr<'a>, Option<CowStr<'a>>)>,
-    start_offset: usize,
-    end_offset: usize,
-}
-
-pub struct MilestoneSection<'a> {
-    unit: CowStr<'a>,
-    value: CowStr<'a>,
-    start_offset: usize,
-    end_offset: usize,
-}
-
-
 #[cfg(test)]
 pub mod tests {
     use std::vec;
+
+    use crate::markdown::WITHOUT_XML;
 
     use super::*;
 
