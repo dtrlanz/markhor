@@ -1,5 +1,5 @@
 use std::fmt::{Debug, Display};
-use std::ops::Range;
+use std::ops::{Deref, Range};
 use pulldown_cmark::{html, CowStr, HeadingLevel, Parser};
 
 use crate::markdown::traversal::{TraversalEvent, Traversal};
@@ -9,7 +9,9 @@ mod xml;
 mod to_markdown;
 mod traversal;
 
-#[derive(Debug)]
+pub use to_markdown::ToMarkdown;
+
+#[derive(Debug, Clone)]
 pub struct Markdown<'a> {
     pub content: &'a str,
     pub options: Options<'a>,
@@ -51,6 +53,19 @@ impl<'a> Markdown<'a> {
     }
 }
 
+impl<'a> PartialEq for Markdown<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.content == other.content
+    }
+}
+
+impl<'a> AsRef<str> for Markdown<'a> {
+    fn as_ref(&self) -> &str {
+        self.content
+    }
+}
+
+#[derive(Clone)]
 pub struct Options<'a> {
     pub md_options: pulldown_cmark::Options,
     pub xml_filter: Option<&'a dyn Fn(&XmlTag<'_>) -> bool>,
@@ -87,9 +102,9 @@ pub const WITH_MILESTONES: Options<'static> = Options {
     enable_milestones: true,
 };
 
-#[derive(Eq, Clone)]
+#[derive(Clone)]
 pub struct Section<'a> {
-    source_str: &'a str,
+    md: Markdown<'a>,
     pub level: HeadingLevel,
     pub id: Option<CowStr<'a>>,
     pub classes: Vec<CowStr<'a>>,
@@ -99,7 +114,7 @@ pub struct Section<'a> {
 
 impl<'a> Section<'a> {
     pub fn content(&self) -> &'a str {
-        &self.source_str[self.range.clone()]
+        &self.md.content[self.range.clone()]
     }
 }
 
@@ -127,8 +142,22 @@ impl<'a> PartialEq for Section<'a> {
     }
 }
 
+impl<'a> AsRef<Markdown<'a>> for Section<'a> {
+    fn as_ref(&self) -> &Markdown<'a> {
+        &self.md
+    }
+}
+
+impl<'a> Deref for Section<'a> {
+    type Target = Markdown<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.md
+    }
+}
+
 pub struct Region<'a> {
-    source_str: &'a str,
+    md: Markdown<'a>,
     pub unit: CowStr<'a>,
     pub value: CowStr<'a>,
     pub attrs: Vec<(&'a str, Option<CowStr<'a>>)>,
@@ -137,7 +166,7 @@ pub struct Region<'a> {
 
 impl<'a> Region<'a> {
     pub fn content(&self) -> &'a str {
-        &self.source_str[self.range.clone()]
+        &self.md.content[self.range.clone()]
     }
 }
 
@@ -164,6 +193,20 @@ impl<'a> PartialEq for Region<'a> {
     }
 }
 
+impl<'a> AsRef<Markdown<'a>> for Region<'a> {
+    fn as_ref(&self) -> &Markdown<'a> {
+        &self.md
+    }
+}
+
+impl<'a> Deref for Region<'a> {
+    type Target = Markdown<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.md
+    }
+    
+}
 
 pub struct Sections<'a> {
     iter: Traversal<'a>,
@@ -183,7 +226,10 @@ impl<'a> Iterator for Sections<'a> {
             match event {
                 TraversalEvent::SectionStart { level, id, classes, attrs } => {
                     let section = Section {
-                        source_str: &self.iter.md.content,
+                        md: Markdown { 
+                            content: "",
+                            options: self.iter.md.options.clone(),
+                        },
                         level,
                         id,
                         classes,
@@ -197,6 +243,7 @@ impl<'a> Iterator for Sections<'a> {
                         assert_eq!(section.level, level);
                         // End of previous section equals start of next section
                         section.range.end = range.start;
+                        section.md.content = &self.iter.md.content[section.range.clone()];
                         if self.open.len() == 0 {
                             return Some(section);
                         } else {
@@ -263,7 +310,10 @@ impl<'a> Iterator for Regions<'a> {
             match event {
                 TraversalEvent::RegionStart { unit, value, attributes } => {
                     let region = Region {
-                        source_str: &self.iter.md.content,
+                        md: Markdown { 
+                            content: "",
+                            options: self.iter.md.options.clone(),
+                        },
                         unit,
                         value,
                         attrs: attributes,
@@ -277,6 +327,7 @@ impl<'a> Iterator for Regions<'a> {
                     if let Some(mut region) = unit_match {
                         // Previous region ends *before* milestone
                         region.range.end = range.start;
+                        region.md.content = &self.iter.md.content[region.range.clone()];
                         self.closed.push(region);
                         if let Some(next_region) = self.next_region_to_yield() {
                             return Some(next_region);
@@ -325,9 +376,11 @@ And more."#;
         println!("{:#?}", sections[1]);
         assert_eq!(sections[1].level, HeadingLevel::H2);
         assert_eq!(&text[sections[1].range.clone()], "## Heading 2\n\nMore text.\n\n");
+        assert_eq!(sections[1].to_html(), "<h2>Heading 2</h2>\n<p>More text.</p>\n");
         println!("{:#?}", sections[2]);
         assert_eq!(sections[2].level, HeadingLevel::H1);
         assert_eq!(&text[sections[2].range.clone()], "# Heading 1\n\nAnd more.");
+        assert_eq!(sections[2].to_html(), "<h1>Heading 1</h1>\n<p>And more.</p>\n");
 
     }
 
@@ -348,10 +401,11 @@ And more."#;
         assert_eq!(regions[0].unit, CowStr::from("part"));
         assert_eq!(regions[0].value, CowStr::from("1"));
         assert_eq!(&text[regions[0].range.clone()], "\nMore text.\n");
+        assert_eq!(regions[0].to_html(), "<p>More text.</p>\n");
         println!("{:#?}", regions[1]);
         assert_eq!(regions[1].unit, CowStr::from("part"));
         assert_eq!(regions[1].value, CowStr::from("2"));
         assert_eq!(&text[regions[1].range.clone()], "\nAnd more.");
-
+        assert_eq!(regions[1].to_html(), "<p>And more.</p>\n");
     }
 }
