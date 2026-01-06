@@ -42,7 +42,7 @@ impl<'a> Markdown<'a> {
         }
     }
 
-    pub fn parser(&self) -> Parser<'_> {
+    fn parser(&self) -> Parser<'_> {
         Parser::new_ext(self.content, self.options.md_options)
     }
 
