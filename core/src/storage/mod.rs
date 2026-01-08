@@ -119,6 +119,7 @@ pub use self::folder::{Folder, Scope};
 pub use self::workspace::Workspace;
 
 mod document;
+mod document2;
 mod folder;
 mod workspace;
 mod file;
@@ -174,6 +175,9 @@ pub enum Error {
 
     #[error("Metadata serialization/deserialization error")]
     Metadata(#[from] serde_json::Error),
+
+    #[error("Metadata serialization/deserialization error")]
+    Metadata2(#[from] serde_yaml_ng::Error),
 
     #[error("IO error")]
     Io(#[from] std::io::Error),

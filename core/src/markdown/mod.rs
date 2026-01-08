@@ -27,13 +27,13 @@ impl<'a> Markdown<'a> {
         &mut self.options
     }
 
-    pub fn metadata<'b, T: Deserialize<'b>>(&self) -> Option<Result<T, serde_yaml_ng::Error>> 
+    pub fn metadata<'b, T: Deserialize<'b>>(&self) -> Result<T, serde_yaml_ng::Error> 
         where 'a: 'b
     {
         let mut parser = self.parser().into_offset_iter();
         if let Some((Event::Start(Tag::MetadataBlock(..)), _)) = parser.next() {
         } else {
-            return None;
+            return serde_yaml_ng::from_str("{}");
         };
 
         let mut start = 0;
@@ -49,13 +49,12 @@ impl<'a> Markdown<'a> {
                     stop = range.end;
                 },
                 Event::End(TagEnd::MetadataBlock(..)) => {
-                    return Some(serde_yaml_ng::from_str(&self.content[start..stop]));
+                    return serde_yaml_ng::from_str(&self.content[start..stop]);
                 },
                 _ => {},
             }
         }
-
-        None
+        unreachable!()
     }
 
     pub fn skip_metadata(&self) -> Self {
@@ -471,9 +470,7 @@ Some text."#;
 
         let md = text.to_markdown(WITHOUT_XML);
 
-        let metadata = md.metadata();
-        assert!(metadata.is_some());
-        let metadata: Value = metadata.unwrap().unwrap();
+        let metadata: Value = md.metadata().unwrap();
         assert_eq!(metadata["title"], "Sample Document");
         assert_eq!(metadata["author"], "Test Author");
 
@@ -486,9 +483,8 @@ Some text."#;
             author: String,
         }
 
-        let metadata_typed: Option<Result<DocInfo, _>> = md.metadata();
-        assert!(metadata_typed.is_some());
-        let metadata_typed = metadata_typed.unwrap().unwrap();
+        let metadata_typed: Result<DocInfo, _> = md.metadata();
+        let metadata_typed = metadata_typed.unwrap();
         assert_eq!(metadata_typed.title, "Sample Document");
         assert_eq!(metadata_typed.author, "Test Author");
     }
@@ -498,8 +494,8 @@ Some text."#;
 
         let text = r#"Some text without metadata."#;
         let md = text.to_markdown(WITHOUT_XML);
-        let metadata: Option<Result<Value, _>> = md.metadata();
-        assert!(metadata.is_none());
+        let metadata: Value = md.metadata().unwrap();
+        assert_eq!(metadata, Value::Mapping(serde_yaml_ng::Mapping::new()));
 
         let skipped = md.skip_metadata();
         assert_eq!(skipped.content, text);
