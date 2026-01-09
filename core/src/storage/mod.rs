@@ -176,9 +176,6 @@ pub enum Error {
     #[error("Metadata serialization/deserialization error")]
     Metadata(#[from] serde_json::Error),
 
-    #[error("Metadata serialization/deserialization error")]
-    Metadata2(#[from] serde_yaml_ng::Error),
-
     #[error("IO error")]
     Io(#[from] std::io::Error),
 
@@ -217,6 +214,12 @@ pub enum Error {
 
     #[error("Content file could not be created: {0}")]
     ContentFileNotCreated(String),
+
+    #[error("Metadata serialization/deserialization error")]
+    Metadata2(#[from] serde_yaml_ng::Error),
+
+    #[error("Invalid ID: {0}")]
+    InvalidId(String),
 }
 
 // Define a standard Result type for the library

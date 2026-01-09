@@ -19,6 +19,7 @@ pub struct Doc {
     workspace: Arc<Workspace>,
     metadata: DocMetadata,
     metadata_location: MetadataLocation,
+    text_parts: Vec<Text>,
 }
 
 impl Doc {
@@ -40,23 +41,64 @@ impl Doc {
         &self.metadata.id
     }
 
-    fn new(
+    fn new_internal(
         absolute_path: PathBuf,
         workspace: Arc<Workspace>,
         metadata: DocMetadata,
         metadata_location: MetadataLocation,
         text: Option<String>,
     ) -> Result<Self, Error> {
-        // TODO: handle text content
 
-        let doc = Self {
+        let mut doc = Self {
             absolute_path,
             workspace,
             metadata,
             metadata_location,
+            text_parts: vec![],
         };
+
+        match (text, doc.metadata.doc_parts.as_ref()) {
+            // Text representation of document only has one part
+            (Some(text), None) => {
+                doc.set_text(text, None).unwrap();
+            },
+            // Text representation has multiple parts (e.g., spreadsheet converted to multiple
+            // tables in markdown or CSV)
+            (Some(text), Some(_parts)) => {
+                for r in text.to_markdown(WITH_MILESTONES).regions() {
+                    if &*r.unit == "part" {
+                        let mut id = r.attribute("id").flatten().map(|s| s.to_string());
+                        if let Some(part_id) = id {
+                            doc.set_text(r.content.to_string(), Some(part_id))?;
+                        }
+                    }
+                }
+            },
+            // No text representation available
+            (None, _) => (),
+        };
+
         Ok(doc)
     }
+
+    pub fn set_text(&mut self, text: String, part_id: Option<String>) -> Result<(), Error> {
+        if let Some(part_id) = part_id.as_ref() {
+            if part_id == "" || self.text_parts.len() == 1 && self.text_parts[0].id == "" {
+                return Err(Error::InvalidId(part_id.to_string()));
+            }
+            if let Some(part) = self.text_parts.iter_mut().find(|p| p.id == *part_id) {
+                *Arc::make_mut(&mut part.content) = text.into();
+                return Ok(());
+            }
+        }
+        self.text_parts = vec![Text {
+            id: part_id.unwrap_or_default(),
+            content: text.into(),
+        }];
+        Ok(())
+    }
+
+
 
     pub(crate) async fn open(
         absolute_path: PathBuf,
@@ -82,7 +124,7 @@ impl Doc {
                     },
                     TextLocation::None => (),
                 }
-                return Self::new(
+                return Self::new_internal(
                     absolute_path,
                     workspace,
                     metadata,
@@ -118,7 +160,7 @@ impl Doc {
             }
         };
         
-        Self::new(
+        Self::new_internal(
             absolute_path,
             workspace,
             metadata,
@@ -162,7 +204,7 @@ pub struct DocMetadata {
     #[serde(default)] #[serde(skip_serializing_if = "is_default")]
     pub text_location: TextLocation,
     #[serde(default)] #[serde(skip_serializing_if = "is_default")]
-    pub doc_parts: String,
+    pub doc_parts: Option<String>,
     #[serde(flatten)]
     other_fields: serde_yaml_ng::Mapping,
 }
@@ -198,3 +240,24 @@ impl Default for TextLocation {
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     value == &T::default()
 }
+
+#[derive(Debug, Clone)]
+pub struct Text {
+    id: String,
+    content: Arc<String>,
+}
+
+impl Text {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.content
+    }
+
+    pub fn make_mut(&mut self) -> &mut String {
+        Arc::make_mut(&mut self.content)
+    }
+}
+

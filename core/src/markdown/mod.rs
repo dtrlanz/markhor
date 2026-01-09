@@ -217,6 +217,15 @@ impl<'a> Region<'a> {
     pub fn content(&self) -> &'a str {
         &self.md.content[self.range.clone()]
     }
+
+    pub fn attribute(&self, name: &str) -> Option<Option<CowStr<'a>>> {
+        for (attr_name, attr_value) in &self.attrs {
+            if *attr_name == name {
+                return Some(attr_value.clone());
+            }
+        }
+        None
+    }
 }
 
 impl<'a> Debug for Region<'a> {
