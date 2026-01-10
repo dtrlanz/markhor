@@ -3,7 +3,7 @@ use tokio::io::{AsyncRead, AsyncWriteExt};
 use uuid::Uuid;
 use tokio::fs::{self, OpenOptions};
 use tracing::{debug, info, instrument, warn};
-use std::{ffi::OsStr, path::{Path, PathBuf}, sync::Arc};
+use std::{ffi::OsStr, ops::{Deref, DerefMut}, path::{Path, PathBuf}, sync::Arc};
 
 use crate::{markdown::{Markdown, ToMarkdown, WITH_MILESTONES}, storage::{Error, Workspace, metadata}};
 
@@ -19,7 +19,7 @@ pub struct Doc {
     workspace: Arc<Workspace>,
     metadata: DocMetadata,
     metadata_location: MetadataLocation,
-    text_parts: Vec<Text>,
+    text_parts: Vec<(String, String)>,
 }
 
 impl Doc {
@@ -41,6 +41,32 @@ impl Doc {
         &self.metadata.id
     }
 
+    pub fn text(&self) -> Option<&String> {
+        self.text_parts.first().map(|(_, text)| text)
+    }
+
+    pub fn text_mut(&mut self) -> TextMut {
+        if self.text_parts.len() > 0 {
+            let text = &mut self.text_parts[0].1;
+            TextMut::occupied(text)
+        } else {
+            TextMut::vacant(self, "")
+        }
+    }
+
+    pub fn text_by_id(&self, id: &str) -> Option<&String> {
+        self.text_parts.iter().find(|(part_id, _)| part_id == id).map(|(_, text)| text)
+    }
+
+    pub fn text_mut_by_id<'a>(&'a mut self, id: &'a str) -> TextMut<'a> {
+        if let Some((idx, _)) = self.text_parts.iter().enumerate().find(|(_i, (part_id, _))| part_id == id) {
+            let text = &mut self.text_parts[idx].1;
+            TextMut::occupied(text)
+        } else {
+            TextMut::vacant(self, id)
+        }
+    }
+
     fn new_internal(
         absolute_path: PathBuf,
         workspace: Arc<Workspace>,
@@ -60,7 +86,7 @@ impl Doc {
         match (text, doc.metadata.doc_parts.as_ref()) {
             // Text representation of document only has one part
             (Some(text), None) => {
-                doc.set_text(text, None).unwrap();
+                doc.text_mut().or_insert(text);
             },
             // Text representation has multiple parts (e.g., spreadsheet converted to multiple
             // tables in markdown or CSV)
@@ -69,7 +95,9 @@ impl Doc {
                     if &*r.unit == "part" {
                         let mut id = r.attribute("id").flatten().map(|s| s.to_string());
                         if let Some(part_id) = id {
-                            doc.set_text(r.content.to_string(), Some(part_id))?;
+                            doc.text_mut_by_id(&part_id).or_insert(r.as_ref().content.to_string());
+                        } else {
+                            doc.text_mut().or_insert(r.as_ref().content.to_string());
                         }
                     }
                 }
@@ -80,25 +108,6 @@ impl Doc {
 
         Ok(doc)
     }
-
-    pub fn set_text(&mut self, text: String, part_id: Option<String>) -> Result<(), Error> {
-        if let Some(part_id) = part_id.as_ref() {
-            if part_id == "" || self.text_parts.len() == 1 && self.text_parts[0].id == "" {
-                return Err(Error::InvalidId(part_id.to_string()));
-            }
-            if let Some(part) = self.text_parts.iter_mut().find(|p| p.id == *part_id) {
-                *Arc::make_mut(&mut part.content) = text.into();
-                return Ok(());
-            }
-        }
-        self.text_parts = vec![Text {
-            id: part_id.unwrap_or_default(),
-            content: text.into(),
-        }];
-        Ok(())
-    }
-
-
 
     pub(crate) async fn open(
         absolute_path: PathBuf,
@@ -261,3 +270,62 @@ impl Text {
     }
 }
 
+pub struct TextMut<'a> {
+    inner: TextMutInner<'a>,
+}
+
+enum TextMutInner<'a> {
+    Occupied(Option<&'a mut String>),
+    Vacant(&'a mut Doc, &'a str, Option<&'a mut String>),
+}
+
+impl<'a> TextMut<'a> {
+    fn occupied(text: &'a mut String) -> Self {
+        Self {
+            inner: TextMutInner::Occupied(Some(text)),
+        }
+    }
+
+    fn vacant(doc: &'a mut Doc, id: &'a str) -> Self {
+        Self {
+            inner: TextMutInner::Vacant(doc, id, None),
+        }
+    }
+
+    pub fn or_insert(&mut self, text: String) -> &mut String {
+        match &mut self.inner {
+            TextMutInner::Occupied(Some(entry)) => {
+                entry
+            },
+            TextMutInner::Vacant(doc, id, _) => {
+                doc.text_parts.push((id.to_string(), text));
+                &mut doc.text_parts.last_mut().unwrap().1
+            },
+            TextMutInner::Occupied(None) => {
+                // TextMutInner::Occupied(None) is never constructed
+                unreachable!();
+            },
+        }
+    }
+}
+
+impl<'a> Deref for TextMut<'a> {
+    type Target = Option<&'a mut String>;
+
+    fn deref(&self) -> &Option<&'a mut String> {
+        match &self.inner {
+            TextMutInner::Occupied(entry) => entry,
+            TextMutInner::Vacant(_, _, entry) => entry,
+        }
+    }
+}
+
+impl<'a> DerefMut for TextMut<'a> {
+    fn deref_mut(&mut self) -> &mut Option<&'a mut String> {
+        match &mut self.inner {
+            TextMutInner::Occupied(entry) => entry,
+            TextMutInner::Vacant(_, _, entry) => entry,
+ 
+        }
+    }
+}
