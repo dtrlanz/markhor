@@ -50,7 +50,7 @@ impl Doc {
             let text = &mut self.text_parts[0].1;
             TextMut::occupied(text)
         } else {
-            TextMut::vacant(self, "")
+            TextMut::vacant(&mut self.text_parts, "")
         }
     }
 
@@ -63,7 +63,7 @@ impl Doc {
             let text = &mut self.text_parts[idx].1;
             TextMut::occupied(text)
         } else {
-            TextMut::vacant(self, id)
+            TextMut::vacant(&mut self.text_parts, id)
         }
     }
 
@@ -276,7 +276,7 @@ pub struct TextMut<'a> {
 
 enum TextMutInner<'a> {
     Occupied(Option<&'a mut String>),
-    Vacant(&'a mut Doc, &'a str, Option<&'a mut String>),
+    Vacant(&'a mut Vec<(String, String)>, &'a str, Option<&'a mut String>),
 }
 
 impl<'a> TextMut<'a> {
@@ -286,20 +286,20 @@ impl<'a> TextMut<'a> {
         }
     }
 
-    fn vacant(doc: &'a mut Doc, id: &'a str) -> Self {
+    fn vacant(text_parts: &'a mut Vec<(String, String)>, id: &'a str) -> Self {
         Self {
-            inner: TextMutInner::Vacant(doc, id, None),
+            inner: TextMutInner::Vacant(text_parts, id, None),
         }
     }
 
-    pub fn or_insert(&mut self, text: String) -> &mut String {
-        match &mut self.inner {
+    pub fn or_insert(self, text: String) -> &'a mut String {
+        match self.inner {
             TextMutInner::Occupied(Some(entry)) => {
                 entry
             },
-            TextMutInner::Vacant(doc, id, _) => {
-                doc.text_parts.push((id.to_string(), text));
-                &mut doc.text_parts.last_mut().unwrap().1
+            TextMutInner::Vacant(text_parts, id, _) => {
+                text_parts.push((id.to_string(), text));
+                &mut text_parts.last_mut().unwrap().1
             },
             TextMutInner::Occupied(None) => {
                 // TextMutInner::Occupied(None) is never constructed
@@ -327,5 +327,33 @@ impl<'a> DerefMut for TextMut<'a> {
             TextMutInner::Vacant(_, _, entry) => entry,
  
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_mut() {
+        let mut s = String::from("hello");
+        let mut t_mut = TextMut::occupied(&mut s);
+        let s_mut = t_mut.or_insert("world".into());
+        assert_eq!(*s_mut, "hello");
+
+        let mut v = vec![(String::from("a"), s)];
+        let mut t_mut = TextMut::vacant(&mut v, "b");
+        assert_eq!(t_mut.as_deref(), None);
+        let s_mut = t_mut.or_insert("world".into());
+        assert_eq!(*s_mut, "world");
+        assert_eq!(v, vec![(String::from("a"), String::from("hello")), (String::from("b"), String::from("world"))]);
+    
+        let mut v = vec![];
+        let mut t_mut = TextMut::vacant(&mut v, "b");
+        assert_eq!(t_mut.as_deref(), None);
+        let s_mut = t_mut.or_insert("world".into());
+        assert_eq!(*s_mut, "world");
+        assert_eq!(v, vec![(String::from("b"), String::from("world"))]);
     }
 }
