@@ -15,8 +15,8 @@ pub struct Doc {
     /// Absolute path to the source file
     pub(crate) absolute_path: PathBuf,
 
-    /// Workspace owning this document, if any
-    workspace: Option<Arc<Workspace>>,
+    /// Workspace owning this document
+    workspace: Arc<Workspace>,
     metadata: DocMetadata,
     metadata_location: MetadataLocation,
     text: Text,
@@ -24,15 +24,8 @@ pub struct Doc {
 
 impl Doc {
     /// Returns the relative path to the document within its workspace.
-    /// 
-    /// If the document does not belong to a workspace, returns the file name only.
     pub fn path(&self) -> &Path {
-        let prefix = if let Some(ws) = &self.workspace {
-            &ws.absolute_path
-        } else {
-            self.absolute_path.parent().unwrap()
-        };
-        self.absolute_path.strip_prefix(prefix).unwrap()
+        self.absolute_path.strip_prefix(&self.workspace.absolute_path).unwrap()
     }
 
     fn metadata_path(&self) -> PathBuf {
@@ -74,7 +67,7 @@ impl Doc {
 
         let mut doc = Self {
             absolute_path,
-            workspace: Some(workspace),
+            workspace: workspace,
             metadata,
             metadata_location,
             text: Text::new(),
