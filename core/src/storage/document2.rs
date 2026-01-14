@@ -5,7 +5,7 @@ use tokio::fs::{self, OpenOptions};
 use tracing::{debug, info, instrument, warn};
 use std::{ffi::OsStr, ops::{Deref, DerefMut}, path::{Path, PathBuf}, sync::Arc};
 
-use crate::{markdown::{Markdown, ToMarkdown, WITH_MILESTONES}, storage::{Error, Workspace, metadata}};
+use crate::{content::{Text, TextMut}, markdown::{Markdown, ToMarkdown, WITH_MILESTONES}, storage::{Error, Workspace, metadata}};
 
 
 const METADATA_EXTENSION: &str = "mark";
@@ -15,17 +15,24 @@ pub struct Doc {
     /// Absolute path to the source file
     pub(crate) absolute_path: PathBuf,
 
-    /// Workspace owning this document
-    workspace: Arc<Workspace>,
+    /// Workspace owning this document, if any
+    workspace: Option<Arc<Workspace>>,
     metadata: DocMetadata,
     metadata_location: MetadataLocation,
-    text_parts: Vec<(String, String)>,
+    text: Text,
 }
 
 impl Doc {
+    /// Returns the relative path to the document within its workspace.
+    /// 
+    /// If the document does not belong to a workspace, returns the file name only.
     pub fn path(&self) -> &Path {
-        &self.absolute_path.strip_prefix(&self.workspace.absolute_path)
-            .expect("Internal error: Document is not in workspace")
+        let prefix = if let Some(ws) = &self.workspace {
+            &ws.absolute_path
+        } else {
+            self.absolute_path.parent().unwrap()
+        };
+        self.absolute_path.strip_prefix(prefix).unwrap()
     }
 
     fn metadata_path(&self) -> PathBuf {
@@ -41,30 +48,20 @@ impl Doc {
         &self.metadata.id
     }
 
-    pub fn text(&self) -> Option<&String> {
-        self.text_parts.first().map(|(_, text)| text)
+    pub fn text(&self) -> Option<&str> {
+        self.text.text()
     }
 
     pub fn text_mut(&mut self) -> TextMut {
-        if self.text_parts.len() > 0 {
-            let text = &mut self.text_parts[0].1;
-            TextMut::occupied(text)
-        } else {
-            TextMut::vacant(&mut self.text_parts, "")
-        }
+        self.text.text_mut()
     }
 
-    pub fn text_by_id(&self, id: &str) -> Option<&String> {
-        self.text_parts.iter().find(|(part_id, _)| part_id == id).map(|(_, text)| text)
+    pub fn text_by_id(&self, id: &str) -> Option<&str> {
+        self.text.text_by_id(id)
     }
 
     pub fn text_mut_by_id<'a>(&'a mut self, id: &'a str) -> TextMut<'a> {
-        if let Some((idx, _)) = self.text_parts.iter().enumerate().find(|(_i, (part_id, _))| part_id == id) {
-            let text = &mut self.text_parts[idx].1;
-            TextMut::occupied(text)
-        } else {
-            TextMut::vacant(&mut self.text_parts, id)
-        }
+        self.text.text_mut_by_id(id)
     }
 
     fn new_internal(
@@ -77,10 +74,10 @@ impl Doc {
 
         let mut doc = Self {
             absolute_path,
-            workspace,
+            workspace: Some(workspace),
             metadata,
             metadata_location,
-            text_parts: vec![],
+            text: Text::new(),
         };
 
         match (text, doc.metadata.doc_parts.as_ref()) {
@@ -248,112 +245,4 @@ impl Default for TextLocation {
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     value == &T::default()
-}
-
-#[derive(Debug, Clone)]
-pub struct Text {
-    id: String,
-    content: Arc<String>,
-}
-
-impl Text {
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.content
-    }
-
-    pub fn make_mut(&mut self) -> &mut String {
-        Arc::make_mut(&mut self.content)
-    }
-}
-
-pub struct TextMut<'a> {
-    inner: TextMutInner<'a>,
-}
-
-enum TextMutInner<'a> {
-    Occupied(Option<&'a mut String>),
-    Vacant(&'a mut Vec<(String, String)>, &'a str, Option<&'a mut String>),
-}
-
-impl<'a> TextMut<'a> {
-    fn occupied(text: &'a mut String) -> Self {
-        Self {
-            inner: TextMutInner::Occupied(Some(text)),
-        }
-    }
-
-    fn vacant(text_parts: &'a mut Vec<(String, String)>, id: &'a str) -> Self {
-        Self {
-            inner: TextMutInner::Vacant(text_parts, id, None),
-        }
-    }
-
-    pub fn or_insert(self, text: String) -> &'a mut String {
-        match self.inner {
-            TextMutInner::Occupied(Some(entry)) => {
-                entry
-            },
-            TextMutInner::Vacant(text_parts, id, _) => {
-                text_parts.push((id.to_string(), text));
-                &mut text_parts.last_mut().unwrap().1
-            },
-            TextMutInner::Occupied(None) => {
-                // TextMutInner::Occupied(None) is never constructed
-                unreachable!();
-            },
-        }
-    }
-}
-
-impl<'a> Deref for TextMut<'a> {
-    type Target = Option<&'a mut String>;
-
-    fn deref(&self) -> &Option<&'a mut String> {
-        match &self.inner {
-            TextMutInner::Occupied(entry) => entry,
-            TextMutInner::Vacant(_, _, entry) => entry,
-        }
-    }
-}
-
-impl<'a> DerefMut for TextMut<'a> {
-    fn deref_mut(&mut self) -> &mut Option<&'a mut String> {
-        match &mut self.inner {
-            TextMutInner::Occupied(entry) => entry,
-            TextMutInner::Vacant(_, _, entry) => entry,
- 
-        }
-    }
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn text_mut() {
-        let mut s = String::from("hello");
-        let mut t_mut = TextMut::occupied(&mut s);
-        let s_mut = t_mut.or_insert("world".into());
-        assert_eq!(*s_mut, "hello");
-
-        let mut v = vec![(String::from("a"), s)];
-        let mut t_mut = TextMut::vacant(&mut v, "b");
-        assert_eq!(t_mut.as_deref(), None);
-        let s_mut = t_mut.or_insert("world".into());
-        assert_eq!(*s_mut, "world");
-        assert_eq!(v, vec![(String::from("a"), String::from("hello")), (String::from("b"), String::from("world"))]);
-    
-        let mut v = vec![];
-        let mut t_mut = TextMut::vacant(&mut v, "b");
-        assert_eq!(t_mut.as_deref(), None);
-        let s_mut = t_mut.or_insert("world".into());
-        assert_eq!(*s_mut, "world");
-        assert_eq!(v, vec![(String::from("b"), String::from("world"))]);
-    }
 }

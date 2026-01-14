@@ -1,6 +1,7 @@
 pub mod chat;
 pub mod chunking;
 pub mod convert;
+pub mod content;
 pub mod extension;
 pub mod embedding;
 pub mod event;
