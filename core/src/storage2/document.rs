@@ -14,7 +14,7 @@ pub struct Document {
     pub(crate) absolute_path: PathBuf,
 
     /// Workspace owning this document
-    workspace: Arc<Workspace>,
+    workspace: Workspace,
     metadata: DocumentMetadata,
     metadata_location: MetadataLocation,
     text: Text,
@@ -23,7 +23,7 @@ pub struct Document {
 impl Document {
     /// Returns the relative path to the document within its workspace.
     pub fn path(&self) -> &Path {
-        self.absolute_path.strip_prefix(&self.workspace.absolute_path).unwrap()
+        self.absolute_path.strip_prefix(&self.workspace.path()).unwrap()
     }
 
     fn metadata_path(&self) -> PathBuf {
@@ -57,7 +57,7 @@ impl Document {
 
     fn new_internal(
         absolute_path: PathBuf,
-        workspace: Arc<Workspace>,
+        workspace: Workspace,
         metadata: DocumentMetadata,
         metadata_location: MetadataLocation,
         text: Option<String>,
@@ -65,7 +65,7 @@ impl Document {
 
         let mut doc = Self {
             absolute_path,
-            workspace: workspace,
+            workspace,
             metadata,
             metadata_location,
             text: Text::new(),
@@ -99,7 +99,7 @@ impl Document {
 
     pub(crate) async fn open(
         absolute_path: PathBuf,
-        workspace: Arc<Workspace>,
+        workspace: Workspace,
     ) -> Result<Self, AccessStorageError> {
         // Attempt to load metadata from metadata file
         let md_path = absolute_path.with_added_extension(METADATA_EXTENSION);

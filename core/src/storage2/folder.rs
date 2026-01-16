@@ -13,19 +13,19 @@ pub struct Folder {
     // Absolute path to the folder
     absolute_path: PathBuf,
     // Workspace owning this document
-    workspace: Arc<Workspace>,
+    workspace: Workspace,
 }
 
 impl Folder {
     /// Creates a Folder instance. Intended for internal use.
     /// Assumes the path already points to a valid, existing directory *inside* the workspace.
-    pub(crate) fn new(absolute_path: PathBuf, workspace: Arc<Workspace>) -> Self {
+    pub(crate) fn new(absolute_path: PathBuf, workspace: Workspace) -> Self {
         Folder { absolute_path, workspace }
     }
 
     /// Returns the relative path to the folder within its workspace.
     pub fn path(&self) -> &Path {
-        self.absolute_path.strip_prefix(&self.workspace.absolute_path).unwrap()
+        self.absolute_path.strip_prefix(&self.workspace.path()).unwrap()
     }
 
     /// Returns the name of the folder.
