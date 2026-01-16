@@ -12,6 +12,8 @@ pub use workspace::Workspace;
 
 const METADATA_EXTENSION: &str = "mark";
 const ATTACHMENTS_DIR: &str = "attachments";
+const WORKSPACE_CONFIG_DIR: &str = ".markhor";
+const WORKSPACE_METADATA_FILENAME: &str = "workspace.yaml";
 
 
 #[derive(Debug, Error)]
