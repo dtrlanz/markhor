@@ -8,6 +8,7 @@ pub mod event;
 pub mod job;
 pub mod markdown;
 pub mod storage;
+pub mod storage2;
 pub mod tool;
 
 pub mod error {

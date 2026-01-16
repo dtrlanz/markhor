@@ -119,7 +119,6 @@ pub use self::folder::{Folder, Scope};
 pub use self::workspace::Workspace;
 
 mod document;
-mod document2;
 mod folder;
 mod workspace;
 mod file;

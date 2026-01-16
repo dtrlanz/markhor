@@ -1,28 +1,26 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use tokio::io::{AsyncRead, AsyncWriteExt};
+use tokio::io::{AsyncWriteExt};
 use uuid::Uuid;
 use tokio::fs::{self, OpenOptions};
 use tracing::{debug, info, instrument, warn};
-use std::{ffi::OsStr, ops::{Deref, DerefMut}, path::{Path, PathBuf}, sync::Arc};
+use std::{ffi::OsStr, path::{Path, PathBuf}, sync::Arc};
 
-use crate::{content::{Text, TextMut}, markdown::{Markdown, ToMarkdown, WITH_MILESTONES}, storage::{Error, Workspace, metadata}};
+use crate::{content::{Text, TextMut}, markdown::{ToMarkdown, WITH_MILESTONES}, storage2::{AccessStorageError, METADATA_EXTENSION, Workspace}};
 
 
-const METADATA_EXTENSION: &str = "mark";
-const ATTACHMENTS_DIR: &str = "attachments";
 
-pub struct Doc {
+pub struct Document {
     /// Absolute path to the source file
     pub(crate) absolute_path: PathBuf,
 
     /// Workspace owning this document
     workspace: Arc<Workspace>,
-    metadata: DocMetadata,
+    metadata: DocumentMetadata,
     metadata_location: MetadataLocation,
     text: Text,
 }
 
-impl Doc {
+impl Document {
     /// Returns the relative path to the document within its workspace.
     pub fn path(&self) -> &Path {
         self.absolute_path.strip_prefix(&self.workspace.absolute_path).unwrap()
@@ -45,7 +43,7 @@ impl Doc {
         self.text.text()
     }
 
-    pub fn text_mut(&mut self) -> TextMut {
+    pub fn text_mut(&mut self) -> TextMut<'_> {
         self.text.text_mut()
     }
 
@@ -60,10 +58,10 @@ impl Doc {
     fn new_internal(
         absolute_path: PathBuf,
         workspace: Arc<Workspace>,
-        metadata: DocMetadata,
+        metadata: DocumentMetadata,
         metadata_location: MetadataLocation,
         text: Option<String>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, AccessStorageError> {
 
         let mut doc = Self {
             absolute_path,
@@ -102,10 +100,10 @@ impl Doc {
     pub(crate) async fn open(
         absolute_path: PathBuf,
         workspace: Arc<Workspace>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, AccessStorageError> {
         // Attempt to load metadata from metadata file
         let md_path = absolute_path.with_added_extension(METADATA_EXTENSION);
-        match read_markdown_file::<DocMetadata>(&md_path).await {
+        match read_markdown_file::<DocumentMetadata>(&md_path).await {
             Ok((text, Ok(metadata))) => {
                 let mut text_option = None;
                 match metadata.text_location {
@@ -132,26 +130,26 @@ impl Doc {
                 );
             },
             Ok((text, Err(e))) => {
-                return Err(Error::Metadata2(e));
+                return Err(AccessStorageError::Metadata2(e));
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // Metadata file not found, try source file
                 debug!("Metadata file not found for document {:?}, trying source file", absolute_path);
             },
             Err(e) => {
-                return Err(Error::Io(e));
+                return Err(AccessStorageError::Io(e));
             }
         }
 
         // Read text and metadata from source file
         let mut metadata_location = MetadataLocation::SourceFile;
-        let (text, metadata_result) = read_markdown_file::<DocMetadata>(&absolute_path).await?;
+        let (text, metadata_result) = read_markdown_file::<DocumentMetadata>(&absolute_path).await?;
         let metadata = match metadata_result {
             Ok(metadata) => metadata,
             Err(e) => {
                 debug!("Failed to read metadata from source file {:?}: {}", absolute_path, e);
                 // Create metadata file
-                let metadata = DocMetadata::new(&absolute_path);
+                let metadata = DocumentMetadata::new(&absolute_path);
                 write_markdown_file(&md_path, "", &metadata).await?;
                 metadata_location = MetadataLocation::MetadataFile;
                 info!("Created missing metadata file for document {:?}", absolute_path);
@@ -177,7 +175,7 @@ async fn read_markdown_file<T: DeserializeOwned>(path: &Path) -> Result<(String,
     Ok((text, metadata_result))
 }
 
-async fn write_markdown_file<T: Serialize + ?Sized>(path: &Path, text: &str, metadata: &T) -> Result<(), Error> {
+async fn write_markdown_file<T: Serialize + ?Sized>(path: &Path, text: &str, metadata: &T) -> Result<(), AccessStorageError> {
     let metadata = serde_yaml_ng::to_string(metadata)?;
     let markdown = format!("{}\n{}", metadata, text);
     let mut file = OpenOptions::new()
@@ -197,7 +195,7 @@ pub enum MetadataLocation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DocMetadata {
+pub struct DocumentMetadata {
     pub id: Uuid,
     pub mime: String,
     #[serde(default)] #[serde(skip_serializing_if = "is_default")]
@@ -208,7 +206,7 @@ pub struct DocMetadata {
     other_fields: serde_yaml_ng::Mapping,
 }
 
-impl DocMetadata {
+impl DocumentMetadata {
     pub fn new(path: &Path) -> Self {
         Self {
             id: Uuid::new_v4(),
