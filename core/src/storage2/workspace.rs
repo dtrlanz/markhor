@@ -3,17 +3,11 @@ use std::{f32::consts::E, path::{Path, PathBuf}, sync::Arc};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
-use crate::storage2::{AccessStorageError, Folder, WORKSPACE_CONFIG_DIR, WORKSPACE_METADATA_FILENAME};
+use crate::storage2::{AccessStorageError, Document, Folder, WORKSPACE_CONFIG_DIR, WORKSPACE_METADATA_FILENAME};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
     inner: Arc<WorkspaceInner>,
-}
-
-#[derive(Debug)]
-struct WorkspaceInner {
-    absolute_path: PathBuf,
-    metadata: WorkspaceMetadata,
 }
 
 impl Workspace {
@@ -23,7 +17,7 @@ impl Workspace {
     }
 
     /// Returns the root folder of the workspace.
-    pub async fn root(&self) -> Folder {
+    pub fn root(&self) -> Folder {
         Folder::new(self.inner.absolute_path.clone(), self.clone())
     }
 
@@ -40,6 +34,9 @@ impl Workspace {
         let path_metadata = fs::metadata(&absolute_path).await?;
         if !path_metadata.is_dir() {
             return Err(AccessStorageError::NotADirectory(absolute_path));
+        }
+        if let Some(ws) = find_workspace_descendant(&absolute_path).await? {
+            return Err(AccessStorageError::InWorkspace(ws));
         }
 
         let config_dir = absolute_path.join(WORKSPACE_CONFIG_DIR);
@@ -61,6 +58,70 @@ impl Workspace {
             }),
         })
     }
+
+    /// Opens the folder with the specified name.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the folder cannot be opened or does not exist.
+    pub async fn folder(&self, name: impl AsRef<Path>) -> Result<Folder, AccessStorageError> {
+        self.root().folder(name).await
+    }
+
+    /// Opens the document with the specified name.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the document cannot be opened or does not exist.
+    pub async fn document(&self, name: impl AsRef<Path>) -> Result<Document, AccessStorageError> {
+        self.root().document(name).await
+    }
+}
+
+#[derive(Debug)]
+struct WorkspaceInner {
+    absolute_path: PathBuf,
+    metadata: WorkspaceMetadata,
+}
+
+impl PartialEq for WorkspaceInner {
+    fn eq(&self, other: &Self) -> bool {
+        self.absolute_path == other.absolute_path
+    }
+}
+
+impl Eq for WorkspaceInner {}
+
+/// Checks if a given path is a descendant of any workspace and returns its path if it is.
+/// 
+/// A workspace is considered to be a directory containing a workspace config directory. This 
+/// function is used to check for nested workspaces, which are currently disallowed. 
+/// 
+/// Returns
+/// 
+/// - `Some` if the path is a descendant of a workspace
+/// - `None` if the path is outside of any workspace
+/// - `None` if the path is a workspace itself (i.e., points to the root directory)
+pub(crate) async fn find_workspace_descendant(absolute_path: &Path) -> Result<Option<PathBuf>, AccessStorageError> {
+    if let Some(parent) = absolute_path.parent() {
+        for ancestor in parent.ancestors() {
+            let config_dir = ancestor.join(WORKSPACE_CONFIG_DIR);
+            match fs::metadata(&config_dir).await {
+                Ok(metadata) => {
+                    if metadata.is_dir() {
+                        return Ok(Some(ancestor.to_path_buf()));
+                    }
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    continue;
+                },
+                Err(e) => {
+                    return Err(AccessStorageError::Io(e));
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -75,7 +136,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[tokio::test]
-    async fn open_workspace() {
+    async fn workspace_open() {
         let dir = tempdir().unwrap();
         let ws_path = dir.path();
 
@@ -104,8 +165,24 @@ mod tests {
             foo: "bar".to_string(),
         });
 
+        // Try opening workspace descendant as workspace
+        let child_path = ws_path.join("child");
+        fs::create_dir(&child_path).await.unwrap();
+        let result = Workspace::open(&child_path).await;
+        match result {
+            Err(AccessStorageError::InWorkspace(path)) => {
+                let ws_path = fs::canonicalize(ws_path).await.unwrap();
+                assert_eq!(path, ws_path);
+            },
+            _ => {
+                panic!("Wrong error type: {:?}", result);
+            }
+        }
+
         // Try opening non-existent workspace
-        let fake_path = ws_path.join("fake");
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let fake_path = dir_path.join("fake");
         let result = Workspace::open(&fake_path).await;
         assert!(result.is_err());
         match result {
@@ -118,7 +195,7 @@ mod tests {
         }
 
         // Try opening non-directory
-        let fake_file = ws_path.join("fake.txt");
+        let fake_file = dir_path.join("fake.txt");
         fs::write(&fake_file, "foo").await.unwrap();
         let result = Workspace::open(&fake_file).await;
         assert!(result.is_err());

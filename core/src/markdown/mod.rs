@@ -40,7 +40,6 @@ impl<'a> Markdown<'a> {
         let mut stop = 0;
 
         while let Some((event, range)) = parser.next() {
-            println!("{:?} {:?}", event, range);
             match event {
                 Event::Text(_) => {
                     if start == 0 {

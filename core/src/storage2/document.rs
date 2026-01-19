@@ -35,6 +35,11 @@ impl Document {
             .and_then(OsStr::to_str).unwrap()
     }
 
+    /// Returns the workspace owning this document.
+    pub fn workspace(&self) -> &Workspace {
+        &self.workspace
+    }
+
     pub fn id(&self) -> &Uuid {
         &self.metadata.id
     }
@@ -55,7 +60,7 @@ impl Document {
         self.text.text_mut_by_id(id)
     }
 
-    fn new_internal(
+    fn new(
         absolute_path: PathBuf,
         workspace: Workspace,
         metadata: DocumentMetadata,
@@ -96,76 +101,89 @@ impl Document {
 
         Ok(doc)
     }
-
-    pub(crate) async fn open(
-        absolute_path: PathBuf,
-        workspace: Workspace,
-    ) -> Result<Self, AccessStorageError> {
-        // Attempt to load metadata from metadata file
-        let md_path = absolute_path.with_added_extension(METADATA_EXTENSION);
-        match read_markdown_file::<DocumentMetadata>(&md_path).await {
-            Ok((text, Ok(metadata))) => {
-                let mut text_option = None;
-                match metadata.text_location {
-                    TextLocation::SourceFile => {
-                        // Read source file
-                        text_option = Some(fs::read_to_string(&absolute_path).await?);
-                    },
-                    TextLocation::MetadataFile => {
-                        text_option = Some(text);
-                    },
-                    TextLocation::Inferred => {
-                        if text.trim_start().is_empty() {
-                            text_option = Some(fs::read_to_string(&absolute_path).await?);
-                        }
-                    },
-                    TextLocation::None => (),
-                }
-                return Self::new_internal(
-                    absolute_path,
-                    workspace,
-                    metadata,
-                    MetadataLocation::MetadataFile,
-                    text_option,
-                );
-            },
-            Ok((text, Err(e))) => {
-                return Err(AccessStorageError::Metadata2(e));
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Metadata file not found, try source file
-                debug!("Metadata file not found for document {:?}, trying source file", absolute_path);
-            },
-            Err(e) => {
-                return Err(AccessStorageError::Io(e));
-            }
-        }
-
-        // Read text and metadata from source file
-        let mut metadata_location = MetadataLocation::SourceFile;
-        let (text, metadata_result) = read_markdown_file::<DocumentMetadata>(&absolute_path).await?;
-        let metadata = match metadata_result {
-            Ok(metadata) => metadata,
-            Err(e) => {
-                debug!("Failed to read metadata from source file {:?}: {}", absolute_path, e);
-                // Create metadata file
-                let metadata = DocumentMetadata::new(&absolute_path);
-                write_markdown_file(&md_path, "", &metadata).await?;
-                metadata_location = MetadataLocation::MetadataFile;
-                info!("Created missing metadata file for document {:?}", absolute_path);
-                metadata
-            }
-        };
-        
-        Self::new_internal(
-            absolute_path,
-            workspace,
-            metadata,
-            metadata_location,
-            Some(text),
-        )
-    }
 }
+
+pub(crate) async fn open_document(
+    absolute_path: &Path,
+    workspace: Workspace,
+) -> Result<Document, AccessStorageError> {
+    // Check if path exists and all that
+    let absolute_path = fs::canonicalize(&absolute_path).await
+        .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound {
+            AccessStorageError::FileNotFound(absolute_path.to_path_buf())
+        } else {
+            AccessStorageError::Io(e)
+    })?;
+    // Check if path is inside of workspace
+    if !absolute_path.starts_with(&workspace.path()) {
+        return Err(AccessStorageError::NotInWorkspace(absolute_path));
+    }
+
+    // Attempt to load metadata from metadata file
+    let md_path = absolute_path.with_added_extension(METADATA_EXTENSION);
+    match read_markdown_file::<DocumentMetadata>(&md_path).await {
+        Ok((text, Ok(metadata))) => {
+            let mut text_option = None;
+            match metadata.text_location {
+                TextLocation::SourceFile => {
+                    // Read source file
+                    text_option = Some(fs::read_to_string(&absolute_path).await?);
+                },
+                TextLocation::MetadataFile => {
+                    text_option = Some(text);
+                },
+                TextLocation::Inferred => {
+                    if text.trim_start().is_empty() {
+                        text_option = Some(fs::read_to_string(&absolute_path).await?);
+                    }
+                },
+                TextLocation::None => (),
+            }
+            return Document::new(
+                absolute_path,
+                workspace,
+                metadata,
+                MetadataLocation::MetadataFile,
+                text_option,
+            );
+        },
+        Ok((_, Err(e))) => {
+            return Err(AccessStorageError::Metadata(e));
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Metadata file not found, try source file
+            debug!("Metadata file not found for document {:?}, trying source file", absolute_path);
+        },
+        Err(e) => {
+            return Err(AccessStorageError::Io(e));
+        }
+    }
+
+    // Read text and metadata from source file
+    let mut metadata_location = MetadataLocation::SourceFile;
+    let (text, metadata_result) = read_markdown_file::<DocumentMetadata>(&absolute_path).await?;
+    let metadata = match metadata_result {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            debug!("Failed to read metadata from source file {:?}: {}", absolute_path, e);
+            // Create metadata file
+            let metadata = DocumentMetadata::new(&absolute_path);
+            write_markdown_file(&md_path, "", &metadata).await?;
+            metadata_location = MetadataLocation::MetadataFile;
+            info!("Created missing metadata file for document {:?}", absolute_path);
+            metadata
+        }
+    };
+    
+    Document::new(
+        absolute_path,
+        workspace,
+        metadata,
+        metadata_location,
+        Some(text),
+    )
+}
+
 
 async fn read_markdown_file<T: DeserializeOwned>(path: &Path) -> Result<(String, Result<T, serde_yaml_ng::Error>), std::io::Error> {
     let content = fs::read_to_string(path).await?;
@@ -237,3 +255,35 @@ impl Default for TextLocation {
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     value == &T::default()
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn helper_open_document() {
+        // Document without metadata
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let doc_path = dir_path.join("doc.md");
+        let ws = Workspace::open(&dir_path).await.unwrap();
+        fs::write(&doc_path, "foo").await.unwrap();
+        let doc = open_document(&doc_path, ws.clone()).await.unwrap();
+        assert_eq!(doc.path(), "doc.md");
+        assert_eq!(doc.workspace(), &ws);
+        assert_eq!(doc.text(), Some("foo"));
+
+        // Document with metadata
+        let doc_path = dir_path.join("doc2.md");
+        let metadata: DocumentMetadata = DocumentMetadata::new(&doc_path);
+        let metadata_str = serde_yaml_ng::to_string(&metadata).unwrap();
+        fs::write(&doc_path, format!("---\n{}---\nfoo", &metadata_str)).await.unwrap();
+        let doc = open_document(&doc_path, ws.clone()).await.unwrap();
+        assert_eq!(doc.path(), "doc2.md");
+        assert_eq!(doc.workspace(), &ws);
+        assert_eq!(doc.metadata.id, metadata.id);
+        assert_eq!(doc.text(), Some("\nfoo"));
+    }
+}        

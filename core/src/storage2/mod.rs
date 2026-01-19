@@ -30,8 +30,14 @@ pub enum AccessStorageError {
     #[error("Path is not a directory: {0}")]
     NotADirectory(PathBuf),
 
+    #[error("Path is outside of workspace: {0}")]
+    NotInWorkspace(PathBuf),
+
+    #[error("Workspaces may not be nested. Outer workspace: {0}")]
+    InWorkspace(PathBuf),
+
     #[error("Metadata serialization/deserialization error")]
-    Metadata2(#[from] serde_yaml_ng::Error),
+    Metadata(#[from] serde_yaml_ng::Error),
 
     #[error("Invalid ID: {0}")]
     InvalidId(String),
