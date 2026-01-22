@@ -3,9 +3,9 @@ use tokio::io::{AsyncWriteExt};
 use uuid::Uuid;
 use tokio::fs::{self, OpenOptions};
 use tracing::{debug, info, instrument, warn};
-use std::{ffi::OsStr, path::{Path, PathBuf}, sync::Arc};
+use std::{collections::{HashMap, hash_map::Entry}, ffi::OsStr, path::{Path, PathBuf}, sync::Arc};
 
-use crate::{content::{Text, TextMut}, markdown::{ToMarkdown, WITH_MILESTONES}, storage2::{AccessStorageError, METADATA_EXTENSION, Workspace}};
+use crate::{content::{Text, TextMut}, embedding::Embedding, markdown::{ToMarkdown, WITH_MILESTONES}, storage2::{ATTACHMENTS_DIR, AccessStorageError, METADATA_EXTENSION, Workspace}};
 
 
 
@@ -18,16 +18,14 @@ pub struct Document {
     metadata: DocumentMetadata,
     metadata_location: MetadataLocation,
     text: Text,
+    cache: DocCache,
+    chunk_cache: HashMap<String, HashMap<String, Vec<ChunkCache>>>,
 }
 
 impl Document {
     /// Returns the relative path to the document within its workspace.
     pub fn path(&self) -> &Path {
         self.absolute_path.strip_prefix(&self.workspace.path()).unwrap()
-    }
-
-    fn metadata_path(&self) -> PathBuf {
-        self.absolute_path.with_added_extension(METADATA_EXTENSION)
     }
 
     pub fn name(&self) -> &str {
@@ -60,26 +58,131 @@ impl Document {
         self.text.text_mut_by_id(id)
     }
 
-    fn new(
-        absolute_path: PathBuf,
-        workspace: Workspace,
-        metadata: DocumentMetadata,
-        metadata_location: MetadataLocation,
-        text: Option<String>,
-    ) -> Result<Self, AccessStorageError> {
+    pub(crate) fn extension_cache(&self, extension: &str) -> Option<&ExtensionCache> {
+        self.cache.extensions.get(extension)
+    }
 
-        let mut doc = Self {
-            absolute_path,
-            workspace,
-            metadata,
-            metadata_location,
-            text: Text::new(),
+    // pub(crate) fn chunk_cache(&self, chunker_id: String, text_id: String, idx: usize) -> Option<&ChunkCache> {
+    //     self.chunk_cache.get(&chunker_id)
+    //         .and_then(|by_text| by_text.get(&text_id))
+    //         .and_then(|chunks| chunks.get(idx))
+    // }
+
+    // pub(crate) async fn chunk_cache_entry(&mut self, chunker_id: String, text_id: String, idx: usize) -> Option<&ChunkCache> {
+    //     let read_cache = self.read_cache_file(format!(".chunks_{}.yaml", chunker_id).as_str());
+    //     let mut by_text = match self.chunk_cache.entry(chunker_id) {
+    //         Entry::Occupied(occupied) => occupied.get_mut(),
+    //         Entry::Vacant(vacant) => {
+    //             let mut by_text = read_cache.await.ok().flatten().unwrap_or_default();
+    //             vacant.insert(by_text)
+    //         },
+    //     };
+    //     let mut chunks = by_text.entry(text_id).or_default();
+    //     // TODO: figure out what we actually want to do here
+    //     while chunks.len() <= idx {
+    //         chunks.push(ChunkCache {
+    //             chunk: Default::default(),
+    //             hash: (),
+    //             embeddings: Default::default(),
+    //         });
+    //     }
+    //     Some(&mut chunks[idx])
+    // }
+
+    fn read_cache_file<T: DeserializeOwned>(&self, name: &str) -> impl Future<Output = Result<Option<T>, AccessStorageError>> + use<T> {
+        let cache_path = self.attachment_path_raw(name);
+        // Use async block instead of async fn to avoid capturing lifetime of `&self`
+        async move {
+            match fs::read_to_string(&cache_path).await {
+                Ok(content) => serde_yaml_ng::from_str(&content).map_err(|e| {
+                    warn!("Failed to parse cache file: {:?}", cache_path.file_name());
+                    AccessStorageError::Metadata(e)
+                }),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    debug!("Cache file not found {:?}", cache_path.file_name());
+                    Ok(None)
+                },
+                Err(e) => {
+                    warn!("Failed to read cache file: {:?}", cache_path.file_name());
+                    Err(e.into())
+                },
+            }
+        }
+    }
+
+    async fn load(&mut self) -> Result<(), AccessStorageError> {
+        // Attempt to load cache from cache file
+        let read_cache = self.read_cache_file(".cache.yaml");
+        // let cache_path = self.attachment_path_raw(".cache.yaml");
+        let cache = tokio::spawn(async move {
+            read_cache.await
+        });
+
+        // Attempt to load metadata from metadata file
+        match read_markdown_file::<DocumentMetadata>(&self.metadata_path()).await {
+            Ok((text, Ok(metadata))) => {
+                let mut text_option = None;
+                match metadata.text_location {
+                    TextLocation::SourceFile => {
+                        // Read source file
+                        text_option = Some(fs::read_to_string(&self.absolute_path).await?);
+                    },
+                    TextLocation::MetadataFile => {
+                        text_option = Some(text);
+                    },
+                    TextLocation::Inferred => {
+                        if text.trim_start().is_empty() {
+                            text_option = Some(fs::read_to_string(&self.absolute_path).await?);
+                        }
+                    },
+                    TextLocation::None => (),
+                }
+                self.metadata = metadata;
+                self.update_text(text_option);
+                return Ok(());
+            },
+            Ok((_, Err(e))) => {
+                return Err(AccessStorageError::Metadata(e));
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Metadata file not found, try source file
+                debug!("Metadata file not found for document {:?}, trying source file", self.absolute_path);
+            },
+            Err(e) => {
+                return Err(AccessStorageError::Io(e));
+            }
+        }
+
+        // Read text and metadata from source file
+        let mut metadata_location = MetadataLocation::SourceFile;
+        let (text, metadata_result) = read_markdown_file::<DocumentMetadata>(&self.absolute_path).await?;
+        let metadata = match metadata_result {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                debug!("Failed to read metadata from source file {:?}: {}", self.absolute_path, e);
+                // Create metadata file
+                let metadata = DocumentMetadata::new(&self.absolute_path);
+                write_markdown_file(&self.metadata_path(), "", &metadata).await?;
+                metadata_location = MetadataLocation::MetadataFile;
+                info!("Created missing metadata file for document {:?}", self.absolute_path);
+                metadata
+            }
         };
+        self.metadata = metadata;
+        self.metadata_location = metadata_location;
+        self.update_text(Some(text));
 
-        match (text, doc.metadata.doc_parts.as_ref()) {
+        self.cache = cache.await.unwrap().ok().flatten().unwrap_or_default();
+
+        Ok(())
+    }
+
+    fn update_text(&mut self, new_text: Option<String>) {
+        self.text = Text::new();
+        match (new_text, self.metadata.doc_parts.as_ref()) {
             // Text representation of document only has one part
             (Some(text), None) => {
-                doc.text_mut().or_insert(text);
+                self.text_mut().or_insert(text);
             },
             // Text representation has multiple parts (e.g., spreadsheet converted to multiple
             // tables in markdown or CSV)
@@ -88,9 +191,9 @@ impl Document {
                     if &*r.unit == "part" {
                         let mut id = r.attribute("id").flatten().map(|s| s.to_string());
                         if let Some(part_id) = id {
-                            doc.text_mut_by_id(&part_id).or_insert(r.as_ref().content.to_string());
+                            self.text_mut_by_id(&part_id).or_insert(r.as_ref().content.to_string());
                         } else {
-                            doc.text_mut().or_insert(r.as_ref().content.to_string());
+                            self.text_mut().or_insert(r.as_ref().content.to_string());
                         }
                     }
                 }
@@ -98,9 +201,51 @@ impl Document {
             // No text representation available
             (None, _) => (),
         };
-
-        Ok(doc)
     }
+
+    fn metadata_path(&self) -> PathBuf {
+        self.absolute_path.with_added_extension(METADATA_EXTENSION)
+    }
+
+    fn attachment_path_raw(&self, name: &str) -> PathBuf {
+        //     .../workspace/doc.md
+        self.absolute_path
+            // .../workspace/attachments
+            .with_file_name(ATTACHMENTS_DIR)
+            // .../workspace/attachments/doc.md
+            .join(self.absolute_path.file_name().unwrap())
+            // .../workspace/attachments/doc.md/attachment_name
+            .join(name)
+    }
+
+    fn attachment_path_escaped(&self, name: &str) -> PathBuf {
+        assert_ne!(name, "", "Attachment name cannot be empty");
+        let mut path = self.attachment_path_raw(name);
+        let file_name = path.file_name().unwrap().to_str().unwrap();
+        // Leading dots are reserved for cache files
+        if file_name.starts_with(".") {
+            // Escape with additional dot
+            path.set_file_name(format!(".{}", file_name));
+        }
+        path
+    }
+
+    fn attachment_name(&self, path: &Path) -> Option<String> {
+        let mut file_name = path
+            .strip_prefix(self.attachment_path_raw(""))
+            .unwrap().to_str().unwrap().to_string();
+        
+        if !file_name.starts_with("..") {
+            file_name.remove(0);    // Unescape leading dot
+            Some(file_name)
+        } else if file_name.starts_with(".") {
+            None    // Cache file, not an attachment
+        } else {
+            Some(file_name)
+        }
+    }
+
+
 }
 
 pub(crate) async fn open_document(
@@ -119,69 +264,18 @@ pub(crate) async fn open_document(
         return Err(AccessStorageError::NotInWorkspace(absolute_path));
     }
 
-    // Attempt to load metadata from metadata file
-    let md_path = absolute_path.with_added_extension(METADATA_EXTENSION);
-    match read_markdown_file::<DocumentMetadata>(&md_path).await {
-        Ok((text, Ok(metadata))) => {
-            let mut text_option = None;
-            match metadata.text_location {
-                TextLocation::SourceFile => {
-                    // Read source file
-                    text_option = Some(fs::read_to_string(&absolute_path).await?);
-                },
-                TextLocation::MetadataFile => {
-                    text_option = Some(text);
-                },
-                TextLocation::Inferred => {
-                    if text.trim_start().is_empty() {
-                        text_option = Some(fs::read_to_string(&absolute_path).await?);
-                    }
-                },
-                TextLocation::None => (),
-            }
-            return Document::new(
-                absolute_path,
-                workspace,
-                metadata,
-                MetadataLocation::MetadataFile,
-                text_option,
-            );
-        },
-        Ok((_, Err(e))) => {
-            return Err(AccessStorageError::Metadata(e));
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // Metadata file not found, try source file
-            debug!("Metadata file not found for document {:?}, trying source file", absolute_path);
-        },
-        Err(e) => {
-            return Err(AccessStorageError::Io(e));
-        }
-    }
-
-    // Read text and metadata from source file
-    let mut metadata_location = MetadataLocation::SourceFile;
-    let (text, metadata_result) = read_markdown_file::<DocumentMetadata>(&absolute_path).await?;
-    let metadata = match metadata_result {
-        Ok(metadata) => metadata,
-        Err(e) => {
-            debug!("Failed to read metadata from source file {:?}: {}", absolute_path, e);
-            // Create metadata file
-            let metadata = DocumentMetadata::new(&absolute_path);
-            write_markdown_file(&md_path, "", &metadata).await?;
-            metadata_location = MetadataLocation::MetadataFile;
-            info!("Created missing metadata file for document {:?}", absolute_path);
-            metadata
-        }
-    };
-    
-    Document::new(
+    let metadata = DocumentMetadata::new(&absolute_path);
+    let mut doc = Document {
         absolute_path,
         workspace,
         metadata,
-        metadata_location,
-        Some(text),
-    )
+        metadata_location: MetadataLocation::None,
+        text: Default::default(),
+        cache: Default::default(),
+        chunk_cache: Default::default(),
+    };
+    doc.load().await?;
+    Ok(doc)
 }
 
 
@@ -256,6 +350,26 @@ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     value == &T::default()
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct DocCache {
+    extensions: HashMap<String, ExtensionCache>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub(crate) struct ExtensionCache {
+    #[serde(default)] #[serde(skip_serializing_if = "is_default")]
+    hash: Option<()>,
+    #[serde(default)] #[serde(skip_serializing_if = "is_default")]
+    data: serde_yaml_ng::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChunkCache {
+    #[serde(flatten)]
+    chunk: crate::chunking::ChunkData,
+    hash: (),
+    embeddings: HashMap<String, Embedding>,
+}
 
 #[cfg(test)]
 mod tests {
@@ -286,4 +400,28 @@ mod tests {
         assert_eq!(doc.metadata.id, metadata.id);
         assert_eq!(doc.text(), Some("\nfoo"));
     }
-}        
+
+    #[tokio::test]
+    async fn extension_cache() {
+        let extension_id = "foo";
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let doc_path = dir_path.join("doc.md");
+        let ws = Workspace::open(&dir_path).await.unwrap();
+        fs::write(&doc_path, "hello world").await.unwrap();
+        let cache_path = dir_path.join(ATTACHMENTS_DIR).join("doc.md").join(".cache.yaml");
+        fs::create_dir_all(cache_path.parent().unwrap()).await.unwrap();
+        fs::write(&cache_path, r#"
+extensions:
+  foo:
+    data: 42"#).await.unwrap();
+        let doc = open_document(&doc_path, ws.clone()).await.unwrap();
+        assert_eq!(doc.path(), "doc.md");
+        assert_eq!(doc.workspace(), &ws);
+        assert_eq!(doc.text(), Some("hello world"));
+        assert_eq!(doc.extension_cache(extension_id), Some(&ExtensionCache {
+            hash: None,
+            data: 42.into(),
+        }));
+    }
+}
