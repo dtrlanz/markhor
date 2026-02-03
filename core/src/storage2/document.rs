@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use sha2::Digest;
 use tokio::io::{AsyncWriteExt};
 use uuid::Uuid;
 use tokio::fs::{self, OpenOptions};
 use tracing::{debug, info, instrument, warn};
-use std::{collections::{HashMap, hash_map::Entry}, ffi::OsStr, path::{Path, PathBuf}, sync::Arc};
+use std::{collections::{HashMap, hash_map::Entry}, ffi::OsStr, hash::Hash, path::{Path, PathBuf}, sync::Arc};
 
-use crate::{content::{Text, TextMut}, embedding::Embedding, markdown::{ToMarkdown, WITH_MILESTONES}, storage2::{ATTACHMENTS_DIR, AccessStorageError, METADATA_EXTENSION, Workspace}};
+use crate::{chunking::{Chunker, ChunkerError}, content::{Text, TextMut}, embedding::Embedding, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES}, storage2::{ATTACHMENTS_DIR, AccessStorageError, METADATA_EXTENSION, Workspace}};
 
 
 
@@ -18,6 +19,7 @@ pub struct Document {
     metadata: DocumentMetadata,
     metadata_location: MetadataLocation,
     text: Text,
+    text_hash: Option<String>,
     cache: DocCache,
     chunk_cache: HashMap<String, HashMap<String, Vec<ChunkCache>>>,
 }
@@ -58,8 +60,80 @@ impl Document {
         self.text.text_mut_by_id(id)
     }
 
+    fn text_hash(&mut self) -> &str {
+        if self.text_hash.is_none() {
+            use sha2::{Sha256, Digest};
+            let mut hasher = Sha256::new();
+            if let Some(text) = self.text() {
+                hasher.update(text.as_bytes());
+                let result = hasher.finalize();
+                let hash_str = format!("{:x}", result);
+                self.text_hash = Some(hash_str);
+            } else {
+                self.text_hash = Some(String::new());
+            }
+        }
+        self.text_hash.as_deref().unwrap()
+    }
+
     pub(crate) fn extension_cache(&self, extension: &str) -> Option<&ExtensionCache> {
         self.cache.extensions.get(extension)
+    }
+
+    pub fn chunks(&mut self, chunker: F11y<dyn Chunker>) -> Result<Chunks, ChunkerError> {
+        let chunker_id = chunker.metadata_id();
+        let text_hash = self.text_hash().to_string();
+        let chunk_cache_is_valid = self.cache.extensions
+            .get(chunker.extension().uri())
+            .map(|ext_cache| ext_cache.hash == Some(text_hash))
+            .unwrap_or(false);
+
+        if !chunk_cache_is_valid {
+            // Re-chunk the document
+            // TODO: support multiple text parts
+            for text_id in [""].iter() {
+                let text = self.text_by_id(text_id).unwrap().to_string();
+                let chunk_caches = self.chunk_cache
+                    .entry(chunker_id.clone())
+                    .or_default()
+                    .entry(text_id.to_string())
+                    .or_default();
+                let chunks = chunker.chunk(&text)?;
+                chunk_caches.truncate(chunks.len());
+                for (idx, chunk) in chunks.into_iter().enumerate() {
+                    let chunk_text = &text[chunk.text_range.clone()];
+                    let result = sha2::Sha256::digest(chunk_text);
+                    let hash_str = format!("{:x}", result);
+                    if idx < chunk_caches.len() {
+                        // Chunk has been cached before; check equality
+                        if chunk_caches[idx].chunk == chunk && chunk_caches[idx].hash == hash_str {
+                            // Cache is valid, skip
+                            continue;
+                        }
+                        // Cache is outdated, update & drop invalid embeddings
+                        chunk_caches[idx] = ChunkCache {
+                            chunk,
+                            hash: hash_str,
+                            embeddings: HashMap::new(),
+                        };
+                    } else {
+                        // New chunk, add to cache
+                        chunk_caches.push(ChunkCache {
+                            chunk: chunk,
+                            hash: hash_str,
+                            embeddings: HashMap::new(),
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(Chunks {
+            text: &self.text,
+            text_ids: vec![""],
+            data: self.chunk_cache.get(&chunker_id).unwrap(),
+            chunk_idx: 0,
+        })
     }
 
     // pub(crate) fn chunk_cache(&self, chunker_id: String, text_id: String, idx: usize) -> Option<&ChunkCache> {
@@ -244,8 +318,36 @@ impl Document {
             Some(file_name)
         }
     }
+}
 
+pub struct Chunks<'a> {
+    text: &'a Text,
+    text_ids: Vec<&'a str>,
+    data: &'a HashMap<String, Vec<ChunkCache>>,
+    chunk_idx: usize,
+}
 
+impl<'a> Iterator for Chunks<'a> {
+    type Item = Chunk<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.text_ids.is_empty() {
+            return None;
+        }
+        let text_id = self.text_ids[0];
+        let chunks = self.data.get(text_id)?;
+        if self.chunk_idx >= chunks.len() {
+            self.text_ids.remove(0);
+            self.chunk_idx = 0;
+            return self.next();
+        }
+        let chunk_data = &chunks[self.chunk_idx];
+        self.chunk_idx += 1;
+        Some(Chunk {
+            data: chunk_data,
+            text: self.text.text_by_id(text_id).unwrap(),
+        })
+    }
 }
 
 pub(crate) async fn open_document(
@@ -271,6 +373,7 @@ pub(crate) async fn open_document(
         metadata,
         metadata_location: MetadataLocation::None,
         text: Default::default(),
+        text_hash: None,
         cache: Default::default(),
         chunk_cache: Default::default(),
     };
@@ -358,7 +461,7 @@ struct DocCache {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct ExtensionCache {
     #[serde(default)] #[serde(skip_serializing_if = "is_default")]
-    hash: Option<()>,
+    hash: Option<String>,
     #[serde(default)] #[serde(skip_serializing_if = "is_default")]
     data: serde_yaml_ng::Value,
 }
@@ -367,8 +470,24 @@ pub(crate) struct ExtensionCache {
 struct ChunkCache {
     #[serde(flatten)]
     chunk: crate::chunking::ChunkData,
-    hash: (),
+    hash: String,
     embeddings: HashMap<String, Embedding>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Chunk<'a> {
+    data: &'a ChunkCache,
+    text: &'a str,
+}
+
+impl<'a> Chunk<'a> {
+    pub fn text(&self) -> &'a str {
+        &self.text[self.data.chunk.text_range.clone()]
+    }
+
+    pub fn embedding(&self, embedder_id: &str) -> Option<&Embedding> {
+        self.data.embeddings.get(embedder_id)
+    }
 }
 
 #[cfg(test)]
