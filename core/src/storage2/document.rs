@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use sha2::Digest;
+use sha2::{Digest, Sha256, digest::{OutputSizeUser, generic_array::GenericArray}};
 use tokio::io::{AsyncWriteExt};
 use uuid::Uuid;
 use tokio::fs::{self, OpenOptions};
 use tracing::{debug, info, instrument, warn};
-use std::{collections::{HashMap, hash_map::Entry}, ffi::OsStr, hash::Hash, path::{Path, PathBuf}, sync::Arc};
+use std::{collections::{HashMap}, ffi::OsStr, path::{Path, PathBuf}};
 
 use crate::{chunking::{Chunker, ChunkerError}, content::{Text, TextMut}, embedding::Embedding, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES}, storage2::{ATTACHMENTS_DIR, AccessStorageError, METADATA_EXTENSION, Workspace}};
 
@@ -19,7 +19,7 @@ pub struct Document {
     metadata: DocumentMetadata,
     metadata_location: MetadataLocation,
     text: Text,
-    text_hash: Option<String>,
+    text_hash: Option<TextHash>,
     cache: DocCache,
     chunk_cache: HashMap<String, HashMap<String, Vec<ChunkCache>>>,
 }
@@ -60,29 +60,24 @@ impl Document {
         self.text.text_mut_by_id(id)
     }
 
-    fn text_hash(&mut self) -> &str {
+    fn text_hash(&mut self) -> &TextHash {
         if self.text_hash.is_none() {
-            use sha2::{Sha256, Digest};
-            let mut hasher = Sha256::new();
             if let Some(text) = self.text() {
-                hasher.update(text.as_bytes());
-                let result = hasher.finalize();
-                let hash_str = format!("{:x}", result);
-                self.text_hash = Some(hash_str);
+                self.text_hash = Some(TextHash::from(text));
             } else {
-                self.text_hash = Some(String::new());
+                self.text_hash = Some(TextHash::from(""));
             }
         }
-        self.text_hash.as_deref().unwrap()
+        self.text_hash.as_ref().unwrap()
     }
 
     pub(crate) fn extension_cache(&self, extension: &str) -> Option<&ExtensionCache> {
         self.cache.extensions.get(extension)
     }
 
-    pub fn chunks(&mut self, chunker: F11y<dyn Chunker>) -> Result<Chunks, ChunkerError> {
+    pub fn chunks(&mut self, chunker: F11y<dyn Chunker>) -> Result<Chunks<'_>, ChunkerError> {
         let chunker_id = chunker.metadata_id();
-        let text_hash = self.text_hash().to_string();
+        let text_hash = *self.text_hash();
         let chunk_cache_is_valid = self.cache.extensions
             .get(chunker.extension().uri())
             .map(|ext_cache| ext_cache.hash == Some(text_hash))
@@ -102,25 +97,24 @@ impl Document {
                 chunk_caches.truncate(chunks.len());
                 for (idx, chunk) in chunks.into_iter().enumerate() {
                     let chunk_text = &text[chunk.text_range.clone()];
-                    let result = sha2::Sha256::digest(chunk_text);
-                    let hash_str = format!("{:x}", result);
+                    let hash = TextHash::from(chunk_text);
                     if idx < chunk_caches.len() {
                         // Chunk has been cached before; check equality
-                        if chunk_caches[idx].chunk == chunk && chunk_caches[idx].hash == hash_str {
+                        if chunk_caches[idx].chunk == chunk && chunk_caches[idx].hash == hash {
                             // Cache is valid, skip
                             continue;
                         }
                         // Cache is outdated, update & drop invalid embeddings
                         chunk_caches[idx] = ChunkCache {
                             chunk,
-                            hash: hash_str,
+                            hash,
                             embeddings: HashMap::new(),
                         };
                     } else {
                         // New chunk, add to cache
                         chunk_caches.push(ChunkCache {
                             chunk: chunk,
-                            hash: hash_str,
+                            hash,
                             embeddings: HashMap::new(),
                         });
                     }
@@ -461,7 +455,7 @@ struct DocCache {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct ExtensionCache {
     #[serde(default)] #[serde(skip_serializing_if = "is_default")]
-    hash: Option<String>,
+    hash: Option<TextHash>,
     #[serde(default)] #[serde(skip_serializing_if = "is_default")]
     data: serde_yaml_ng::Value,
 }
@@ -470,7 +464,7 @@ pub(crate) struct ExtensionCache {
 struct ChunkCache {
     #[serde(flatten)]
     chunk: crate::chunking::ChunkData,
-    hash: String,
+    hash: TextHash,
     embeddings: HashMap<String, Embedding>,
 }
 
@@ -489,6 +483,36 @@ impl<'a> Chunk<'a> {
         self.data.embeddings.get(embedder_id)
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TextHash {
+    value: GenericArray<u8, <Sha256 as OutputSizeUser>::OutputSize>,
+}
+
+impl<T: AsRef<str> + ?Sized> From<&T> for TextHash {
+    fn from(value: &T) -> Self {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(value.as_ref().as_bytes());
+        TextHash { value: hasher.finalize() }
+    }
+}
+
+impl Serialize for TextHash {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
+        let hex_string = self.value.iter().map(|byte| format!("{:02x}", byte)).collect::<String>();
+        serializer.serialize_str(&hex_string)
+    }
+}
+
+impl<'de> Deserialize<'de> for TextHash {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> where D: serde::Deserializer<'de> {
+        let hex_string = String::deserialize(deserializer)?;
+        let bytes = hex::decode(hex_string).map_err(serde::de::Error::custom)?;
+        let value = GenericArray::from_slice(&bytes).clone();
+        Ok(TextHash { value })
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
