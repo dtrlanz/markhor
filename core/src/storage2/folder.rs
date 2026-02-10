@@ -176,6 +176,6 @@ mod tests {
         let doc = folder.document("doc.md").await.unwrap();
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.workspace(), folder.workspace());
-        assert_eq!(doc.text(), Some("foo"));
+        assert_eq!(doc.text().as_deref(), Some("foo"));
     }
 }

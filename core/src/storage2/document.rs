@@ -4,9 +4,9 @@ use tokio::io::{AsyncWriteExt};
 use uuid::Uuid;
 use tokio::fs::{self, OpenOptions};
 use tracing::{debug, info, instrument, warn};
-use std::{collections::{HashMap}, ffi::OsStr, path::{Path, PathBuf}};
+use std::{borrow::Borrow, collections::HashMap, ffi::OsStr, path::{Path, PathBuf}};
 
-use crate::{chunking::{Chunker, ChunkerError}, content::{Text, TextMut}, embedding::Embedding, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES}, storage2::{ATTACHMENTS_DIR, AccessStorageError, METADATA_EXTENSION, Workspace}};
+use crate::{chunking::{Chunker, ChunkerError}, embedding::Embedding, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES}, storage2::{ATTACHMENTS_DIR, AccessStorageError, METADATA_EXTENSION, Workspace}};
 
 
 
@@ -18,7 +18,7 @@ pub struct Document {
     workspace: Workspace,
     metadata: DocumentMetadata,
     metadata_location: MetadataLocation,
-    text: Text,
+    text_parts: Vec<(String, String)>,
     text_hash: Option<TextHash>,
     cache: DocCache,
     chunk_cache: HashMap<String, HashMap<String, Vec<ChunkCache>>>,
@@ -44,29 +44,42 @@ impl Document {
         &self.metadata.id
     }
 
-    pub fn text(&self) -> Option<&str> {
-        self.text.text()
+    pub fn text(&self) -> Option<String> {
+        if self.text_parts.is_empty() {
+            None
+        } else if self.text_parts.len() == 1 && self.text_parts[0].0.is_empty() {
+            Some(self.text_parts[0].1.clone())
+        } else {
+            let mut text = String::new();
+            for (n, (id, part)) in self.text_parts.iter().enumerate() {
+                text.push_str(&format!("---\npart_idx: {}\n", n));
+                if !id.is_empty() {
+                    text.push_str(&format!("id: {}\n", id));
+                }
+                text.push_str("---\n");
+                text.push_str(part);
+                text.push_str("\n");
+            }
+            Some(text)
+        }
     }
 
-    pub fn text_mut(&mut self) -> TextMut<'_> {
-        self.text.text_mut()
+    pub fn text_parts(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.text_parts.iter().map(|(id, text)| (id.as_str(), text.as_str()))
     }
 
-    pub fn text_by_id(&self, id: &str) -> Option<&str> {
-        self.text.text_by_id(id)
-    }
-
-    pub fn text_mut_by_id<'a>(&'a mut self, id: &'a str) -> TextMut<'a> {
-        self.text.text_mut_by_id(id)
+    pub fn text_parts_mut(&mut self) -> impl Iterator<Item = (&str, &mut String)> {
+        // Content may change, invalidate text hash
+        self.text_hash = None;
+        self.text_parts.iter_mut().map(|(id, text)| (id.as_str(), text))
     }
 
     fn text_hash(&mut self) -> &TextHash {
         if self.text_hash.is_none() {
-            if let Some(text) = self.text() {
-                self.text_hash = Some(TextHash::from(text));
-            } else {
-                self.text_hash = Some(TextHash::from(""));
-            }
+            let text_iter = self.text_parts.iter()
+                .map(|(id, text)| [&**id, &**text].into_iter())
+                .flatten();
+            self.text_hash = Some(TextHash::from_iter(text_iter));
         }
         self.text_hash.as_ref().unwrap()
     }
@@ -85,13 +98,11 @@ impl Document {
 
         if !chunk_cache_is_valid {
             // Re-chunk the document
-            // TODO: support multiple text parts
-            for text_id in [""].iter() {
-                let text = self.text_by_id(text_id).unwrap().to_string();
+            for (id, text) in self.text_parts.iter() {
                 let chunk_caches = self.chunk_cache
                     .entry(chunker_id.clone())
                     .or_default()
-                    .entry(text_id.to_string())
+                    .entry(id.clone())
                     .or_default();
                 let chunks = chunker.chunk(&text)?;
                 chunk_caches.truncate(chunks.len());
@@ -123,8 +134,7 @@ impl Document {
         }
 
         Ok(Chunks {
-            text: &self.text,
-            text_ids: vec![""],
+            text_parts: self.text_parts.iter().collect(),
             data: self.chunk_cache.get(&chunker_id).unwrap(),
             chunk_idx: 0,
         })
@@ -246,28 +256,31 @@ impl Document {
     }
 
     fn update_text(&mut self, new_text: Option<String>) {
-        self.text = Text::new();
+        self.text_hash = None;
         match (new_text, self.metadata.doc_parts.as_ref()) {
             // Text representation of document only has one part
             (Some(text), None) => {
-                self.text_mut().or_insert(text);
+                self.text_parts = vec![(String::new(), text)];
             },
             // Text representation has multiple parts (e.g., spreadsheet converted to multiple
             // tables in markdown or CSV)
             (Some(text), Some(_parts)) => {
+                self.text_parts.clear();
                 for r in text.to_markdown(WITH_MILESTONES).regions() {
                     if &*r.unit == "part" {
-                        let mut id = r.attribute("id").flatten().map(|s| s.to_string());
-                        if let Some(part_id) = id {
-                            self.text_mut_by_id(&part_id).or_insert(r.as_ref().content.to_string());
-                        } else {
-                            self.text_mut().or_insert(r.as_ref().content.to_string());
+                        let id = r.attribute("id").flatten().map(|s| s.to_string()).unwrap_or_default();
+                        if self.text_parts.iter().any(|(part_id, _)| part_id == &id) {
+                            warn!("Duplicate text part id '{}' in document {:?}, skipping", id, self.absolute_path);
+                            continue;
                         }
+                        self.text_parts.push((id, r.content().to_string()));
                     }
                 }
             },
             // No text representation available
-            (None, _) => (),
+            (None, _) => {
+                self.text_parts.clear();
+            },
         };
     }
 
@@ -315,8 +328,7 @@ impl Document {
 }
 
 pub struct Chunks<'a> {
-    text: &'a Text,
-    text_ids: Vec<&'a str>,
+    text_parts: Vec<&'a (String, String)>,
     data: &'a HashMap<String, Vec<ChunkCache>>,
     chunk_idx: usize,
 }
@@ -325,13 +337,13 @@ impl<'a> Iterator for Chunks<'a> {
     type Item = Chunk<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.text_ids.is_empty() {
+        if self.text_parts.is_empty() {
             return None;
         }
-        let text_id = self.text_ids[0];
+        let (text_id, _text) = self.text_parts[0];
         let chunks = self.data.get(text_id)?;
         if self.chunk_idx >= chunks.len() {
-            self.text_ids.remove(0);
+            self.text_parts.remove(0);
             self.chunk_idx = 0;
             return self.next();
         }
@@ -339,7 +351,7 @@ impl<'a> Iterator for Chunks<'a> {
         self.chunk_idx += 1;
         Some(Chunk {
             data: chunk_data,
-            text: self.text.text_by_id(text_id).unwrap(),
+            text: self.text_parts.iter().find(|(id, _text)| id == text_id).unwrap().1.as_str(),
         })
     }
 }
@@ -366,7 +378,7 @@ pub(crate) async fn open_document(
         workspace,
         metadata,
         metadata_location: MetadataLocation::None,
-        text: Default::default(),
+        text_parts: Vec::new(),
         text_hash: None,
         cache: Default::default(),
         chunk_cache: Default::default(),
@@ -489,13 +501,24 @@ pub struct TextHash {
     value: GenericArray<u8, <Sha256 as OutputSizeUser>::OutputSize>,
 }
 
-impl<T: AsRef<str> + ?Sized> From<&T> for TextHash {
+impl<T: Borrow<str> + ?Sized> From<&T> for TextHash {
     fn from(value: &T) -> Self {
         let mut hasher = sha2::Sha256::new();
-        hasher.update(value.as_ref().as_bytes());
+        hasher.update(value.borrow().as_bytes());
         TextHash { value: hasher.finalize() }
     }
 }
+
+impl<'a> FromIterator<&'a str> for TextHash {
+    fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
+        let mut hasher = sha2::Sha256::new();
+        for value in iter {
+            hasher.update(value.as_bytes());
+        }
+        TextHash { value: hasher.finalize() }
+    }
+}
+
 
 impl Serialize for TextHash {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
@@ -530,7 +553,7 @@ mod tests {
         let doc = open_document(&doc_path, ws.clone()).await.unwrap();
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.workspace(), &ws);
-        assert_eq!(doc.text(), Some("foo"));
+        assert_eq!(doc.text().as_deref(), Some("foo"));
 
         // Document with metadata
         let doc_path = dir_path.join("doc2.md");
@@ -541,7 +564,7 @@ mod tests {
         assert_eq!(doc.path(), "doc2.md");
         assert_eq!(doc.workspace(), &ws);
         assert_eq!(doc.metadata.id, metadata.id);
-        assert_eq!(doc.text(), Some("\nfoo"));
+        assert_eq!(doc.text().as_deref(), Some("\nfoo"));
     }
 
     #[tokio::test]
@@ -561,7 +584,7 @@ extensions:
         let doc = open_document(&doc_path, ws.clone()).await.unwrap();
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.workspace(), &ws);
-        assert_eq!(doc.text(), Some("hello world"));
+        assert_eq!(doc.text().as_deref(), Some("hello world"));
         assert_eq!(doc.extension_cache(extension_id), Some(&ExtensionCache {
             hash: None,
             data: 42.into(),
