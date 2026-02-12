@@ -2,6 +2,8 @@ mod error;
 mod embedder;
 mod vector_store;
 
+use std::ops::Deref;
+
 pub use error::{EmbeddingError};
 pub use embedder::{Embedder, EmbeddingUseCase};
 pub use vector_store::{VectorStore, ChunkDataResult};
@@ -13,13 +15,6 @@ use serde::{Deserialize, Serialize};
 /// This struct simply wraps a `Vec<f32>`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Embedding(pub Vec<f32>);
-
-// Allow easy conversion from the raw Vec<Vec<f32>> for implementers.
-impl From<Vec<f32>> for Embedding {
-    fn from(vec: Vec<f32>) -> Self {
-        Embedding(vec)
-    }
-}
 
 impl Embedding {
     /// Computes the cosine similarity between two embeddings.
@@ -47,5 +42,32 @@ impl Embedding {
         }
 
         Ok(dot_product / (norm_self * norm_other))
+    }
+}
+
+// Allow easy conversion from the raw Vec<Vec<f32>> for implementers.
+impl From<Vec<f32>> for Embedding {
+    fn from(vec: Vec<f32>) -> Self {
+        Embedding(vec)
+    }
+}
+
+impl From<Embedding> for Vec<f32> {
+    fn from(embedding: Embedding) -> Self {
+        embedding.0
+    }
+}
+
+impl AsRef<[f32]> for Embedding {
+    fn as_ref(&self) -> &[f32] {
+        &self.0
+    }
+}
+
+impl Deref for Embedding {
+    type Target = [f32];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }

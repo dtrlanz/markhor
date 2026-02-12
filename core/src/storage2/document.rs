@@ -4,7 +4,7 @@ use tokio::io::{AsyncWriteExt};
 use uuid::Uuid;
 use tokio::fs::{self, OpenOptions};
 use tracing::{debug, info, instrument, warn};
-use std::{borrow::Borrow, collections::HashMap, ffi::OsStr, path::{Path, PathBuf}};
+use std::{borrow::Borrow, collections::{HashMap, hash_map::Entry}, ffi::OsStr, path::{Path, PathBuf}};
 
 use crate::{chunking::{Chunker, ChunkerError}, embedding::Embedding, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES}, storage2::{ATTACHMENTS_DIR, AccessStorageError, METADATA_EXTENSION, Workspace}};
 
@@ -88,42 +88,64 @@ impl Document {
         self.cache.extensions.get(extension)
     }
 
-    pub fn chunks(&mut self, chunker: F11y<dyn Chunker>) -> Result<Chunks<'_>, ChunkerError> {
+    // It's not clear there's a use for this method, so keeping it private for now. It's analogous 
+    // to `chunks_mut`, but it still takes `&mut self` because we may need to create/update chunks
+    // before iterating.
+    /// Returns an iterator over all chunks in the document for the given chunker.
+    async fn chunks(&mut self, chunker: &F11y<dyn Chunker>) -> Result<Chunks<'_>, ChunkerError> {
         let chunker_id = chunker.metadata_id();
         let text_hash = *self.text_hash();
         let chunk_cache_is_valid = self.cache.extensions
-            .get(chunker.extension().uri())
+            .get(&chunker_id)
             .map(|ext_cache| ext_cache.hash == Some(text_hash))
             .unwrap_or(false);
 
+
+        let read_cache = self.read_cache_file(format!(".chunks_{}.yaml", chunker_id).as_str());
+        let chunk_cache = match self.chunk_cache.entry(chunker_id) {
+            Entry::Occupied(occupied) => {
+                debug!("Chunk cache hit for chunker '{}'", chunker.metadata_id());
+                occupied.into_mut()
+            },
+            Entry::Vacant(vacant) => {
+                debug!("Chunk cache miss for chunker '{}', attempting to load cache file", chunker.metadata_id());
+                let chunk_cache = read_cache.await.ok().flatten().unwrap_or_else(|| {
+                    debug!("Failed to load chunk cache for chunker '{}', creating new cache", chunker.metadata_id());
+                    HashMap::new()
+                });
+                vacant.insert(chunk_cache)
+            },
+        };
+
         if !chunk_cache_is_valid {
+            // Delete cache for any text parts that no longer exist
+            let text_part_ids: Vec<_> = self.text_parts.iter().map(|(id, _)| id).collect();
+            chunk_cache.retain(|text_id, _| text_part_ids.contains(&text_id));
+
             // Re-chunk the document
             for (id, text) in self.text_parts.iter() {
-                let chunk_caches = self.chunk_cache
-                    .entry(chunker_id.clone())
-                    .or_default()
-                    .entry(id.clone())
-                    .or_default();
+                let cached_chunks = chunk_cache.entry(id.clone()).or_default();
                 let chunks = chunker.chunk(&text)?;
-                chunk_caches.truncate(chunks.len());
+                debug!("Generated {} chunks for text part '{}'", chunks.len(), id);
+                cached_chunks.truncate(chunks.len());
                 for (idx, chunk) in chunks.into_iter().enumerate() {
                     let chunk_text = &text[chunk.text_range.clone()];
                     let hash = TextHash::from(chunk_text);
-                    if idx < chunk_caches.len() {
+                    if idx < cached_chunks.len() {
                         // Chunk has been cached before; check equality
-                        if chunk_caches[idx].chunk == chunk && chunk_caches[idx].hash == hash {
+                        if cached_chunks[idx].chunk == chunk && cached_chunks[idx].hash == hash {
                             // Cache is valid, skip
                             continue;
                         }
                         // Cache is outdated, update & drop invalid embeddings
-                        chunk_caches[idx] = ChunkCache {
+                        cached_chunks[idx] = ChunkCache {
                             chunk,
                             hash,
                             embeddings: HashMap::new(),
                         };
                     } else {
                         // New chunk, add to cache
-                        chunk_caches.push(ChunkCache {
+                        cached_chunks.push(ChunkCache {
                             chunk: chunk,
                             hash,
                             embeddings: HashMap::new(),
@@ -131,41 +153,44 @@ impl Document {
                     }
                 }
             }
+
+            // Update extension cache hash, indicating extension cache overall is now valid
+            self.cache.extensions.entry(chunker.metadata_id()).or_default().hash = Some(text_hash);
         }
 
         Ok(Chunks {
             text_parts: self.text_parts.iter().collect(),
-            data: self.chunk_cache.get(&chunker_id).unwrap(),
+            data: chunk_cache,
             chunk_idx: 0,
         })
     }
 
-    // pub(crate) fn chunk_cache(&self, chunker_id: String, text_id: String, idx: usize) -> Option<&ChunkCache> {
-    //     self.chunk_cache.get(&chunker_id)
-    //         .and_then(|by_text| by_text.get(&text_id))
-    //         .and_then(|chunks| chunks.get(idx))
-    // }
+    /// Returns a mutable iterator over all chunks in the document for the given chunker.
+    #[instrument(skip(self, chunker))]
+    pub async fn chunks_mut(&mut self, chunker: &F11y<dyn Chunker>) -> Result<impl Iterator<Item = ChunkMut<'_>>, ChunkerError> {
+        // Ensure chunk cache is valid
+        let chunker_id = chunker.metadata_id();
+        self.chunks(chunker).await?;
 
-    // pub(crate) async fn chunk_cache_entry(&mut self, chunker_id: String, text_id: String, idx: usize) -> Option<&ChunkCache> {
-    //     let read_cache = self.read_cache_file(format!(".chunks_{}.yaml", chunker_id).as_str());
-    //     let mut by_text = match self.chunk_cache.entry(chunker_id) {
-    //         Entry::Occupied(occupied) => occupied.get_mut(),
-    //         Entry::Vacant(vacant) => {
-    //             let mut by_text = read_cache.await.ok().flatten().unwrap_or_default();
-    //             vacant.insert(by_text)
-    //         },
-    //     };
-    //     let mut chunks = by_text.entry(text_id).or_default();
-    //     // TODO: figure out what we actually want to do here
-    //     while chunks.len() <= idx {
-    //         chunks.push(ChunkCache {
-    //             chunk: Default::default(),
-    //             hash: (),
-    //             embeddings: Default::default(),
-    //         });
-    //     }
-    //     Some(&mut chunks[idx])
-    // }
+        // Create iterator over all chunks with text parts
+        let text_parts = &self.text_parts;
+        let with_text_part = self.chunk_cache.get_mut(&chunker_id).unwrap()
+            .iter_mut()
+            .map(|(text_id, chunks)| {
+                let text_part = text_parts.iter().find(|(id, _)| id == text_id).unwrap();
+                (text_part.1.as_str(), chunks)
+            });
+        let chunk_parts = with_text_part
+            .flat_map(|(text, chunks)| chunks.iter_mut().map(move |chunk_cache| (text, chunk_cache)));
+
+        let chunks = chunk_parts
+            .map(|(text, chunk_cache)| ChunkMut {
+                text,
+                data: chunk_cache,
+            });
+
+        Ok(chunks)
+    }
 
     fn read_cache_file<T: DeserializeOwned>(&self, name: &str) -> impl Future<Output = Result<Option<T>, AccessStorageError>> + use<T> {
         let cache_path = self.attachment_path_raw(name);
@@ -496,6 +521,30 @@ impl<'a> Chunk<'a> {
     }
 }
 
+#[derive(Debug)]
+pub struct ChunkMut<'a> {
+    data: &'a mut ChunkCache,
+    text: &'a str,
+}
+
+impl<'a> ChunkMut<'a> {
+    pub fn text(&self) -> &'a str {
+        &self.text[self.data.chunk.text_range.clone()]
+    }
+
+    pub fn embedding(&self, embedder_id: &str) -> Option<&Embedding> {
+        self.data.embeddings.get(embedder_id)
+    }
+
+    pub fn embedding_mut(&mut self, embedder_id: &str) -> Option<&mut Embedding> {
+        self.data.embeddings.get_mut(embedder_id)
+    }
+
+    pub fn embedding_entry(&mut self, embedder_id: String) -> Entry<'_, String, Embedding> {
+        self.data.embeddings.entry(embedder_id)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TextHash {
     value: GenericArray<u8, <Sha256 as OutputSizeUser>::OutputSize>,
@@ -539,6 +588,8 @@ impl<'de> Deserialize<'de> for TextHash {
 
 #[cfg(test)]
 mod tests {
+    use crate::{chunking::test_chunker::FixedSizeChunkerExtension, extension::{ActiveExtension}};
+
     use super::*;
     use tempfile::tempdir;
 
@@ -589,5 +640,34 @@ extensions:
             hash: None,
             data: 42.into(),
         }));
+    }
+
+    #[tokio::test]
+    async fn iter_chunks() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let doc_path = dir_path.join("doc.md");
+        let ws = Workspace::open(&dir_path).await.unwrap();
+        fs::write(&doc_path, "hello world").await.unwrap();
+        let mut doc = open_document(&doc_path, ws.clone()).await.unwrap();
+        assert_eq!(doc.text().as_deref(), Some("hello world"));
+
+        let chunker = ActiveExtension::new(FixedSizeChunkerExtension::new(5), Default::default())
+            .chunkers().next().unwrap();
+        let mut chunks: Vec<_> = doc.chunks_mut(&chunker).await.unwrap().collect();
+        
+        let chunk_texts: Vec<&str> = chunks.iter().map(|chunk| chunk.text()).collect();
+        assert_eq!(chunk_texts, vec!["hello", " worl", "d"]);
+
+        for (n, chunk) in chunks.iter_mut().enumerate() {
+            assert!(chunk.embedding("embedder").is_none());
+            chunk.embedding_entry(String::from("embedder")).or_insert(Embedding::from(vec![n as f32]));
+        }
+
+        let chunks: Vec<_> = doc.chunks(&chunker).await.unwrap().collect();
+        for (n, chunk) in chunks.iter().enumerate() {
+            let embedding = chunk.embedding("embedder").unwrap();
+            assert_eq!(embedding.as_ref(), &[n as f32]);
+        }
     }
 }
