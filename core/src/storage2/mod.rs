@@ -1,13 +1,25 @@
 mod document;
 mod folder;
+mod scope;
 mod workspace;
 
 use std::path::PathBuf;
 use thiserror::Error;
 
-pub use document::Document;
+pub use document::{
+    Document,
+    DocumentMetadata,
+    TextLocation,
+    MetadataLocation,
+    Chunk,
+    ChunkMut,
+    TextHash,
+};
+pub(crate) use document::{ChunkIdx};
 pub use folder::Folder;
+pub use scope::{PrelimFilter, Scope};
 pub use workspace::Workspace;
+
 
 
 const METADATA_EXTENSION: &str = "mark";

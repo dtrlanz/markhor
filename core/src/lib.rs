@@ -10,6 +10,7 @@ pub mod markdown;
 pub mod storage;
 pub mod storage2;
 pub mod tool;
+pub mod vector_store;
 
 pub mod error {
     use thiserror::Error;

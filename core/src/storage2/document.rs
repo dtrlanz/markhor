@@ -159,6 +159,7 @@ impl Document {
         }
 
         Ok(Chunks {
+            chunker_id: chunker.metadata_id(),
             text_parts: self.text_parts.iter().collect(),
             data: chunk_cache,
             chunk_idx: 0,
@@ -178,18 +179,36 @@ impl Document {
             .iter_mut()
             .map(|(text_id, chunks)| {
                 let text_part = text_parts.iter().find(|(id, _)| id == text_id).unwrap();
-                (text_part.1.as_str(), chunks)
+                (text_id, text_part.1.as_str(), chunks)
             });
         let chunk_parts = with_text_part
-            .flat_map(|(text, chunks)| chunks.iter_mut().map(move |chunk_cache| (text, chunk_cache)));
+            .flat_map(|(text_id, text, chunks)| chunks.iter_mut()
+            .enumerate()
+            .map(move |(idx, chunk_cache)| (text_id, text, chunk_cache, idx)));
 
         let chunks = chunk_parts
-            .map(|(text, chunk_cache)| ChunkMut {
+            .map(|(text_id, text, chunk_cache, idx)| ChunkMut {
                 text,
                 data: chunk_cache,
+                idx: ChunkIdx {
+                    chunker_id: chunker.metadata_id().to_string(),
+                    text_part_id: text_id.clone(),
+                    chunk_idx: idx,
+                }
             });
 
         Ok(chunks)
+    }
+
+    pub(crate) fn chunk(&self, idx: ChunkIdx) -> Option<Chunk> {
+        self.chunk_cache.get(&idx.chunker_id)?.get(&idx.text_part_id)?.get(idx.chunk_idx).and_then(|chunk_cache| {
+            let text_part = self.text_parts.iter().find(|(id, _)| id == &idx.text_part_id)?;
+            Some(Chunk {
+                text: text_part.1.as_str(),
+                data: chunk_cache,
+                idx,
+            })
+        })
     }
 
     fn read_cache_file<T: DeserializeOwned>(&self, name: &str) -> impl Future<Output = Result<Option<T>, AccessStorageError>> + use<T> {
@@ -353,6 +372,7 @@ impl Document {
 }
 
 pub struct Chunks<'a> {
+    chunker_id: String,
     text_parts: Vec<&'a (String, String)>,
     data: &'a HashMap<String, Vec<ChunkCache>>,
     chunk_idx: usize,
@@ -373,11 +393,17 @@ impl<'a> Iterator for Chunks<'a> {
             return self.next();
         }
         let chunk_data = &chunks[self.chunk_idx];
-        self.chunk_idx += 1;
-        Some(Chunk {
+        let chunk = Chunk {
             data: chunk_data,
             text: self.text_parts.iter().find(|(id, _text)| id == text_id).unwrap().1.as_str(),
-        })
+            idx: ChunkIdx {
+                chunker_id: self.chunker_id.clone(),
+                text_part_id: text_id.to_string(),
+                chunk_idx: self.chunk_idx,
+            },
+        };
+        self.chunk_idx += 1;
+        Some(chunk)
     }
 }
 
@@ -509,6 +535,7 @@ struct ChunkCache {
 pub struct Chunk<'a> {
     data: &'a ChunkCache,
     text: &'a str,
+    idx: ChunkIdx,
 }
 
 impl<'a> Chunk<'a> {
@@ -525,6 +552,7 @@ impl<'a> Chunk<'a> {
 pub struct ChunkMut<'a> {
     data: &'a mut ChunkCache,
     text: &'a str,
+    idx: ChunkIdx,
 }
 
 impl<'a> ChunkMut<'a> {
@@ -543,6 +571,15 @@ impl<'a> ChunkMut<'a> {
     pub fn embedding_entry(&mut self, embedder_id: String) -> Entry<'_, String, Embedding> {
         self.data.embeddings.entry(embedder_id)
     }
+}
+
+/// Index type for storing chunks in a vector store.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ChunkIdx {
+    // TODO: make this more efficient by using numeric IDs for chunkers and text parts instead of strings
+    chunker_id: String,
+    text_part_id: String,
+    chunk_idx: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
