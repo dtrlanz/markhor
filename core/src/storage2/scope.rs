@@ -17,7 +17,8 @@ pub struct Scope {
 /// # To do
 /// 
 /// This is a placeholder implementation that always returns true. Actual implementation should be
-/// fairly simple, probably involving prime numbers and nice things like that.
+/// fairly simple, probably involving pigeonholes, bitwise operations, and nice things like that.
+#[derive(Debug, Clone)]
 pub struct PrelimFilter {
     // TODO
 }

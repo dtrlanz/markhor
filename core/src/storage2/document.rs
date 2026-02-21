@@ -543,6 +543,14 @@ impl<'a> Chunk<'a> {
         &self.text[self.data.chunk.text_range.clone()]
     }
 
+    pub fn hash(&self) -> &TextHash {
+        &self.data.hash
+    }
+
+    pub(crate) fn chunk_idx(&self) -> &ChunkIdx {
+        &self.idx
+    }
+
     pub fn embedding(&self, embedder_id: &str) -> Option<&Embedding> {
         self.data.embeddings.get(embedder_id)
     }
@@ -560,6 +568,14 @@ impl<'a> ChunkMut<'a> {
         &self.text[self.data.chunk.text_range.clone()]
     }
 
+    pub fn hash(&self) -> &TextHash {
+        &self.data.hash
+    }
+
+    pub(crate) fn chunk_idx(&self) -> &ChunkIdx {
+        &self.idx
+    }
+
     pub fn embedding(&self, embedder_id: &str) -> Option<&Embedding> {
         self.data.embeddings.get(embedder_id)
     }
@@ -575,7 +591,7 @@ impl<'a> ChunkMut<'a> {
 
 /// Index type for storing chunks in a vector store.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct ChunkIdx {
+pub struct ChunkIdx {
     // TODO: make this more efficient by using numeric IDs for chunkers and text parts instead of strings
     chunker_id: String,
     text_part_id: String,
