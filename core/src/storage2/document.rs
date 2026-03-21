@@ -6,10 +6,10 @@ use tokio::fs::{self, OpenOptions};
 use tracing::{debug, info, instrument, warn};
 use std::{borrow::Borrow, collections::{HashMap, hash_map::Entry}, ffi::OsStr, path::{Path, PathBuf}};
 
-use crate::{chunking::{Chunker, ChunkerError}, embedding::Embedding, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES}, storage2::{ATTACHMENTS_DIR, AccessStorageError, METADATA_EXTENSION, Workspace}};
+use crate::{chunking::{Chunker, ChunkerError}, embedding::Embedding, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES}, storage2::{ATTACHMENTS_DIR, AccessStorageError, METADATA_EXTENSION, Tag, Workspace}};
 
 
-
+#[derive(Debug, Clone)]
 pub struct Document {
     /// Absolute path to the source file
     pub(crate) absolute_path: PathBuf,
@@ -44,6 +44,11 @@ impl Document {
         &self.metadata.id
     }
 
+    pub fn tags(&self) -> impl Iterator<Item = &Tag> {
+        // TODO
+        std::iter::empty()
+    }
+
     pub fn text(&self) -> Option<String> {
         if self.text_parts.is_empty() {
             None
@@ -74,14 +79,19 @@ impl Document {
         self.text_parts.iter_mut().map(|(id, text)| (id.as_str(), text))
     }
 
-    fn text_hash(&mut self) -> &TextHash {
+    fn text_hash(&mut self) -> TextHash {
         if self.text_hash.is_none() {
             let text_iter = self.text_parts.iter()
                 .map(|(id, text)| [&**id, &**text].into_iter())
                 .flatten();
             self.text_hash = Some(TextHash::from_iter(text_iter));
         }
-        self.text_hash.as_ref().unwrap()
+        self.text_hash.unwrap()
+    }
+
+    pub fn doc_hash(&self) -> TextHash {
+        // hash of text and metadata
+        todo!()
     }
 
     pub(crate) fn extension_cache(&self, extension: &str) -> Option<&ExtensionCache> {
@@ -94,7 +104,7 @@ impl Document {
     /// Returns an iterator over all chunks in the document for the given chunker.
     async fn chunks(&mut self, chunker: &F11y<dyn Chunker>) -> Result<Chunks<'_>, ChunkerError> {
         let chunker_id = chunker.metadata_id();
-        let text_hash = *self.text_hash();
+        let text_hash = self.text_hash();
         let chunk_cache_is_valid = self.cache.extensions
             .get(&chunker_id)
             .map(|ext_cache| ext_cache.hash == Some(text_hash))
@@ -460,6 +470,7 @@ async fn write_markdown_file<T: Serialize + ?Sized>(path: &Path, text: &str, met
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetadataLocation {
     SourceFile,
     MetadataFile,

@@ -1,6 +1,8 @@
 mod document;
 mod folder;
+mod retriever;
 mod scope;
+mod tag;
 mod workspace;
 
 use std::path::PathBuf;
@@ -17,9 +19,10 @@ pub use document::{
 };
 pub(crate) use document::{ChunkIdx};
 pub use folder::Folder;
+pub use retriever::Retriever;
 pub use scope::{PrelimFilter, Scope};
+pub use tag::Tag;
 pub use workspace::Workspace;
-
 
 
 const METADATA_EXTENSION: &str = "mark";

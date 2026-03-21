@@ -1,9 +1,9 @@
-use std::{f32::consts::E, path::{Path, PathBuf}, sync::Arc};
+use std::{collections::HashMap, path::{Path, PathBuf}, sync::{Arc, Mutex}};
 
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
-use crate::storage2::{AccessStorageError, Document, Folder, WORKSPACE_CONFIG_DIR, WORKSPACE_METADATA_FILENAME};
+use crate::{embedding::Embedder, extension::F11y, storage2::{AccessStorageError, Document, Folder, WORKSPACE_CONFIG_DIR, WORKSPACE_METADATA_FILENAME}, vector_store::VectorStore};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
@@ -55,6 +55,7 @@ impl Workspace {
             inner: Arc::new(WorkspaceInner {
                 absolute_path,
                 metadata,
+                embeddings: Default::default(),
             }),
         })
     }
@@ -76,12 +77,19 @@ impl Workspace {
     pub async fn document(&self, name: impl AsRef<Path>) -> Result<Document, AccessStorageError> {
         self.root().document(name).await
     }
+
+    pub fn vector_store(&self, embedder: &F11y<dyn Embedder>) -> VectorStore {
+        let mut embeddings = self.inner.embeddings.lock().unwrap();
+        let id = embedder.metadata_id();
+        Clone::clone(embeddings.entry(id).or_insert_with(|| VectorStore::new()))
+    }
 }
 
 #[derive(Debug)]
 struct WorkspaceInner {
     absolute_path: PathBuf,
     metadata: WorkspaceMetadata,
+    embeddings: Mutex<HashMap<String, VectorStore>>,
 }
 
 impl PartialEq for WorkspaceInner {

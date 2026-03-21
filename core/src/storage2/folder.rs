@@ -1,6 +1,6 @@
 use std::{backtrace, path::{Path, PathBuf}, sync::Arc};
 
-use tokio::fs;
+use tokio::fs::{self, ReadDir};
 use tracing::instrument;
 
 use crate::storage2::{AccessStorageError, Document, document::open_document, workspace::find_workspace_descendant};
@@ -38,6 +38,23 @@ impl Folder {
     /// Returns the workspace owning this folder.
     pub fn workspace(&self) -> &Workspace {
         &self.workspace
+    }
+
+    /// Returns a stream over the entries in this folder. Each entry is either a Folder or a 
+    /// Document.
+    pub async fn read(&self) -> Result<Read, std::io::Error> {
+        let read_dir = fs::read_dir(&self.absolute_path).await?;
+        Ok(Read {
+            workspace: self.workspace.clone(),
+            read_dir,
+        })
+    }
+
+    pub async fn read_recursive(&self) -> Result<ReadRecursive, std::io::Error> {
+        let read = self.read().await?;
+        Ok(ReadRecursive {
+            vec: vec![read],
+        })
     }
 
     /// Opens the specified directory as a workspace folder.
@@ -121,6 +138,77 @@ async fn open_folder(
         workspace,
     })
 }
+
+#[derive(Debug)]
+pub struct Read {
+    workspace: Workspace,
+    read_dir: ReadDir,
+}
+
+impl Read {
+    pub async fn next_entry(&mut self) -> Result<Option<ReadEntry>, AccessStorageError> {
+        loop {
+            match self.read_dir.next_entry().await? {
+                Some(entry) => {
+                    let path = entry.path();
+                    let metadata = entry.metadata().await?;
+                    let entry = if metadata.is_dir() {
+                        let folder = open_folder(path, self.workspace.clone()).await?;
+                        ReadEntry::Folder(folder)
+                    } else if metadata.is_file() {
+                        // Include source files only, ignore metadata files
+                        if path.extension().and_then(|ext| ext.to_str()) == Some(crate::storage2::METADATA_EXTENSION) {
+                            continue;
+                        }
+                        let document = open_document(&path, self.workspace.clone()).await?;
+                        ReadEntry::Document(document)
+                    } else {
+                        // Ignore other types of entries (symlinks, etc.)
+                        continue;
+                    };
+                    return Ok(Some(entry));
+                },
+                None => return Ok(None),
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ReadEntry {
+    Folder(Folder),
+    Document(Document),
+}
+
+#[derive(Debug)]
+pub struct ReadRecursive {
+    vec: Vec<Read>,
+}
+
+impl ReadRecursive {
+    pub async fn next_entry(&mut self) -> Result<Option<Document>, AccessStorageError> {
+        while let Some(read) = self.vec.last_mut() {
+            match read.next_entry().await? {
+                Some(entry) => {
+                    match entry {
+                        ReadEntry::Folder(folder) => {
+                            let read = folder.read().await?;
+                            self.vec.push(read);
+                        },
+                        ReadEntry::Document(document) => {
+                            return Ok(Some(document));
+                        },
+                    }
+                },
+                None => {
+                    self.vec.pop();
+                },
+            }
+        }
+        Ok(None)
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

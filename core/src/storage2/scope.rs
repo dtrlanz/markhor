@@ -1,10 +1,61 @@
-use crate::storage2::Document;
+use std::{collections::HashSet, path::PathBuf};
+
+use crate::storage2::{AccessStorageError, Document, Tag, Workspace, folder::ReadRecursive};
 
 
 
 pub struct Scope {
-
+    // Absolute path to the folder
+    folder_path: PathBuf,
+    tags: HashSet<Tag>,
 }
+
+impl Scope {
+    pub fn contains(&self, document: &Document) -> bool {
+        // Check path
+        if !document.path().starts_with(&self.folder_path) {
+            return false;
+        }
+        // Check tags
+        for tag in &self.tags {
+            if !document.tags().any(|t| t == tag) {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub async fn docs(&self, workspace: &Workspace) -> Result<Docs<'_>, AccessStorageError> {
+        // Check if workspace contains the scope's path
+        if !self.folder_path.starts_with(workspace.path()) {
+            return Err(AccessStorageError::NotInWorkspace(self.folder_path.clone()));
+        }
+        let folder = workspace.folder(&self.folder_path).await?;
+        let read_recursive = folder.read_recursive().await?;
+        Ok(Docs {
+            scope: self,
+            doc_stream: read_recursive,
+        })
+    }
+}
+
+pub struct Docs<'a> {
+    scope: &'a Scope,
+    doc_stream: ReadRecursive,
+}
+
+impl<'a> Docs<'a> {
+    pub async fn next_doc(&mut self) -> Result<Option<Document>, AccessStorageError> {
+        while let Some(doc) = self.doc_stream.next_entry().await? {
+            if self.scope.contains(&doc) {
+                return Ok(Some(doc));
+            }
+        }
+        Ok(None)
+    }
+}
+
+
 
 /// A preliminary filter that can be applied to a scope to quickly determine if it may include 
 /// a specific document.
