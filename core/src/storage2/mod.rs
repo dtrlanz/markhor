@@ -118,19 +118,21 @@ pub(crate) mod fs_test_utils {
 
     /// Represents a materialized virtual filesystem in a temporary directory.
     pub struct TempTree<'a> {
-        pub root: FsNode<'a>,
+        pub nodes: Vec<FsNode<'a>>,
         pub temp_dir: TempDir,
     }
 
     impl<'a> TempTree<'a> {
-        /// Asynchronously creates a temporary directory and materializes the `FsNode` inside it.
-        pub async fn spawn(root: FsNode<'a>) -> io::Result<Self> {
-            // Synchronous but fast; perfectly fine for async test setup
+        /// Asynchronously creates a temp dir and materializes multiple top-level nodes.
+        pub async fn new(nodes: Vec<FsNode<'a>>) -> io::Result<Self> {
             let temp_dir = tempfile::tempdir()?;
             
-            Self::materialize(temp_dir.path(), &root).await?;
+            // Materialize each top-level node directly into the temp_dir
+            for node in &nodes {
+                Self::materialize(temp_dir.path(), node).await?;
+            }
 
-            Ok(Self { root, temp_dir })
+            Ok(Self { nodes, temp_dir })
         }
 
         /// Recursively walks the node and writes files/folders to the disk asynchronously.
@@ -160,11 +162,15 @@ pub(crate) mod fs_test_utils {
 
         /// Returns an iterator that yields the absolute path and reference to every node in the tree.
         pub fn iter(&self) -> TempTreeIter<'a, '_> {
-            let root_path = self.temp_dir.path().join(self.root.name());
-            TempTreeIter {
-                stack: vec![(root_path, &self.root)],
+            let mut stack = Vec::new();
+            
+            // Push in reverse order so the first item declared in the macro is yielded first
+            for node in self.nodes.iter().rev() {
+                stack.push((self.temp_dir.path().join(node.name()), node));
             }
-        }        
+            
+            TempTreeIter { stack }
+        } 
     }
 
     impl<'a> Deref for TempTree<'a> {
@@ -172,6 +178,12 @@ pub(crate) mod fs_test_utils {
 
         /// Derefs to the root of the temporary directory.
         fn deref(&self) -> &Self::Target {
+            self.temp_dir.path()
+        }
+    }
+
+    impl<'a> AsRef<Path> for TempTree<'a> {
+        fn as_ref(&self) -> &Path {
             self.temp_dir.path()
         }
     }
@@ -235,24 +247,16 @@ pub(crate) mod fs_test_utils {
 
     #[macro_export]
     macro_rules! fs_tree {
-        // 1. Match a folder (a block with key-value pairs separated by commas)
-        ( $name:expr => { $($child_name:expr => $child_content:tt),* $(,)? } ) => {
-            $crate::storage2::fs_test_utils::FsNode::folder(
-                $name,
-                vec![
-                    $( fs_tree!(@node $child_name => $child_content) ),*
-                ]
-            )
-        };
-
-        // 2. Match a single file (root level)
-        ( $name:expr => $contents:expr ) => {
-            $crate::storage2::fs_test_utils::FsNode::file($name, $contents)
+        // 1. Top-level rule: Matches a list of files/folders and returns a Vec<FsNode>
+        ( $($name:expr => $content:tt),* $(,)? ) => {
+            vec![
+                $( fs_tree!(@node $name => $content) ),*
+            ]
         };
 
         // --- Internal rules for recursion ---
 
-        // 3. Match a nested folder
+        // 2. Match a nested folder (returns FsNode)
         (@node $name:expr => { $($child_name:expr => $child_content:tt),* $(,)? }) => {
             $crate::storage2::fs_test_utils::FsNode::folder(
                 $name,
@@ -262,7 +266,7 @@ pub(crate) mod fs_test_utils {
             )
         };
 
-        // 4. Match a nested file
+        // 3. Match a nested file (returns FsNode)
         (@node $name:expr => $contents:expr) => {
             $crate::storage2::fs_test_utils::FsNode::file($name, $contents)
         };
@@ -279,7 +283,7 @@ mod tests {
         // Some dynamically generated content
         let dynamic_config = format!(r#"{{ "port": {} }}"#, 8080);
 
-        let tree = TempTree::spawn(fs_tree! {
+        let tree = TempTree::new(fs_tree! {
             "my_app" => {
                 "Cargo.toml" => "[package]\nname=\"my_app\"",
                 
@@ -306,5 +310,66 @@ mod tests {
         let config = tokio::fs::read_to_string(tree.join("my_app/config.json")).await.unwrap();
         assert_eq!(config, r#"{ "port": 8080 }"#);
     }
+
+    #[tokio::test]
+    async fn test_multiple_top_level_nodes() {
+        // Some dynamic data to prove our `IntoNodeBytes` trait works beautifully
+        let magic_bytes = vec![0xDE, 0xAD, 0xBE, 0xEF];
+
+        // Spawn a tree with multiple root-level files and folders
+        let tree = TempTree::new(fs_tree! {
+            "README.md" => "# Top Level Readme\n",
+            "src" => {
+                "main.rs" => "fn main() {}",
+                "utils.rs" => "pub fn do_stuff() {}",
+            },
+            "tests" => {
+                "integration_test.rs" => "#[tokio::test]\nasync fn test_all() {}",
+            },
+            ".gitignore" => "/target\n.env\n",
+            "data.bin" => { magic_bytes },
+        })
+        .await
+        .unwrap();
+
+        // 1. Verify top-level files exist directly under the temp dir
+        assert!(tree.join("README.md").is_file());
+        assert!(tree.join(".gitignore").is_file());
+        assert!(tree.join("data.bin").is_file());
+
+        // 2. Verify top-level folders exist
+        assert!(tree.join("src").is_dir());
+        assert!(tree.join("tests").is_dir());
+
+        // 3. Verify nested files exist inside those folders
+        assert!(tree.join("src/main.rs").is_file());
+        assert!(tree.join("src/utils.rs").is_file());
+        assert!(tree.join("tests/integration_test.rs").is_file());
+
+        // 4. Read contents back asynchronously to ensure data was written correctly
+        let readme_content = tokio::fs::read_to_string(tree.join("README.md")).await.unwrap();
+        assert_eq!(readme_content, "# Top Level Readme\n");
+
+        let bin_content = tokio::fs::read(tree.join("data.bin")).await.unwrap();
+        assert_eq!(bin_content, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+
+        // 5. Verify the Iterator traverses all root nodes and their children
+        // Nodes: README, src, main.rs, utils.rs, tests, integration_test.rs, .gitignore, data.bin (8 total)
+        let node_count = tree.iter().count();
+        assert_eq!(node_count, 8);
+
+        // Ensure our iterator yields the actual absolute paths correctly
+        let (utils_path, utils_node) = tree
+            .iter()
+            .find(|(_, node)| node.name() == "utils.rs")
+            .expect("utils.rs should be in the iterator");
+        
+        assert_eq!(utils_node.name(), "utils.rs");
+        assert!(utils_path.is_absolute());
+        assert_eq!(
+            tokio::fs::read_to_string(utils_path).await.unwrap(), 
+            "pub fn do_stuff() {}"
+        );
+    }    
 
 }
