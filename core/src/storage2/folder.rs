@@ -172,6 +172,14 @@ impl Read {
             }
         }
     }
+
+    pub async fn into_vec(mut self) -> Result<Vec<ReadEntry>, AccessStorageError> {
+        let mut entries = vec![];
+        while let Some(entry) = self.next_entry().await? {
+            entries.push(entry);
+        }
+        Ok(entries)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -206,6 +214,14 @@ impl ReadRecursive {
             }
         }
         Ok(None)
+    }
+
+    pub async fn into_vec(mut self) -> Result<Vec<Document>, AccessStorageError> {
+        let mut entries = vec![];
+        while let Some(entry) = self.next_entry().await? {
+            entries.push(entry);
+        }
+        Ok(entries)
     }
 }
 
@@ -269,4 +285,62 @@ mod tests {
         assert_eq!(doc.workspace(), folder.workspace());
         assert_eq!(doc.text().as_deref(), Some("foo"));
     }
+
+    #[tokio::test]
+    async fn folder_read() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "foo",
+            "child" => {
+                "nested.md" => "nested",
+            },
+        }).await.unwrap();
+
+        let folder = Folder::open(&dir).await.unwrap();
+        let mut entries = folder.read().await.unwrap().into_vec().await.unwrap();
+        assert_eq!(entries.len(), 2);
+
+        // Order of entries is not guaranteed, so we need to sort them
+        entries.sort_by_key(|entry| match entry {
+            ReadEntry::Document(doc) => doc.path().to_owned(),
+            ReadEntry::Folder(folder) => folder.path().to_owned(),
+        });
+
+        match &entries[0] {
+            ReadEntry::Folder(folder) => {
+                assert_eq!(folder.path(), "child");
+                assert_eq!(folder.name(), "child");
+            },
+            _ => panic!("Expected folder"),
+        }
+        match &entries[1] {
+            ReadEntry::Document(doc) => {
+                assert_eq!(doc.path(), "doc.md");
+                assert_eq!(doc.text().as_deref(), Some("foo"));
+            },
+            _ => panic!("Expected document"),
+        }
+    }
+
+    #[tokio::test]
+    async fn folder_read_recursive() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "foo",
+            "child" => {
+                "nested.md" => "nested",
+            },
+        }).await.unwrap();
+        let folder = Folder::open(&dir).await.unwrap();
+        let mut docs = folder.read_recursive().await.unwrap().into_vec().await.unwrap();
+        assert_eq!(docs.len(), 2);
+
+        // Order of entries is not guaranteed, so we need to sort them
+        docs.sort_by_key(|doc| doc.path().to_owned());
+
+        assert_eq!(docs[0].path(), "child/nested.md");
+        assert_eq!(docs[0].text().as_deref(), Some("nested"));
+        assert_eq!(docs[1].path(), "doc.md");
+        assert_eq!(docs[1].text().as_deref(), Some("foo"));
+    }
+
+        
 }
