@@ -141,45 +141,49 @@ pub struct WorkspaceMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
+    use crate::storage2::fs_test_utils::{TempTree, fs_tree};
 
     #[tokio::test]
     async fn workspace_open() {
-        let dir = tempdir().unwrap();
-        let ws_path = dir.path();
+        let mut dir = TempTree::new(fs_tree! {
+            "file.txt" => "hello world",
+            "child" => {},
+        }).await.unwrap();
 
         // Open empty directory as workspace
-        let ws = Workspace::open(&ws_path).await.unwrap();
-        assert_eq!(ws.path(), fs::canonicalize(ws_path).await.unwrap());
+        let ws = Workspace::open(&dir).await.unwrap();
+        assert_eq!(ws.path(), fs::canonicalize(&dir).await.unwrap());
         assert_eq!(ws.inner.metadata, WorkspaceMetadata::default());
 
         // Create config directory
-        let config_dir = ws_path.join(WORKSPACE_CONFIG_DIR);
-        fs::create_dir(&config_dir).await.unwrap();
+        dir.add(fs_tree! {
+            WORKSPACE_CONFIG_DIR => {},
+        }).await.unwrap();
 
         // Open workspace with empty config directory
-        let ws = Workspace::open(&ws_path).await.unwrap();
-        assert_eq!(ws.path(), fs::canonicalize(ws_path).await.unwrap());
+        let ws = Workspace::open(&dir).await.unwrap();
+        assert_eq!(ws.path(), fs::canonicalize(&dir).await.unwrap());
         assert_eq!(ws.inner.metadata, WorkspaceMetadata::default());
         
         // Create metadata file
-        let metadata_file = config_dir.join(WORKSPACE_METADATA_FILENAME);
-        fs::write(&metadata_file, "foo: bar").await.unwrap();
+        dir.add(fs_tree! {
+            WORKSPACE_CONFIG_DIR => {
+                WORKSPACE_METADATA_FILENAME => "foo: bar",
+            },
+        }).await.unwrap();
 
         // Open workspace with metadata file
-        let ws = Workspace::open(&ws_path).await.unwrap();
-        assert_eq!(ws.path(), fs::canonicalize(ws_path).await.unwrap());
+        let ws = Workspace::open(&dir).await.unwrap();
+        assert_eq!(ws.path(), fs::canonicalize(&dir).await.unwrap());
         assert_eq!(ws.inner.metadata, WorkspaceMetadata {
             foo: "bar".to_string(),
         });
 
         // Try opening workspace descendant as workspace
-        let child_path = ws_path.join("child");
-        fs::create_dir(&child_path).await.unwrap();
-        let result = Workspace::open(&child_path).await;
+        let result = Workspace::open(&dir.join("child")).await;
         match result {
             Err(AccessStorageError::InWorkspace(path)) => {
-                let ws_path = fs::canonicalize(ws_path).await.unwrap();
+                let ws_path = fs::canonicalize(&dir).await.unwrap();
                 assert_eq!(path, ws_path);
             },
             _ => {
@@ -188,14 +192,11 @@ mod tests {
         }
 
         // Try opening non-existent workspace
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        let fake_path = dir_path.join("fake");
-        let result = Workspace::open(&fake_path).await;
+        let result = Workspace::open(&dir.join("fake")).await;
         assert!(result.is_err());
         match result {
             Err(AccessStorageError::DirectoryNotFound(path)) => {
-                assert_eq!(path, fake_path);
+                assert_eq!(path, dir.join("fake"));
             },
             _ => {
                 panic!("Wrong error type: {:?}", result);
@@ -203,13 +204,11 @@ mod tests {
         }
 
         // Try opening non-directory
-        let fake_file = dir_path.join("fake.txt");
-        fs::write(&fake_file, "foo").await.unwrap();
-        let result = Workspace::open(&fake_file).await;
+        let result = Workspace::open(&dir.join("file.txt")).await;
         assert!(result.is_err());
         match result {
             Err(AccessStorageError::NotADirectory(path)) => {
-                assert_eq!(path, fs::canonicalize(fake_file).await.unwrap());
+                assert_eq!(path, fs::canonicalize(dir.join("file.txt")).await.unwrap());
             },
             _ => {
                 panic!("Wrong error type: {:?}", result);

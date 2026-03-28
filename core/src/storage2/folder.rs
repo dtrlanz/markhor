@@ -212,55 +212,58 @@ impl ReadRecursive {
 
 #[cfg(test)]
 mod tests {
+    use crate::storage2::fs_test_utils::{TempTree, fs_tree};
     use crate::storage2::WORKSPACE_CONFIG_DIR;
 
     use super::*;
 
     #[tokio::test]
     async fn folder_open() {
-        let dir = tempfile::tempdir().unwrap();
-        let dir_path = dir.path();
+        let mut dir = TempTree::new(fs_tree! {
+            "child" => {
+                "doc.md" => "foo",
+            },
+        }).await.unwrap();
 
         // Open path in implicit workspace
-        let folder = Folder::open(&dir_path).await.unwrap();
+        let folder = Folder::open(&dir).await.unwrap();
         let ws_path = folder.workspace().path();
         assert_eq!(folder.path(), "");
         assert_eq!(
             fs::canonicalize(ws_path).await.unwrap(), 
-            fs::canonicalize(dir_path).await.unwrap()
+            fs::canonicalize(&dir).await.unwrap()
         );
 
         // Open path as root of explict workspace
-        let config_dir = ws_path.join(WORKSPACE_CONFIG_DIR);
-        fs::create_dir(&config_dir).await.unwrap();
-        let folder = Folder::open(&dir_path).await.unwrap();
+        dir.add(fs_tree! {
+            WORKSPACE_CONFIG_DIR => {},
+        }).await.unwrap();
+        let folder = Folder::open(&dir).await.unwrap();
         assert_eq!(folder.path(), "");
         assert_eq!(
             fs::canonicalize(ws_path).await.unwrap(), 
-            fs::canonicalize(dir_path).await.unwrap()
+            fs::canonicalize(&dir).await.unwrap()
         );
 
         // Open path as child of explicit workspace
-        let child_path = ws_path.join("child");
-        fs::create_dir(&child_path).await.unwrap();
+        let child_path = dir.join("child");
         let folder = Folder::open(&child_path).await.unwrap();
         assert_eq!(folder.path(), "child");
         let ws_path = folder.workspace().path();
         assert_eq!(
             fs::canonicalize(ws_path).await.unwrap(), 
-            fs::canonicalize(dir_path).await.unwrap()
+            fs::canonicalize(&dir).await.unwrap()
         );
     }
 
     #[tokio::test]
     async fn folder_document() {
         // Document without metadata
-        let dir = tempfile::tempdir().unwrap();
-        let dir_path = dir.path();
-        let doc_path = dir_path.join("doc.md");
-        fs::write(&doc_path, "foo").await.unwrap();
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "foo",
+        }).await.unwrap();
 
-        let folder = Folder::open(&dir_path).await.unwrap();
+        let folder = Folder::open(&dir).await.unwrap();
         let doc = folder.document("doc.md").await.unwrap();
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.workspace(), folder.workspace());

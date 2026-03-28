@@ -652,30 +652,29 @@ impl<'de> Deserialize<'de> for TextHash {
 
 #[cfg(test)]
 mod tests {
-    use crate::{chunking::test_chunker::FixedSizeChunkerExtension, extension::{ActiveExtension}};
-
     use super::*;
-    use tempfile::tempdir;
+    use crate::{chunking::test_chunker::FixedSizeChunkerExtension, extension::{ActiveExtension}};
+    use crate::storage2::fs_test_utils::{TempTree, fs_tree};
 
     #[tokio::test]
     async fn helper_open_document() {
+        let metadata: DocumentMetadata = DocumentMetadata::new("dummy".as_ref()); // Path not used atm (TODO: refactor to not require path?)
+        let metadata_str = serde_yaml_ng::to_string(&metadata).unwrap();
+
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "foo",
+            "doc2.md" => { format!("---\n{}---\nfoo", &metadata_str) },
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+        let doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+
         // Document without metadata
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        let doc_path = dir_path.join("doc.md");
-        let ws = Workspace::open(&dir_path).await.unwrap();
-        fs::write(&doc_path, "foo").await.unwrap();
-        let doc = open_document(&doc_path, ws.clone()).await.unwrap();
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.workspace(), &ws);
         assert_eq!(doc.text().as_deref(), Some("foo"));
 
         // Document with metadata
-        let doc_path = dir_path.join("doc2.md");
-        let metadata: DocumentMetadata = DocumentMetadata::new(&doc_path);
-        let metadata_str = serde_yaml_ng::to_string(&metadata).unwrap();
-        fs::write(&doc_path, format!("---\n{}---\nfoo", &metadata_str)).await.unwrap();
-        let doc = open_document(&doc_path, ws.clone()).await.unwrap();
+        let doc = open_document(&dir.join("doc2.md"), ws.clone()).await.unwrap();
         assert_eq!(doc.path(), "doc2.md");
         assert_eq!(doc.workspace(), &ws);
         assert_eq!(doc.metadata.id, metadata.id);
@@ -684,23 +683,24 @@ mod tests {
 
     #[tokio::test]
     async fn extension_cache() {
-        let extension_id = "foo";
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        let doc_path = dir_path.join("doc.md");
-        let ws = Workspace::open(&dir_path).await.unwrap();
-        fs::write(&doc_path, "hello world").await.unwrap();
-        let cache_path = dir_path.join(ATTACHMENTS_DIR).join("doc.md").join(".cache.yaml");
-        fs::create_dir_all(cache_path.parent().unwrap()).await.unwrap();
-        fs::write(&cache_path, r#"
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "hello world",
+            ATTACHMENTS_DIR => {
+                "doc.md" => {
+                    ".cache.yaml" => r#"
 extensions:
   foo:
-    data: 42"#).await.unwrap();
-        let doc = open_document(&doc_path, ws.clone()).await.unwrap();
+    data: 42"#,
+                },
+            },
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+        let doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.workspace(), &ws);
         assert_eq!(doc.text().as_deref(), Some("hello world"));
-        assert_eq!(doc.extension_cache(extension_id), Some(&ExtensionCache {
+        assert_eq!(doc.extension_cache("foo"), Some(&ExtensionCache {
             hash: None,
             data: 42.into(),
         }));
@@ -708,12 +708,12 @@ extensions:
 
     #[tokio::test]
     async fn iter_chunks() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        let doc_path = dir_path.join("doc.md");
-        let ws = Workspace::open(&dir_path).await.unwrap();
-        fs::write(&doc_path, "hello world").await.unwrap();
-        let mut doc = open_document(&doc_path, ws.clone()).await.unwrap();
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "hello world",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+
         assert_eq!(doc.text().as_deref(), Some("hello world"));
 
         let chunker = ActiveExtension::new(FixedSizeChunkerExtension::new(5), Default::default())

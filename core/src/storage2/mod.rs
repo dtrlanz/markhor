@@ -160,6 +160,44 @@ pub(crate) mod fs_test_utils {
             })
         }
 
+        /// Asynchronously merges a new virtual tree into the existing directory structure.
+        /// Existing files will be overwritten, and new files will be added to existing directories.
+        pub async fn add(&mut self, nodes: Vec<FsNode<'a>>) -> io::Result<()> {
+            // 1. Materialize the new nodes to the disk
+            for node in &nodes {
+                Self::materialize(self.temp_dir.path(), node).await?;
+            }
+
+            // 2. Merge the new nodes into our in-memory structure to keep `iter()` accurate
+            Self::merge_nodes(&mut self.nodes, nodes);
+
+            Ok(())
+        }
+
+        /// Recursively deep-merges a list of new nodes into an existing list of nodes.
+        fn merge_nodes(existing: &mut Vec<FsNode<'a>>, new_nodes: Vec<FsNode<'a>>) {
+            for new_node in new_nodes {
+                // Check if a node with the exact same name already exists at this level
+                if let Some(existing_node) = existing.iter_mut().find(|n| n.name() == new_node.name()) {
+                    match (existing_node, new_node) {
+                        // If both are folders, recursively merge their children
+                        (
+                            FsNode::Folder { children: existing_children, .. },
+                            FsNode::Folder { children: new_children, .. }
+                        ) => {
+                            Self::merge_nodes(existing_children, new_children);
+                        }
+                        // Otherwise, overwrite the existing node 
+                        // (e.g., file overwrites file, or a file replaces a folder)
+                        (e, n) => *e = n,
+                    }
+                } else {
+                    // Node doesn't exist at this level, simply append it
+                    existing.push(new_node);
+                }
+            }
+        }        
+
         /// Returns an iterator that yields the absolute path and reference to every node in the tree.
         pub fn iter(&self) -> TempTreeIter<'a, '_> {
             let mut stack = Vec::new();
@@ -170,7 +208,12 @@ pub(crate) mod fs_test_utils {
             }
             
             TempTreeIter { stack }
-        } 
+        }
+
+        /// Returns an iterator that yields the absolute path and reference to every node with the specified name.
+        pub fn iter_by_name(&self, name: &str) -> impl Iterator<Item = (PathBuf, &FsNode<'a>)> {
+            self.iter().filter(move |(_, node)| node.name() == name)
+        }
     }
 
     impl<'a> Deref for TempTree<'a> {
@@ -370,6 +413,43 @@ mod tests {
             tokio::fs::read_to_string(utils_path).await.unwrap(), 
             "pub fn do_stuff() {}"
         );
+    }   
+
+    #[tokio::test]
+    async fn test_tree_merging() {
+        // 1. Initial setup
+        let mut tree = TempTree::new(fs_tree! {
+            "src" => {
+                "main.rs" => "fn main() { println!(\"v1\"); }",
+            }
+        }).await.unwrap();
+
+        // Verify initial state
+        let v1 = tokio::fs::read_to_string(tree.join("src/main.rs")).await.unwrap();
+        assert_eq!(v1, "fn main() { println!(\"v1\"); }");
+
+        // 2. Merge new files and modify existing ones
+        tree.add(fs_tree! {
+            "src" => {
+                // This will overwrite the existing main.rs
+                "main.rs" => "fn main() { println!(\"v2\"); }",
+                // This will be added to the existing "src" folder
+                "lib.rs" => "pub fn run() {}",
+            },
+            // This will be created at the root
+            "README.md" => "# Updated App",
+        }).await.unwrap();
+
+        // 3. Verify the disk was updated properly
+        let v2 = tokio::fs::read_to_string(tree.join("src/main.rs")).await.unwrap();
+        assert_eq!(v2, "fn main() { println!(\"v2\"); }");
+        assert!(tree.join("src/lib.rs").is_file());
+        assert!(tree.join("README.md").is_file());
+
+        // 4. Verify our in-memory structure was merged cleanly (no duplicate folders)
+        // Nodes should be exactly: README.md, src, main.rs, lib.rs (4 items)
+        assert_eq!(tree.iter().count(), 4);
     }    
+
 
 }
