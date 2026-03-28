@@ -609,6 +609,14 @@ pub struct ChunkIdx {
     chunk_idx: usize,
 }
 
+// Used in unit tests to create chunk indices without needing a chunker or document
+#[cfg(test)]
+impl ChunkIdx {
+    pub(crate) fn new(chunker_id: impl Into<String>, text_part_id: impl Into<String>, chunk_idx: usize) -> Self {
+        Self { chunker_id: chunker_id.into(), text_part_id: text_part_id.into(), chunk_idx }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TextHash {
     value: GenericArray<u8, <Sha256 as OutputSizeUser>::OutputSize>,

@@ -31,8 +31,6 @@ impl VectorStore {
             for (doc, chunks) in buffer.drain(..) {
                 data.insert_doc(doc, chunks.into_iter());
             }
-            // Release write lock
-            drop(data);
         }
     }
 
@@ -47,62 +45,6 @@ impl VectorStore {
             !data.contains_doc(&doc_id)
         });
     }
-
-    // pub async fn include_docs<I: Iterator<Item = DocVersionId>, F: AsyncFn(&DocVersionId) -> Vec<(ChunkIdx, TextHash, Embedding)>>(&self, docs: I, chunk_fn: F) {
-    //     // create list of documents not already included
-    //     let data = self.data.read().await;
-    //     let mut to_include = Vec::new();
-    //     for doc in docs {
-    //         if !data.contains_doc(&doc) {
-    //             to_include.push(doc);
-    //         }
-    //     }
-    //     std::mem::drop(data);
-
-    //     // Retrieve/generate vectors concurrently, sending them through shared channel
-    //     let (tx, mut rx) = tokio::sync::mpsc::channel(100);
-    //     let chunk_fn = Arc::new(chunk_fn);
-    //     for doc in to_include {
-    //         let tx = tx.clone();
-    //         tokio::spawn(async move {
-    //             let chunks = chunk_fn(&doc).await;
-    //             if let Err(e) = tx.send((doc, chunks)).await {
-    //                 eprintln!("Failed to send chunks for doc {}: {}", doc.id, e);
-    //             }
-    //         });
-    //     }
-
-    //     // Insert vectors as they come in. Write in bursts to avoid too much contention on the 
-    //     // write lock.
-    //     let mut buffer = Vec::new();
-    //     while let Some((doc, chunks)) = rx.recv().await {
-    //         buffer.push((doc, chunks));
-    //         // Acquire write lock
-    //         let mut data = self.data.write().await;
-    //         // Check if further vectors are ready, and if so add them to the buffer
-    //         while let Ok(chunk) = rx.try_recv() {
-    //             buffer.push(chunk);
-    //         }
-    //         // Insert all buffered vectors into the store
-    //         for (doc, chunks) in buffer.drain(..) {
-    //             data.insert_doc(doc, chunks.into_iter());
-    //         }
-    //         // Release write lock
-    //         drop(data);
-    //     }
-
-    // }
-
-    // pub async fn include_doc<I: Iterator<Item = (ChunkIdx, TextHash, Embedding)>>(&self, doc: DocEntry, chunks: I) -> bool {
-    //     let data = self.data.read().await;
-    //     if data.contains_doc(&doc) {
-    //         return false;
-    //     }
-    //     std::mem::drop(data);
-    //     let mut data = self.data.write().await;
-    //     data.insert_doc(doc, chunks);
-    //     true
-    // }
 
     pub async fn all(&self) -> VectorView {
         let data = self.data.read().await;
@@ -293,10 +235,97 @@ struct ChunkEntry {
     vector_idx: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SearchResult {
     pub doc_id: Uuid,
     pub doc_hash: TextHash,
     pub chunk_idx: ChunkIdx,
     pub similarity: f32,
+}
+
+
+#[cfg(test)]
+mod tests {
+    use std::mem;
+
+    use crate::embedding::test_utils::MockEmbedder;
+    use crate::embedding::Embedder;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn vector_store() {
+        // Simple example texts
+        let text1 = vec![
+            "The cat sat on the big mat.",
+            "The dog sat on the big mat.",
+        ];
+        let text2 = vec![
+            "The bug is big and fat.",
+            "The bug is small and skinny.",
+        ];
+
+        // Generate embeddings
+        let embedder = MockEmbedder::new();
+        let embs1 = embedder.embed(&text1).await.unwrap();
+        let embs2 = embedder.embed(&text2).await.unwrap();
+        let sample = embs1[0].clone();
+
+        // Prepare data for insertion
+        let vec1 = text1.iter()
+            .map(|t| TextHash::from(t))
+            .zip(embs1.into_iter()).enumerate()
+            .map(|(i, (hash, emb))| (ChunkIdx::new("test", "text1", i), hash, emb))
+            .collect();
+        let vec2 = text2.iter()
+            .map(|t| TextHash::from(t))
+            .zip(embs2.into_iter()).enumerate()
+            .map(|(i, (hash, emb))| (ChunkIdx::new("test", "text2", i), hash, emb))
+            .collect();
+
+        // Create channel and send documents
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        tx.send((DocVersionId {
+            id: Uuid::new_v4(),
+            hash: TextHash::from("doc1"),
+            filter: PrelimFilter {},
+        }, vec1)).await.unwrap();
+        tx.send((DocVersionId {
+            id: Uuid::new_v4(),
+            hash: TextHash::from("doc2"),
+            filter: PrelimFilter {},
+        }, vec2)).await.unwrap();
+        mem::drop(tx);  // Close the channel so the vector store knows when to stop waiting for more docs
+
+        // Create vector store and insert documents
+        let vector_store = VectorStore::new();
+        vector_store.insert_docs(rx).await;
+
+        // Verify counts
+        let view = vector_store.all().await;
+        assert_eq!(view.doc_count().await, 2);
+        assert_eq!(view.chunk_count().await, 4);
+
+        // Top-k search
+        let results = view.top_k(sample.clone(), 4).await;
+        assert_eq!(results.len(), 4);
+        assert_eq!(results[0].doc_hash, TextHash::from("doc1"));
+        assert_eq!(results[0].chunk_idx, ChunkIdx::new("test", "text1", 0));
+        assert!((results[0].similarity - 1.0).abs() < 1e-6);  // Exact match
+        assert_eq!(results[1].doc_hash, TextHash::from("doc1"));
+        assert_eq!(results[1].chunk_idx, ChunkIdx::new("test", "text1", 1));
+        assert!((results[1].similarity - 1.0).abs() > 0.1);  // Similar but not exact
+        assert!((results[1].similarity - 1.0).abs() < 0.2);
+        assert_eq!(results[2].doc_hash, TextHash::from("doc2"));
+        assert_eq!(results[2].chunk_idx, ChunkIdx::new("test", "text2", 0));
+        assert!((results[2].similarity - 1.0).abs() < 0.6);
+        assert_eq!(results[3].doc_hash, TextHash::from("doc2"));
+        assert_eq!(results[3].chunk_idx, ChunkIdx::new("test", "text2", 1));
+        assert!((results[3].similarity - 1.0).abs() < 0.6);
+
+        assert_eq!(&results[0..1], &view.top_k(sample.clone(), 1).await);
+        assert_eq!(&results[0..2], &view.top_k(sample.clone(), 2).await);
+        assert_eq!(&results[0..3], &view.top_k(sample.clone(), 3).await);
+        assert_eq!(&results, &view.top_k(sample.clone(), 5).await);
+    }
 }
