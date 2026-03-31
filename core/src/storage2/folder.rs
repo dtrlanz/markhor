@@ -182,7 +182,7 @@ impl Read {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum ReadEntry {
     Folder(Folder),
     Document(Document),

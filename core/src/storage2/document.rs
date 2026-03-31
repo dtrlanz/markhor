@@ -4,12 +4,12 @@ use tokio::io::{AsyncWriteExt};
 use uuid::Uuid;
 use tokio::fs::{self, OpenOptions};
 use tracing::{debug, info, instrument, warn};
-use std::{borrow::Borrow, collections::{HashMap, hash_map::Entry}, ffi::OsStr, path::{Path, PathBuf}};
+use std::{borrow::Borrow, collections::{HashMap, hash_map::Entry}, ffi::OsStr, path::{Path, PathBuf}, sync::Mutex};
 
 use crate::{chunking::{Chunker, ChunkerError}, embedding::Embedding, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES}, storage2::{ATTACHMENTS_DIR, AccessStorageError, METADATA_EXTENSION, Tag, Workspace}};
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Document {
     /// Absolute path to the source file
     pub(crate) absolute_path: PathBuf,
@@ -19,7 +19,8 @@ pub struct Document {
     metadata: DocumentMetadata,
     metadata_location: MetadataLocation,
     text_parts: Vec<(String, String)>,
-    text_hash: Option<TextHash>,
+    text_hash: Mutex<Option<TextHash>>,
+    doc_hash: Mutex<Option<TextHash>>,
     cache: DocCache,
     chunk_cache: HashMap<String, HashMap<String, Vec<ChunkCache>>>,
 }
@@ -75,23 +76,39 @@ impl Document {
 
     pub fn text_parts_mut(&mut self) -> impl Iterator<Item = (&str, &mut String)> {
         // Content may change, invalidate text hash
-        self.text_hash = None;
+        self.text_hash.get_mut().unwrap().take();
+        self.doc_hash.get_mut().unwrap().take();
         self.text_parts.iter_mut().map(|(id, text)| (id.as_str(), text))
     }
 
-    fn text_hash(&mut self) -> TextHash {
-        if self.text_hash.is_none() {
+    fn text_hash(&self) -> TextHash {
+        let mut text_hash = self.text_hash.lock().unwrap();
+        if text_hash.is_none() {
             let text_iter = self.text_parts.iter()
                 .map(|(id, text)| [&**id, &**text].into_iter())
                 .flatten();
-            self.text_hash = Some(TextHash::from_iter(text_iter));
+            let r = TextHash::from_iter(text_iter);
+            *text_hash = Some(r);
+            r
+        } else {
+            text_hash.unwrap()
         }
-        self.text_hash.unwrap()
     }
 
     pub fn doc_hash(&self) -> TextHash {
-        // hash of text and metadata
-        todo!()
+        let mut doc_hash = self.doc_hash.lock().unwrap();
+        if doc_hash.is_none() {
+            // hash of text and metadata
+            let text_hash = self.text_hash();
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(text_hash.value);
+            hasher.update(serde_yaml_ng::to_string(&self.metadata).unwrap());
+            let r = TextHash { value: hasher.finalize() };
+            *doc_hash = Some(r);
+            r
+        } else {
+            doc_hash.unwrap()
+        }
     }
 
     pub(crate) fn extension_cache(&self, extension: &str) -> Option<&ExtensionCache> {
@@ -310,7 +327,8 @@ impl Document {
     }
 
     fn update_text(&mut self, new_text: Option<String>) {
-        self.text_hash = None;
+        self.text_hash.get_mut().unwrap().take();
+        self.doc_hash.get_mut().unwrap().take();
         match (new_text, self.metadata.doc_parts.as_ref()) {
             // Text representation of document only has one part
             (Some(text), None) => {
@@ -440,7 +458,8 @@ pub(crate) async fn open_document(
         metadata,
         metadata_location: MetadataLocation::None,
         text_parts: Vec::new(),
-        text_hash: None,
+        text_hash: Default::default(),
+        doc_hash: Default::default(),
         cache: Default::default(),
         chunk_cache: Default::default(),
     };
@@ -741,5 +760,25 @@ extensions:
             let embedding = chunk.embedding("embedder").unwrap();
             assert_eq!(embedding.as_ref(), &[n as f32]);
         }
+    }
+
+    #[tokio::test]
+    async fn doc_text_hash() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "hello world",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+
+        let initial_text_hash = doc.text_hash();
+        let initial_doc_hash = doc.doc_hash();
+
+        // Update text and check that hashes change
+        doc.text_parts_mut().next().unwrap().1.push_str("!");
+        let updated_text_hash = doc.text_hash();
+        let updated_doc_hash = doc.doc_hash();
+
+        assert_ne!(initial_text_hash, updated_text_hash);
+        assert_ne!(initial_doc_hash, updated_doc_hash);
     }
 }
