@@ -478,7 +478,7 @@ async fn read_markdown_file<T: DeserializeOwned>(path: &Path) -> Result<(String,
 
 async fn write_markdown_file<T: Serialize + ?Sized>(path: &Path, text: &str, metadata: &T) -> Result<(), AccessStorageError> {
     let metadata = serde_yaml_ng::to_string(metadata)?;
-    let markdown = format!("{}\n{}", metadata, text);
+    let markdown = format!("---\n{}\n---\n{}", metadata, text);
     let mut file = OpenOptions::new()
         .create(true)
         .write(true)
@@ -693,9 +693,15 @@ mod tests {
             "doc2.md" => { format!("---\n{}---\nfoo", &metadata_str) },
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
-        let doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
 
         // Document without metadata
+        let doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+        assert_eq!(doc.path(), "doc.md");
+        assert_eq!(doc.workspace(), &ws);
+        assert_eq!(doc.text().as_deref(), Some("foo"));
+
+        // 2nd time
+        let doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.workspace(), &ws);
         assert_eq!(doc.text().as_deref(), Some("foo"));
