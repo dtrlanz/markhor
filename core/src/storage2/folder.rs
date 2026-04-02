@@ -273,6 +273,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn folder_folder() {
+        let dir = TempTree::new(fs_tree! {
+            "child" => {
+                "nested" => {
+                    "doc.md" => "foo",
+                },
+            },
+        }).await.unwrap();
+
+        let folder = Folder::open(&dir).await.unwrap();
+        let child = folder.folder("child").await.unwrap();
+        assert_eq!(child.path(), "child");
+        let child = folder.folder(dir.join("child")).await.unwrap();
+        assert_eq!(child.path(), "child");
+        let nested = child.folder("nested").await.unwrap();
+        assert_eq!(nested.path(), "child/nested");
+        let nested = child.folder(dir.join("child").join("nested")).await.unwrap();
+        assert_eq!(nested.path(), "child/nested");
+
+        let root = folder.folder(".").await.unwrap();
+        assert_eq!(root.path(), "");
+        let root = folder.folder(&dir).await.unwrap();
+        assert_eq!(root.path(), "");
+    }
+
+    #[tokio::test]
     async fn folder_document() {
         // Document without metadata
         let dir = TempTree::new(fs_tree! {
