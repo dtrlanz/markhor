@@ -261,12 +261,15 @@ mod tests {
             "The dog sat on the big mat.",
         ];
         let text2 = vec![
-            "The bug is big and fat.",
-            "The bug is small and skinny.",
+            "The one bug is big and fat.",
+            "The other bug is small and skinny.",
         ];
 
         // Generate embeddings
-        let embedder = MockEmbedder::new();
+        let embedder = MockEmbedder::new(
+                // Our 3-letter "anchor" words for predictable similarity
+                vec!["the", "and", "cat", "dog", "bug", "big", "mat", "sat", "fat", "bad"]
+        );
         let embs1 = embedder.embed(&text1).await.unwrap();
         let embs2 = embedder.embed(&text2).await.unwrap();
         let sample = embs1[0].clone();

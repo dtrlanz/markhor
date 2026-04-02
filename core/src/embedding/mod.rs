@@ -36,9 +36,9 @@ impl Embedding {
         let norm_self: f32 = self.0.iter().map(|x| x * x).sum::<f32>().sqrt();
         let norm_other: f32 = other.0.iter().map(|x| x * x).sum::<f32>().sqrt();
 
+        // Handle zero-magnitude vectors by returning NaN (indicating no meaningful similarity)
         if norm_self == 0.0 || norm_other == 0.0 {
-            //return Err(EmbeddingError::ZeroLength);
-            panic!("zero length vector");
+            return Ok(f32::NAN);
         }
 
         Ok(dot_product / (norm_self * norm_other))
@@ -83,10 +83,9 @@ pub(crate) mod test_utils {
     }
 
     impl MockEmbedder {
-        pub fn new() -> Self {
+        pub fn new(vocabulary: Vec<&'static str>) -> Self {
             Self {
-                // Our 3-letter "anchor" words for predictable similarity
-                vocabulary: vec!["the", "and", "cat", "dog", "bug", "big", "mat", "sat", "fat", "bad"],
+                vocabulary,
             }
         }
     }
@@ -145,6 +144,35 @@ pub(crate) mod test_utils {
         fn max_chunk_length_hint(&self) -> Option<usize> {
             None
         }
-    }    
+    }
 
+    pub struct MockEmbedderExtension {
+        vocabulary: Vec<&'static str>,
+    }
+
+    impl MockEmbedderExtension {
+        pub fn new(vocabulary: Vec<&'static str>) -> Self {
+            Self {
+                vocabulary,
+            }
+        }
+    }
+
+    impl crate::extension::Extension for MockEmbedderExtension {
+        fn uri(&self) -> &str {
+            "markhor://embedder/mock"
+        }
+
+        fn name(&self) -> &str {
+            "Mock Embedder"
+        }
+
+        fn description(&self) -> &str {
+            "A simple embedder that creates normalized term frequency vectors based on a fixed vocabulary."
+        }
+
+        fn embedding_model(&self) -> Option<Box<dyn Embedder>> {
+            Some(Box::new(MockEmbedder::new(self.vocabulary.clone())))
+        }
+    }
 }

@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, HashSet, hash_map::Entry}, path::PathBuf, sync::Arc};
+use std::{collections::{HashMap, HashSet, hash_map::Entry}, mem, path::PathBuf, sync::Arc};
 
 use thiserror::Error;
 use uuid::Uuid;
@@ -29,7 +29,7 @@ impl Retriever {
         while let Some(doc) = doc_stream.next_doc().await? {
             docs.push(doc);
         }
-        let mut doc_ids = docs.iter().map(|doc| (*doc.id(), doc.doc_hash()));
+        let doc_ids = docs.iter().map(|doc| (*doc.id(), doc.doc_hash()));
 
         let view = match vector_store.select(doc_ids).await {
             Ok(view) => view,
@@ -48,6 +48,8 @@ impl Retriever {
                         tasks.push(task);
                     }
                 }
+
+                mem::drop(tx);  // Close the channel so the vector store knows when to stop waiting for more docs
 
                 // Insert vectors into vector store
                 vector_store.insert_docs(rx).await;
@@ -115,4 +117,50 @@ pub enum InitRetrieverError {
     /// An error occurred while generating or retrieving an embedding for a document chunk.
     #[error("Embedding error: {0}")]
     EmbeddingError(#[from] EmbeddingError),
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::embedding::test_utils::MockEmbedderExtension;
+    use crate::{chunking::test_chunker::FixedSizeChunkerExtension, extension::ActiveExtension};
+    use crate::storage2::fs_test_utils::{TempTree, fs_tree};
+
+    #[tokio::test]
+    async fn test_retriever_initialization() {
+        let dir = TempTree::new(fs_tree! {
+            //             /-- chunk 0 ---------------\/-- chunk 1 ---------------\/-- chunk 2 --\
+            "doc1.txt" => "The cat sat on the big mat. The dog sat on the big mat.",
+            "doc2.txt" => "The one bug is big and fat. The other bug is small and skinny.",
+        }).await.unwrap();
+
+        let ws = Workspace::open(&dir).await.unwrap();
+        let scope = Scope::from(ws.root());
+
+        let chunker = ActiveExtension::new(FixedSizeChunkerExtension::new(28), Default::default())
+            .chunkers().next().unwrap();
+        let embedder = ActiveExtension::new(
+            MockEmbedderExtension::new(
+                // Our 3-letter "anchor" words for predictable similarity
+                vec!["the", "and", "cat", "dog", "bug", "big", "mat", "sat", "fat", "bad"]
+            ), Default::default())
+            .embedders().next().unwrap();
+        let sample = embedder.embed(&["The cat sat on the big mat."]).await.unwrap().pop().unwrap();
+        let retriever = Retriever::new(ws, scope, chunker, embedder).await.unwrap();
+
+        // Verify that the retriever has initialized with the expected number of documents and chunks
+        let view = retriever.embeddings;
+        assert_eq!(view.doc_count().await, 2);
+        assert_eq!(view.chunk_count().await, 5);
+
+        // Top-k search
+        let results = view.top_k(sample.clone(), 4).await;
+        assert_eq!(results.len(), 4);
+        assert!((results[0].similarity - 1.0).abs() < 1e-6);  // Exact match
+        assert!((results[1].similarity - 1.0).abs() > 0.1);   // Similar but not exact
+        assert!((results[1].similarity - 1.0).abs() < 0.2);
+        assert!((results[2].similarity - 1.0).abs() < 0.6);   // Not very similar
+        assert!((results[3].similarity - 1.0).abs() < 0.6);
+    }
 }

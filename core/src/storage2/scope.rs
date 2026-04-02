@@ -1,9 +1,10 @@
-use std::{collections::HashSet, path::PathBuf};
+use std::{collections::HashSet, path::{Path, PathBuf}};
 
-use crate::storage2::{AccessStorageError, Document, Tag, Workspace, folder::ReadRecursive};
+use crate::storage2::{AccessStorageError, Document, Folder, Tag, Workspace, folder::ReadRecursive};
 
 
 
+#[derive(Debug, Clone)]
 pub struct Scope {
     // Absolute path to the folder
     folder_path: PathBuf,
@@ -13,7 +14,7 @@ pub struct Scope {
 impl Scope {
     pub fn contains(&self, document: &Document) -> bool {
         // Check path
-        if !document.path().starts_with(&self.folder_path) {
+        if !document.workspace().path().join(document.path()).starts_with(&self.folder_path) {
             return false;
         }
         // Check tags
@@ -39,6 +40,25 @@ impl Scope {
     }
 }
 
+impl From<Folder> for Scope {
+    fn from(folder: Folder) -> Self {
+        Scope {
+            folder_path: folder.workspace().path().join(folder.path()),
+            tags: HashSet::new(),
+        }
+    }
+}
+
+impl From<&Path> for Scope {
+    fn from(path: &Path) -> Self {
+        Scope {
+            folder_path: path.to_path_buf(),
+            tags: HashSet::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct Docs<'a> {
     scope: &'a Scope,
     doc_stream: ReadRecursive,
@@ -52,6 +72,14 @@ impl<'a> Docs<'a> {
             }
         }
         Ok(None)
+    }
+
+    pub async fn into_vec(mut self) -> Result<Vec<Document>, AccessStorageError> {
+        let mut docs = Vec::new();
+        while let Some(doc) = self.next_doc().await? {
+            docs.push(doc);
+        }
+        Ok(docs)
     }
 }
 
@@ -87,5 +115,35 @@ impl From<&Document> for PrelimFilter {
     fn from(document: &Document) -> Self {
         // TODO
         PrelimFilter {}
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage2::fs_test_utils::{TempTree, fs_tree};
+
+    #[tokio::test]
+    async fn docs() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "foo",
+            "child" => {
+                "nested.md" => "nested",
+            },
+        }).await.unwrap();
+
+        let ws = Workspace::open(&dir).await.unwrap();
+        let scope = Scope::from(ws.root());
+        let mut docs = scope.docs(&ws).await.unwrap().into_vec().await.unwrap();
+        assert_eq!(docs.len(), 2);
+
+        // Order of entries is not guaranteed, so we need to sort them
+        docs.sort_by_key(|doc| doc.path().to_owned());
+
+        assert_eq!(docs[0].path(), "child/nested.md");
+        assert_eq!(docs[0].text().as_deref(), Some("nested"));
+        assert_eq!(docs[1].path(), "doc.md");
+        assert_eq!(docs[1].text().as_deref(), Some("foo"));
     }
 }
