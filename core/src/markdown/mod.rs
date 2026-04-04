@@ -90,6 +90,19 @@ impl<'a> Markdown<'a> {
         }
     }
 
+    pub fn prepend_milestone(&self, unit: &str, value: &str, attrs: Vec<(&'a str, Option<&'a str>)>) -> String {
+        let mut attrs_str = String::new();
+        for (attr_name, attr_value) in attrs {
+            if let Some(attr_value) = attr_value {
+                attrs_str.push_str(&format!(" {}=\"{}\"", attr_name, attr_value));
+            } else {
+                attrs_str.push_str(&format!(" {}", attr_name));
+            }
+        }
+        let output = format!("<milestone unit=\"{}\" n=\"{}\"{} />\n{}", unit, value, attrs_str, self.content);
+        output
+    }
+
     fn parser(&self) -> Parser<'_> {
         Parser::new_ext(self.content, self.options.md_options)
     }

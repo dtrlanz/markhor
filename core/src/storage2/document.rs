@@ -3,10 +3,10 @@ use sha2::{Digest, Sha256, digest::{OutputSizeUser, generic_array::GenericArray}
 use tokio::io::{AsyncWriteExt};
 use uuid::Uuid;
 use tokio::fs::{self, OpenOptions};
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, info, instrument, trace, warn};
 use std::{borrow::Borrow, collections::{HashMap, hash_map::Entry}, ffi::OsStr, path::{Path, PathBuf}, sync::Mutex};
 
-use crate::{chunking::{Chunker, ChunkerError}, embedding::Embedding, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES}, storage2::{ATTACHMENTS_DIR, AccessStorageError, METADATA_EXTENSION, Tag, Workspace}};
+use crate::{chunking::{Chunker, ChunkerError}, embedding::Embedding, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES, WITHOUT_XML}, storage2::{ATTACHMENTS_DIR, AccessStorageError, METADATA_EXTENSION, Tag, Workspace}};
 
 
 #[derive(Debug)]
@@ -57,13 +57,9 @@ impl Document {
             Some(self.text_parts[0].1.clone())
         } else {
             let mut text = String::new();
-            for (n, (id, part)) in self.text_parts.iter().enumerate() {
-                text.push_str(&format!("---\npart_idx: {}\n", n));
-                if !id.is_empty() {
-                    text.push_str(&format!("id: {}\n", id));
-                }
-                text.push_str("---\n");
-                text.push_str(part);
+            for (id, part) in self.text_parts.iter() {
+                text.push_str(part.to_markdown(WITHOUT_XML)
+                    .prepend_milestone("part".into(), id, vec![]).as_ref());
                 text.push_str("\n");
             }
             Some(text)
@@ -259,10 +255,27 @@ impl Document {
         }
     }
 
+    #[instrument(skip(self, data))]
+    async fn write_cache_file<T: Serialize + ?Sized>(&self, name: &str, data: &T) -> Result<(), AccessStorageError> {
+        let cache_path = self.attachment_path_raw(name);
+        debug!("Writing cache file {:?}", cache_path);
+        let content = serde_yaml_ng::to_string(data)?;
+        trace!("Cache file content:\n{}", content);
+        // Ensure directory exists
+        fs::create_dir_all(cache_path.parent().unwrap()).await?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(cache_path).await?;
+        file.write_all(content.as_bytes()).await?;
+        trace!("Finished writing cache file");
+        Ok(())
+    }
+
     async fn load(&mut self) -> Result<(), AccessStorageError> {
         // Attempt to load cache from cache file
         let read_cache = self.read_cache_file(".cache.yaml");
-        // let cache_path = self.attachment_path_raw(".cache.yaml");
         let cache = tokio::spawn(async move {
             read_cache.await
         });
@@ -270,6 +283,7 @@ impl Document {
         // Attempt to load metadata from metadata file
         match read_markdown_file::<DocumentMetadata>(&self.metadata_path()).await {
             Ok((text, Ok(metadata))) => {
+                self.metadata_location = MetadataLocation::MetadataFile;
                 let mut text_option = None;
                 match metadata.text_location {
                     TextLocation::SourceFile => {
@@ -299,7 +313,7 @@ impl Document {
             },
             Err(e) => {
                 return Err(AccessStorageError::Io(e));
-            }
+            },
         }
 
         // Read text and metadata from source file
@@ -322,6 +336,80 @@ impl Document {
         self.update_text(Some(text));
 
         self.cache = cache.await.unwrap().ok().flatten().unwrap_or_default();
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    pub async fn save(&mut self) -> Result<(), AccessStorageError> {
+        info!("Saving document {:?}", self.absolute_path);
+        // Save text and metadata to appropriate location
+        match (self.metadata.text_location, self.metadata_location) {
+            (TextLocation::SourceFile, MetadataLocation::SourceFile) |
+            (TextLocation::Inferred, MetadataLocation::SourceFile) |
+            (TextLocation::None, MetadataLocation::SourceFile) |
+            (TextLocation::Inferred, MetadataLocation::None) |
+            (TextLocation::SourceFile, MetadataLocation::None) => {
+                // Save both in source file
+                debug!("Saving text and metadata in source file for document {:?}", self.absolute_path);
+                let mut content = get_metadata_block(self)?;
+                content.push_str(&get_text(self));
+                fs::write(&self.absolute_path, content).await?;
+            },
+            (TextLocation::SourceFile, MetadataLocation::MetadataFile) => {
+                // Save to separate files
+                debug!("Saving text in source file and metadata in metadata file for document {:?}", self.absolute_path);
+                fs::write(&self.absolute_path, get_text(self)).await?;
+                trace!("Metadata file path: {:?}", self.metadata_path());
+                fs::write(&self.metadata_path(), get_metadata_block(self)?).await?;
+            },
+            (TextLocation::MetadataFile, MetadataLocation::MetadataFile) |
+            (TextLocation::Inferred, MetadataLocation::MetadataFile) |
+            (TextLocation::None, MetadataLocation::MetadataFile) |
+            (TextLocation::MetadataFile, MetadataLocation::None) |
+            (TextLocation::MetadataFile, MetadataLocation::SourceFile) => {
+                if self.metadata_location == MetadataLocation::SourceFile {
+                    warn!("Invalid metadata_location for document {:?}: metadata_location is SourceFile but metadata text_location is MetadataFile. Saving metadata in metadata file.", self.absolute_path);
+                }
+                // Save both in metadata file
+                debug!("Saving text and metadata in metadata file for document {:?}", self.absolute_path);
+                let mut content = get_metadata_block(self)?;
+                content.push_str(&get_text(self));
+                fs::write(&self.metadata_path(), content).await?;
+            },
+            (TextLocation::None, MetadataLocation::None) => (),
+        }
+
+        fn get_text(this: &Document) -> String {
+            let text = this.text();
+            if text.is_some() && this.metadata.text_location == TextLocation::None {
+                warn!("Text will not be saved because text_location is None for document {:?}", this.path());
+                String::new()
+            } else {
+                text.unwrap_or_default()
+            }
+        }
+
+        fn get_metadata_block(this: &Document) -> Result<String, AccessStorageError> {
+            let yaml = serde_yaml_ng::to_string(&this.metadata)?;
+            if yaml == "" {
+                Ok(String::new())
+            // MetadataLocation::None is currently not possible, but that will probably change
+            } else if yaml != "" && this.metadata_location == MetadataLocation::None {
+                warn!("Metadata will not be saved because text_location is None for document {:?}", this.path());
+                Ok(String::new())
+            } else {
+                Ok(format!("---\n{}---\n", yaml))
+            }
+        }
+
+        // Save cache to cache file
+        self.write_cache_file(".cache.yaml", &self.cache).await?;
+
+        // Save chunk cache to chunk cache file for each chunker
+        for (chunker_id, chunk_cache) in &self.chunk_cache {
+            self.write_cache_file(format!(".chunks_{}.yaml", chunker_id).as_str(), chunk_cache).await?;
+        }
 
         Ok(())
     }
@@ -786,5 +874,175 @@ extensions:
 
         assert_ne!(initial_text_hash, updated_text_hash);
         assert_ne!(initial_doc_hash, updated_doc_hash);
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn save_both_in_source_file() {
+        let dir: TempTree<'_> = TempTree::new(fs_tree! {
+            "doc.md" => "",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+
+        // Set locations
+        doc.metadata.text_location = TextLocation::SourceFile;
+        doc.metadata_location = MetadataLocation::SourceFile;
+        // Set text
+        doc.update_text(Some("Hello world".to_string()));
+
+        // Save
+        doc.save().await.unwrap();
+
+        // Check source file
+        let content = fs::read_to_string(&dir.join("doc.md")).await.unwrap();
+        let expected_metadata = serde_yaml_ng::to_string(&doc.metadata).unwrap();
+        assert_eq!(content, format!("---\n{}---\nHello world", expected_metadata));
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn save_text_in_source_metadata_in_metadata_file() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+
+        // Set locations
+        doc.metadata.text_location = TextLocation::SourceFile;
+        doc.metadata_location = MetadataLocation::MetadataFile;
+        // Set text
+        doc.update_text(Some("Hello world".to_string()));
+
+        // Save
+        doc.save().await.unwrap();
+
+        // Check source file has text
+        let source_content = fs::read_to_string(&dir.join("doc.md")).await.unwrap();
+        assert_eq!(source_content, "Hello world");
+
+        // Check metadata file
+        let metadata_content = fs::read_to_string(&dir.join(format!("doc.md.{}", METADATA_EXTENSION))).await.unwrap();
+        let expected_metadata = serde_yaml_ng::to_string(&doc.metadata).unwrap();
+        assert_eq!(metadata_content, format!("---\n{}---\n", expected_metadata));
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn save_both_in_metadata_file() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+
+        // Set locations
+        doc.metadata.text_location = TextLocation::MetadataFile;
+        doc.metadata_location = MetadataLocation::MetadataFile;
+        // Set text
+        doc.update_text(Some("Hello world".to_string()));
+
+        // Save
+        doc.save().await.unwrap();
+
+        // Check source file is empty or unchanged
+        let source_content = fs::read_to_string(&dir.join("doc.md")).await.unwrap();
+        assert_eq!(source_content, "");
+
+        // Check metadata file has both
+        let metadata_content = fs::read_to_string(&dir.join(format!("doc.md.{}", METADATA_EXTENSION))).await.unwrap();
+        let expected_metadata = serde_yaml_ng::to_string(&doc.metadata).unwrap();
+        assert_eq!(metadata_content, format!("---\n{}---\nHello world", expected_metadata));
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn save_doc_cache() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "hello world",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+
+        // Update cache
+        doc.cache.extensions.insert("foo".to_string(), ExtensionCache {
+            hash: Some(TextHash::from("hello world")),
+            data: 42.into(),
+        });
+
+        // Save
+        doc.save().await.unwrap();
+
+        // Check cache file
+        let cache_content = fs::read_to_string(&dir.join(ATTACHMENTS_DIR).join("doc.md").join(".cache.yaml")).await.unwrap();
+        let expected_cache = serde_yaml_ng::to_string(&doc.cache).unwrap();
+        assert_eq!(cache_content, expected_cache);
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn save_chunk_cache() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "hello world",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+
+        // Create chunk cache for a chunker
+        let chunker_id = "test_chunker".to_string();
+        let text_part_id = String::new();
+        doc.chunk_cache.insert(chunker_id.clone(), HashMap::from([
+            (text_part_id.clone(), vec![
+                ChunkCache {
+                    chunk: crate::chunking::ChunkData { text_range: 0..5, heading_path: None, token_count: None },
+                    hash: TextHash::from("hello"),
+                    embeddings: HashMap::new(),
+                },
+                ChunkCache {
+                    chunk: crate::chunking::ChunkData { text_range: 5..11, heading_path: None, token_count: None },
+                    hash: TextHash::from(" world"),
+                    embeddings: HashMap::new(),
+                },
+            ])
+        ]));
+
+        // Save
+        doc.save().await.unwrap();
+
+        // Check chunk cache file
+        let cache_content = fs::read_to_string(&dir.join(ATTACHMENTS_DIR).join("doc.md").join(format!(".chunks_{}.yaml", chunker_id))).await.unwrap();
+        let expected_cache = serde_yaml_ng::to_string(&doc.chunk_cache.get(&chunker_id)).unwrap();
+        assert_eq!(cache_content, expected_cache);
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn save_multiple_text_parts() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+
+        doc.metadata.text_location = TextLocation::SourceFile;
+        doc.metadata_location = MetadataLocation::SourceFile;
+
+        // Set metadata to have multiple text parts
+        doc.metadata.doc_parts = Some("not-none".to_string());
+        // Set text parts
+        doc.text_parts = vec![
+            ("part1".to_string(), "Hello".to_string()),
+            ("part2".to_string(), "world".to_string()),
+        ];
+        println!("Text: {:?}", doc.text());
+
+        // Save
+        doc.save().await.unwrap();
+
+        // Check metadata file has both text parts
+        let file_content = fs::read_to_string(&dir.join("doc.md")).await.unwrap();
+        let expected_metadata = serde_yaml_ng::to_string(&doc.metadata).unwrap();
+        assert_eq!(file_content, format!("---\n{}---\n<milestone unit=\"part\" n=\"part1\" />\nHello\n<milestone unit=\"part\" n=\"part2\" />\nworld\n", expected_metadata));
     }
 }
