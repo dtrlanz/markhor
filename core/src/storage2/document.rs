@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256, digest::{OutputSizeUser, generic_array::GenericArray}};
+use thiserror::Error;
 use tokio::io::{AsyncWriteExt};
 use uuid::Uuid;
 use tokio::fs::{self, OpenOptions};
@@ -22,7 +23,7 @@ pub struct Document {
     text_hash: Mutex<Option<TextHash>>,
     doc_hash: Mutex<Option<TextHash>>,
     cache: DocCache,
-    chunk_cache: HashMap<String, HashMap<String, Vec<ChunkCache>>>,
+    chunker_cache: HashMap<String, HashMap<String, Vec<ChunkCache>>>,
 }
 
 impl Document {
@@ -118,36 +119,31 @@ impl Document {
     async fn chunks(&mut self, chunker: &F11y<dyn Chunker>) -> Result<Chunks<'_>, ChunkerError> {
         let chunker_id = chunker.metadata_id();
         let text_hash = self.text_hash();
-        let chunk_cache_is_valid = self.cache.extensions
+        let chunker_cache_is_valid = self.cache.extensions
             .get(&chunker_id)
             .map(|ext_cache| ext_cache.hash == Some(text_hash))
             .unwrap_or(false);
 
 
         let read_cache = self.read_cache_file(format!(".chunks_{}.yaml", chunker_id).as_str());
-        let chunk_cache = match self.chunk_cache.entry(chunker_id) {
-            Entry::Occupied(occupied) => {
-                debug!("Chunk cache hit for chunker '{}'", chunker.metadata_id());
-                occupied.into_mut()
-            },
-            Entry::Vacant(vacant) => {
-                debug!("Chunk cache miss for chunker '{}', attempting to load cache file", chunker.metadata_id());
-                let chunk_cache = read_cache.await.ok().flatten().unwrap_or_else(|| {
-                    debug!("Failed to load chunk cache for chunker '{}', creating new cache", chunker.metadata_id());
-                    HashMap::new()
-                });
-                vacant.insert(chunk_cache)
-            },
-        };
+        let chunker_cache = Self::load_chunker_cache(
+            &mut self.chunker_cache, 
+            &chunker_id, 
+            read_cache, 
+            |e| {
+                warn!("Failed to load chunk cache for chunker '{}': {}, creating new cache", chunker.metadata_id(), e);
+                Ok(HashMap::new())
+            }
+        ).await.unwrap();
 
-        if !chunk_cache_is_valid {
+        if !chunker_cache_is_valid {
             // Delete cache for any text parts that no longer exist
             let text_part_ids: Vec<_> = self.text_parts.iter().map(|(id, _)| id).collect();
-            chunk_cache.retain(|text_id, _| text_part_ids.contains(&text_id));
+            chunker_cache.retain(|text_id, _| text_part_ids.contains(&text_id));
 
             // Re-chunk the document
             for (id, text) in self.text_parts.iter() {
-                let cached_chunks = chunk_cache.entry(id.clone()).or_default();
+                let cached_chunks = chunker_cache.entry(id.clone()).or_default();
                 let chunks = chunker.chunk(&text)?;
                 debug!("Generated {} chunks for text part '{}'", chunks.len(), id);
                 cached_chunks.truncate(chunks.len());
@@ -184,7 +180,7 @@ impl Document {
         Ok(Chunks {
             chunker_id: chunker.metadata_id(),
             text_parts: self.text_parts.iter().collect(),
-            data: chunk_cache,
+            data: chunker_cache,
             chunk_idx: 0,
         })
     }
@@ -198,7 +194,7 @@ impl Document {
 
         // Create iterator over all chunks with text parts
         let text_parts = &self.text_parts;
-        let with_text_part = self.chunk_cache.get_mut(&chunker_id).unwrap()
+        let with_text_part = self.chunker_cache.get_mut(&chunker_id).unwrap()
             .iter_mut()
             .map(|(text_id, chunks)| {
                 let text_part = text_parts.iter().find(|(id, _)| id == text_id).unwrap();
@@ -223,15 +219,42 @@ impl Document {
         Ok(chunks)
     }
 
-    pub(crate) fn chunk(&self, idx: ChunkIdx) -> Option<Chunk> {
-        self.chunk_cache.get(&idx.chunker_id)?.get(&idx.text_part_id)?.get(idx.chunk_idx).and_then(|chunk_cache| {
-            let text_part = self.text_parts.iter().find(|(id, _)| id == &idx.text_part_id)?;
-            Some(Chunk {
-                text: text_part.1.as_str(),
-                data: chunk_cache,
-                idx,
+    #[instrument(skip(self), level = "trace", err)]
+    pub(crate) fn chunk(&self, idx: ChunkIdx) -> Result<Chunk<'_>, GetChunkError> {
+        let text_part = self.text_parts.iter().find(|(id, _)| id == &idx.text_part_id)
+            .ok_or_else(|| GetChunkError::NoSuchTextPart(idx.text_part_id.clone()))?;
+        self.chunker_cache.get(&idx.chunker_id)
+            .ok_or_else(|| GetChunkError::CacheNotLoaded(idx.chunker_id.clone()))?
+            .get(&idx.text_part_id)
+            .ok_or_else(|| GetChunkError::TextPartNotChunked(idx.chunker_id.clone(), idx.text_part_id.clone()))?
+            .get(idx.chunk_idx)
+            .ok_or_else(|| GetChunkError::ChunkIdxOutOfBounds(idx.chunker_id.clone(), idx.text_part_id.clone(), idx.chunk_idx))
+            .and_then(|chunk_cache| {
+                Ok(Chunk {
+                    text: text_part.1.as_str(),
+                    data: chunk_cache,
+                    idx,
+                })
             })
-        })
+    }
+
+    #[instrument(skip(self), level = "trace", err)]
+    pub(crate) fn chunk_mut(&mut self, idx: ChunkIdx) -> Result<ChunkMut<'_>, GetChunkError> {
+        let text_part = self.text_parts.iter().find(|(id, _)| id == &idx.text_part_id)
+            .ok_or_else(|| GetChunkError::NoSuchTextPart(idx.text_part_id.clone()))?;
+        self.chunker_cache.get_mut(&idx.chunker_id)
+            .ok_or_else(|| GetChunkError::CacheNotLoaded(idx.chunker_id.clone()))?
+            .get_mut(&idx.text_part_id)
+            .ok_or_else(|| GetChunkError::TextPartNotChunked(idx.chunker_id.clone(), idx.text_part_id.clone()))?
+            .get_mut(idx.chunk_idx)
+            .ok_or_else(|| GetChunkError::ChunkIdxOutOfBounds(idx.chunker_id.clone(), idx.text_part_id.clone(), idx.chunk_idx))
+            .and_then(|chunk_cache| {
+                Ok(ChunkMut {
+                    text: text_part.1.as_str(),
+                    data: chunk_cache,
+                    idx,
+                })
+            })
     }
 
     fn read_cache_file<T: DeserializeOwned>(&self, name: &str) -> impl Future<Output = Result<Option<T>, AccessStorageError>> + use<T> {
@@ -255,12 +278,62 @@ impl Document {
         }
     }
 
-    #[instrument(skip(self, data))]
+    async fn chunker_cache(&self, chunker_id: &str) -> Result<&HashMap<String, Vec<ChunkCache>>, AccessStorageError> {
+        if self.chunker_cache.contains_key(chunker_id) {
+            return Ok(self.chunker_cache.get(chunker_id).unwrap());
+        }
+        let read_cache = self.read_cache_file(format!(".chunks_{}.yaml", chunker_id).as_str());
+        let _chunker_cache = Self::load_chunker_cache(
+            &mut HashMap::new(), 
+            &chunker_id, 
+            read_cache, 
+            |e| Err(e),
+        ).await?;
+        // May just remove the method instead of implementing this. It's not clear lazy loading 
+        // through a shared reference is even useful. The method `chunk()` couldn't call it
+        // regardless because it's not `async`. It seems more straightforward simply to load
+        // the cache once through a mutable reference before accessing chunks.
+        unimplemented!("Lazy loading of chunk cache not implemented; would need interior mutability");
+    }
+
+    #[instrument(skip(self), level = "debug", err)]
+    pub(crate) async fn chunker_cache_mut(&mut self, chunker_id: &str) -> Result<&mut HashMap<String, Vec<ChunkCache>>, AccessStorageError> {
+        let read_cache = self.read_cache_file(format!(".chunks_{}.yaml", chunker_id).as_str());
+        Self::load_chunker_cache(
+            &mut self.chunker_cache, 
+            &chunker_id, 
+            read_cache, 
+            |e| Err(e),
+        ).await
+    }
+
+    #[instrument(skip(chunker_cache, read_cache, handle_err), level = "debug", err)]
+    async fn load_chunker_cache<'a, F: FnOnce(AccessStorageError) -> Result<HashMap<String, Vec<ChunkCache>>, AccessStorageError> + Sized>(
+        chunker_cache: &'a mut HashMap<String, HashMap<String, Vec<ChunkCache>>>,
+        chunker_id: &str,
+        read_cache: impl Future<Output = Result<Option<HashMap<String, Vec<ChunkCache>>>, AccessStorageError>>,
+        handle_err: F,
+    ) -> Result<&'a mut HashMap<String, Vec<ChunkCache>>, AccessStorageError> {
+        match chunker_cache.entry(chunker_id.to_string()) {
+            Entry::Occupied(occupied) => Ok(occupied.into_mut()),
+            Entry::Vacant(vacant) => {
+                let chunker_cache = read_cache.await
+                    .map(|opt| opt.unwrap_or_else(|| {
+                        debug!("Cache not found for chunker '{}', creating new cache", chunker_id);
+                        HashMap::new()
+                    }))
+                    .or_else(handle_err)?;
+                Ok(vacant.insert(chunker_cache))
+            },
+        }
+    }
+
+    #[instrument(skip(self, data), level = "debug", err)]
     async fn write_cache_file<T: Serialize + ?Sized>(&self, name: &str, data: &T) -> Result<(), AccessStorageError> {
         let cache_path = self.attachment_path_raw(name);
         debug!("Writing cache file {:?}", cache_path);
         let content = serde_yaml_ng::to_string(data)?;
-        trace!("Cache file content:\n{}", content);
+        trace!("Serialized content length: {} bytes", content.len());
         // Ensure directory exists
         fs::create_dir_all(cache_path.parent().unwrap()).await?;
         let mut file = OpenOptions::new()
@@ -273,6 +346,7 @@ impl Document {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn load(&mut self) -> Result<(), AccessStorageError> {
         // Attempt to load cache from cache file
         let read_cache = self.read_cache_file(".cache.yaml");
@@ -340,7 +414,7 @@ impl Document {
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(doc_path = %self.path().display()), err)]
     pub async fn save(&mut self) -> Result<(), AccessStorageError> {
         info!("Saving document {:?}", self.absolute_path);
         // Save text and metadata to appropriate location
@@ -407,7 +481,7 @@ impl Document {
         self.write_cache_file(".cache.yaml", &self.cache).await?;
 
         // Save chunk cache to chunk cache file for each chunker
-        for (chunker_id, chunk_cache) in &self.chunk_cache {
+        for (chunker_id, chunk_cache) in &self.chunker_cache {
             self.write_cache_file(format!(".chunks_{}.yaml", chunker_id).as_str(), chunk_cache).await?;
         }
 
@@ -549,7 +623,7 @@ pub(crate) async fn open_document(
         text_hash: Default::default(),
         doc_hash: Default::default(),
         cache: Default::default(),
-        chunk_cache: Default::default(),
+        chunker_cache: Default::default(),
     };
     doc.load().await?;
     Ok(doc)
@@ -722,6 +796,21 @@ impl ChunkIdx {
     pub(crate) fn new(chunker_id: impl Into<String>, text_part_id: impl Into<String>, chunk_idx: usize) -> Self {
         Self { chunker_id: chunker_id.into(), text_part_id: text_part_id.into(), chunk_idx }
     }
+}
+
+#[derive(Debug, Error)]
+pub enum GetChunkError {
+    #[error("No such text part in document: '{}'", .0)]
+    NoSuchTextPart(String),   // text_part_id
+
+    #[error("Cache not loaded for chunker '{}'", .0)]
+    CacheNotLoaded(String),    // chunker_id
+    
+    #[error("Text part not found for chunker '{}' and text part '{}'", .0, .1)]
+    TextPartNotChunked(String, String),   // chunker_id, text_part_id
+
+    #[error("Chunk index {} out of bounds for chunker '{}' and text part '{}'", .2, .0, .1)]
+    ChunkIdxOutOfBounds(String, String, usize),   // chunker_id, text_part_id, chunk_idx
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -992,7 +1081,7 @@ extensions:
         // Create chunk cache for a chunker
         let chunker_id = "test_chunker".to_string();
         let text_part_id = String::new();
-        doc.chunk_cache.insert(chunker_id.clone(), HashMap::from([
+        doc.chunker_cache.insert(chunker_id.clone(), HashMap::from([
             (text_part_id.clone(), vec![
                 ChunkCache {
                     chunk: crate::chunking::ChunkData { text_range: 0..5, heading_path: None, token_count: None },
@@ -1012,7 +1101,7 @@ extensions:
 
         // Check chunk cache file
         let cache_content = fs::read_to_string(&dir.join(ATTACHMENTS_DIR).join("doc.md").join(format!(".chunks_{}.yaml", chunker_id))).await.unwrap();
-        let expected_cache = serde_yaml_ng::to_string(&doc.chunk_cache.get(&chunker_id)).unwrap();
+        let expected_cache = serde_yaml_ng::to_string(&doc.chunker_cache.get(&chunker_id)).unwrap();
         assert_eq!(cache_content, expected_cache);
     }
 
