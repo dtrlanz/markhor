@@ -1134,4 +1134,225 @@ extensions:
         let expected_metadata = serde_yaml_ng::to_string(&doc.metadata).unwrap();
         assert_eq!(file_content, format!("---\n{}---\n<milestone unit=\"part\" n=\"part1\" />\nHello\n<milestone unit=\"part\" n=\"part2\" />\nworld\n", expected_metadata));
     }
+
+    // The following 8 tests cover the different constellations of original content (UTF-8 or 
+    // binary), text content (UTF-8, if any) and metadata (YAML, if any) that the current
+    // implementation is designed to support. The possibilities may be grouped by source
+    // content as follows:
+    //
+    // ## Source is Markdown
+    // - no binary content
+    // - text is always in source file
+    // - metadata may be in source file, in separate metadata file, or missing
+    //
+    // ## Source is UTF-8 but not Markdown (e.g., CSV)
+    // - no binary content
+    // - text is always in source file
+    // - metadata may be in separate metadata file or missing (metadata in source file is not 
+    //   supported for non-Markdown files)
+    //
+    // ## Source is binary (or not guaranteed to be UTF-8)
+    // - source file contains binary content, no text content
+    // - text (e.g., OCRed or transcribed) may be in separate metadata file or missing
+    // - metadata may be in separate metadata file or missing; if metadata file exists, it must 
+    //   contain metadata and not text only
+    //
+    // Across all constellations, the implementation should infer which elements exist and where
+    // they are located, even if metadata does not specify these details.
+    //
+    // Moreover, the implementation should not modify files unexpectedly. Metadata files should
+    // not be created or updated implicitly when opening a document. When a document is loaded
+    // and then saved without changes, files should remain unchanged.
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn markdown_without_metadata() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "hello world",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+
+        // Load document
+        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+        assert_eq!(doc.path(), "doc.md");
+        assert_eq!(doc.text().as_deref(), Some("hello world"));
+
+        // Save document
+        doc.save().await.unwrap();
+
+        // File(s) must be unchanged
+        let content = fs::read_to_string(&dir.join("doc.md")).await.unwrap();
+        assert_eq!(content, "hello world");
+        let metadata_path = dir.join(format!("doc.md.{}", METADATA_EXTENSION));
+        assert_eq!(fs::try_exists(metadata_path).await.unwrap(), false);
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn markdown_with_integrated_metadata() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/markdown\n---\nhello world",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+
+        // Load document
+        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+        assert_eq!(doc.path(), "doc.md");
+        assert_eq!(doc.text().as_deref(), Some("hello world"));
+        assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
+
+        // Save document
+        doc.save().await.unwrap();
+
+        // File(s) must be unchanged
+        let content = fs::read_to_string(&dir.join("doc.md")).await.unwrap();
+        assert_eq!(content, "---\nid: 123e4567-e89b-12d3-a456-426614174000\n---\nhello world");
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn markdown_with_separate_metadata_file() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "hello world",
+            format!("doc.md.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/markdown\n---\n",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+
+        // Load document
+        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+        assert_eq!(doc.path(), "doc.md");
+        assert_eq!(doc.text().as_deref(), Some("hello world"));
+        assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
+
+        // Save document
+        doc.save().await.unwrap();
+
+        // File(s) must be unchanged
+        let content = fs::read_to_string(&dir.join("doc.md")).await.unwrap();
+        assert_eq!(content, "hello world");
+        let metadata_path = dir.join(format!("doc.md.{}", METADATA_EXTENSION));
+        assert_eq!(fs::try_exists(metadata_path).await.unwrap(), false);
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn csv_without_metadata() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.csv" => "a,b,c\n1,2,3",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+
+        // Load document
+        let mut doc = open_document(&dir.join("doc.csv"), ws.clone()).await.unwrap();
+        assert_eq!(doc.path(), "doc.csv");
+        assert_eq!(doc.text().as_deref(), Some("a,b,c\n1,2,3"));
+
+        // Save document
+        doc.save().await.unwrap();
+
+        // File(s) must be unchanged
+        let content = fs::read_to_string(&dir.join("doc.csv")).await.unwrap();
+        assert_eq!(content, "a,b,c\n1,2,3");
+        let metadata_path = dir.join(format!("doc.csv.{}", METADATA_EXTENSION));
+        assert_eq!(fs::try_exists(metadata_path).await.unwrap(), false);
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn csv_with_separate_metadata_file() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.csv" => "a,b,c\n1,2,3",
+            format!("doc.csv.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/csv\n---\n",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+
+        // Load document
+        let mut doc = open_document(&dir.join("doc.csv"), ws.clone()).await.unwrap();
+        assert_eq!(doc.path(), "doc.csv");
+        assert_eq!(doc.text().as_deref(), Some("a,b,c\n1,2,3"));
+        assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
+
+        // Save document
+        doc.save().await.unwrap();
+
+        // File(s) must be unchanged
+        let content = fs::read_to_string(&dir.join("doc.csv")).await.unwrap();
+        assert_eq!(content, "a,b,c\n1,2,3");
+        let metadata_path = dir.join(format!("doc.csv.{}", METADATA_EXTENSION));
+        assert_eq!(fs::try_exists(metadata_path).await.unwrap(), false);
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn pdf_without_text_or_metadata() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.pdf" => "%PDF-1.4\n%âãÏÓ\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+
+        // Load document
+        let mut doc = open_document(&dir.join("doc.pdf"), ws.clone()).await.unwrap();
+        assert_eq!(doc.path(), "doc.pdf");
+        assert_eq!(doc.text(), None);
+
+        // Save document
+        doc.save().await.unwrap();
+
+        // File(s) must be unchanged
+        let content = fs::read_to_string(&dir.join("doc.pdf")).await.unwrap();
+        assert_eq!(content, "%PDF-1.4\n%âãÏÓ\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF");
+        let metadata_path = dir.join(format!("doc.pdf.{}", METADATA_EXTENSION));
+        assert_eq!(fs::try_exists(metadata_path).await.unwrap(), false);
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn pdf_with_metadata_without_text() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.pdf" => "%PDF-1.4\n%âãÏÓ\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF",
+            format!("doc.pdf.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\n---\n",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+
+        // Load document
+        let mut doc = open_document(&dir.join("doc.pdf"), ws.clone()).await.unwrap();
+        assert_eq!(doc.path(), "doc.pdf");
+        assert_eq!(doc.text(), None);
+        assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
+
+        // Save document
+        doc.save().await.unwrap();
+
+        // File(s) must be unchanged
+        let content = fs::read_to_string(&dir.join("doc.pdf")).await.unwrap();
+        assert_eq!(content, "%PDF-1.4\n%âãÏÓ\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF");
+        let metadata_path = dir.join(format!("doc.pdf.{}", METADATA_EXTENSION));
+        assert_eq!(fs::try_exists(metadata_path).await.unwrap(), false);
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn pdf_with_text_and_metadata() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.pdf" => "%PDF-1.4\n%âãÏÓ\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF",
+            format!("doc.pdf.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\ntext_location: metadata-file\n---\nHello world",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+        
+        // Load document
+        let mut doc = open_document(&dir.join("doc.pdf"), ws.clone()).await.unwrap();
+        assert_eq!(doc.path(), "doc.pdf");
+        assert_eq!(doc.text().as_deref(), Some("Hello world"));
+        assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
+
+        // Save document
+        doc.save().await.unwrap();
+
+        // File(s) must be unchanged
+        let content = fs::read_to_string(&dir.join("doc.pdf")).await.unwrap();
+        assert_eq!(content, "%PDF-1.4\n%âãÏÓ\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF");
+        let metadata_path = dir.join(format!("doc.pdf.{}", METADATA_EXTENSION));
+        assert_eq!(fs::try_exists(metadata_path).await.unwrap(), false);
+    }
+
 }
