@@ -359,60 +359,80 @@ impl Document {
             read_cache.await
         });
 
-        // Attempt to load metadata from metadata file
-        match read_markdown_file::<DocumentMetadata>(&self.metadata_path()).await {
-            Ok((text, Ok(metadata))) => {
-                if metadata.metadata_location != MetadataLocation::MetadataFile {
-                    // TODO: return actual error
-                    // Alternatively: Emit warning and treat as unrelated file
-                    //   In that case, adjust next error case below accordingly
-                    error!("Metadata location in metadata file is {:?}, but expected MetadataFile.", metadata.metadata_location);
-                }
-                let mut text_option = None;
-                if metadata.source_is_text() {
-                    // Source is text file. Ignore any text suffixed to metadata.
-                    text_option = Some(fs::read_to_string(&self.absolute_path).await?);
-                    if text.trim_end() != "" {
-                        warn!("Ignoring text content in metadata file {:?}.", self.metadata_path());
+        self.update_text(None);
+
+        if self.metadata.metadata_location == MetadataLocation::MetadataFile 
+            || self.metadata.metadata_location == MetadataLocation::Unknown
+        {
+            // Attempt to load metadata from metadata file
+            match read_markdown_file::<DocumentMetadata>(&self.metadata_path()).await {
+                Ok((text, Ok(metadata))) => {
+                    debug!("Loaded metadata from metadata file {:?}", self.metadata_path());
+                    if metadata.metadata_location == MetadataLocation::MetadataFile {
+                        if metadata.source_is_text() {
+                            // Source is text file. Ignore any text suffixed to metadata.
+                            if text.trim_end() != "" {
+                                warn!("Ignoring text content in metadata file {:?}.", self.metadata_path());
+                            }
+                        } else {
+                            // Source is not a text file. Use text suffixed to metadata if available.
+                            if text.trim_start() != "" {
+                                self.update_text(Some(text));
+                            }
+                        }
+                        self.metadata = metadata;
+                        self.metadata.metadata_location.update_unknown(MetadataLocation::MetadataFile);
+                    } else {
+                        warn!("{:?} appears to be a metadata file and contains valid metadata, but does not declare metadata location as `metadata_location: metadata-file`; treating it as an independent file unrelated to {:?}", self.metadata_path(), self.path());
                     }
-                } else {
-                    // Source is not a text file. Use text suffixed to metadata if available.
-                    if text.trim_start() != "" {
-                        text_option = Some(text);
+                },
+                Ok((_, Err(e))) => {
+                    warn!("{:?} does not contain valid metadata ({}); treating it as an independent file unrelated to {:?}", self.metadata_path(), e, self.path());
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    if self.metadata.metadata_location == MetadataLocation::MetadataFile {
+                        return Err(AccessStorageError::MetadataLocation(MetadataLocation::MetadataFile, "Metadata file not found".into()));
                     }
-                }
-                self.metadata = metadata;
-                self.update_text(text_option);
-                return Ok(());
-            },
-            Ok((_, Err(e))) => {
-                return Err(AccessStorageError::MetadataFormat(e));
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Metadata file not found, try source file
-                debug!("Metadata file not found for document {:?}, trying source file", self.absolute_path);
-            },
-            Err(e) => {
-                return Err(AccessStorageError::Io(e));
-            },
+                    // Metadata file not found, try source file
+                    debug!("Metadata file not found for document {:?}, trying source file", self.absolute_path);
+                },
+                Err(e) => {
+                    return Err(AccessStorageError::Io(e));
+                },
+            }
         }
 
-        // Read text and metadata from source file
-        let mut metadata_location = MetadataLocation::SourceFile;
-        let (text, metadata_result) = read_markdown_file::<DocumentMetadata>(&self.absolute_path).await?;
-        let metadata = match metadata_result {
-            Ok(metadata) => metadata,
-            Err(e) => {
-                // Not an error. Text files other than Markdown are not expected to contain 
-                // metadata.
-                debug!("Could not read metadata from source file {:?}: {}", self.absolute_path, e);
-                // Create metadata
-                let metadata = DocumentMetadata::from_path(&self.absolute_path);
-                metadata
+        if self.metadata.metadata_location == MetadataLocation::SourceFile 
+            || self.metadata.metadata_location == MetadataLocation::Unknown
+            && self.metadata.source_is_markdown()
+        {
+            // Read text and metadata from source file
+            let (text, metadata_result) = read_markdown_file::<DocumentMetadata>(&self.absolute_path).await?;
+            let metadata = match metadata_result {
+                Ok(metadata) => metadata,
+                Err(e) => {
+                    if self.metadata.metadata_location == MetadataLocation::SourceFile {
+                        // Metadata was expected. Return error.
+                        return Err(AccessStorageError::MetadataFormat(e));
+                    }
+                    // Not an error. Metadata blocks are not required.
+                    debug!("Could not read metadata from source file {:?}: {}", self.absolute_path, e);
+                    // Create default metadata
+                    let mut metadata = DocumentMetadata::from_path(&self.absolute_path);
+                    metadata.metadata_location = MetadataLocation::None;
+                    metadata
+                }
+            };
+            self.metadata = metadata;
+            self.update_text(Some(text));
+        } else {
+            self.metadata.metadata_location.update_unknown(MetadataLocation::None);
+            if self.metadata.source_is_text() {
+                // Read text from source file
+                let text = fs::read_to_string(&self.absolute_path).await?;
+                self.update_text(Some(text));
             }
-        };
-        self.metadata = metadata;
-        self.update_text(Some(text));
+        }
 
         self.cache = cache.await.unwrap().ok().flatten().unwrap_or_default();
 
@@ -467,6 +487,9 @@ impl Document {
                     warn!("Metadata will not be saved for document {:?} because metadata_location is None.", self.absolute_path);
                 }
             },
+            MetadataLocation::Unknown => {
+                return Err(AccessStorageError::MetadataLocation(MetadataLocation::Unknown, "Invalid when saving".into()));
+            }
         }
 
         // Save cache to cache file
@@ -648,10 +671,25 @@ pub enum MetadataLocation {
     SourceFile,
     MetadataFile,
     None,
+    Unknown,    // Used temporarily when opening a document, then replaced with
+                // the actual location
+}
+
+impl MetadataLocation {
+    fn update_unknown(&mut self, location: MetadataLocation) {
+        if *self == MetadataLocation::Unknown {
+            *self = location;
+        }
+    }
 }
 
 impl Default for MetadataLocation {
     fn default() -> Self {
+        // Default is not `Unknown` because when you're deserializing metadata, you know where it
+        // is stored. Using `SourceFile` as default has the advantage that you can shave 1 line
+        // off metadata blocks in source files (since default values do not need to be serialized).
+        // The assumption is that in most cases, you'd rather have the source file slightly less 
+        // cluttered than the metadata file.
         MetadataLocation::SourceFile
     }
 }
@@ -677,7 +715,7 @@ impl DocumentMetadata {
             id: Uuid::new_v4(),
             mime,
             // text_location: Default::default(),
-            metadata_location: MetadataLocation::None,
+            metadata_location: MetadataLocation::Unknown,
             doc_parts: Default::default(),
             other_fields: Default::default(),
         }
@@ -1353,7 +1391,7 @@ extensions:
     async fn pdf_with_metadata_without_text() {
         let dir = TempTree::new(fs_tree! {
             "doc.pdf" => "%PDF-1.4\n%âãÏÓ\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF",
-            format!("doc.pdf.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\n---\n",
+            format!("doc.pdf.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\nmetadata_location: metadata-file\n---\n",
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
 
@@ -1369,8 +1407,8 @@ extensions:
         // File(s) must be unchanged
         let content = fs::read_to_string(&dir.join("doc.pdf")).await.unwrap();
         assert_eq!(content, "%PDF-1.4\n%âãÏÓ\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF");
-        let metadata_path = dir.join(format!("doc.pdf.{}", METADATA_EXTENSION));
-        assert_eq!(fs::try_exists(metadata_path).await.unwrap(), false);
+        let metadata = fs::read_to_string(&dir.join(format!("doc.pdf.{}", METADATA_EXTENSION))).await.unwrap();
+        assert_eq!(metadata, "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\nmetadata_location: metadata-file\n---\n");
     }
 
     #[tokio::test]
@@ -1378,7 +1416,7 @@ extensions:
     async fn pdf_with_text_and_metadata() {
         let dir = TempTree::new(fs_tree! {
             "doc.pdf" => "%PDF-1.4\n%âãÏÓ\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF",
-            format!("doc.pdf.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\ntext_location: metadata-file\n---\nHello world",
+            format!("doc.pdf.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\nmetadata_location: metadata-file\n---\nHello world",
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
         
@@ -1394,8 +1432,7 @@ extensions:
         // File(s) must be unchanged
         let content = fs::read_to_string(&dir.join("doc.pdf")).await.unwrap();
         assert_eq!(content, "%PDF-1.4\n%âãÏÓ\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF");
-        let metadata_path = dir.join(format!("doc.pdf.{}", METADATA_EXTENSION));
-        assert_eq!(fs::try_exists(metadata_path).await.unwrap(), false);
+        let metadata = fs::read_to_string(&dir.join(format!("doc.pdf.{}", METADATA_EXTENSION))).await.unwrap();
+        assert_eq!(metadata, "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\nmetadata_location: metadata-file\n---\nHello world");
     }
-
 }

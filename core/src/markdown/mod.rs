@@ -74,6 +74,12 @@ impl<'a> Markdown<'a> {
                     _ => {},
                 }
             }
+            if inside_yaml == false {
+                return Markdown {
+                    content: "",
+                    options: self.options.clone(),
+                };
+            }
         }
         self.clone()
     }
