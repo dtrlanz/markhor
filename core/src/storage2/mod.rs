@@ -11,7 +11,7 @@ use thiserror::Error;
 pub use document::{
     Document,
     DocumentMetadata,
-    TextLocation,
+    // TextLocation,
     MetadataLocation,
     Chunk,
     ChunkMut,
@@ -52,7 +52,10 @@ pub enum AccessStorageError {
     InWorkspace(PathBuf),
 
     #[error("Metadata serialization/deserialization error")]
-    Metadata(#[from] serde_yaml_ng::Error),
+    MetadataFormat(#[from] serde_yaml_ng::Error),
+
+    #[error("Invalid metadata location: {0:?} ({1})")]
+    MetadataLocation(MetadataLocation, String),
 
     #[error("Invalid ID: {0}")]
     InvalidId(String),

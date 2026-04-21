@@ -59,11 +59,15 @@ impl<'a> Markdown<'a> {
     pub fn skip_metadata(&self) -> Self {
         let mut parser = self.parser().into_offset_iter();
         if let Some((Event::Start(Tag::MetadataBlock(..)), _)) = parser.next() {
+            let mut inside_yaml = true;
             while let Some((event, range)) = parser.next() {
                 match event {
                     Event::End(TagEnd::MetadataBlock(..)) => {
+                        inside_yaml = false;
+                    },
+                    Event::Start(_) if !inside_yaml => {
                         return Markdown {
-                            content: &self.content[range.end..],
+                            content: &self.content[range.start..],
                             options: self.options.clone(),
                         };
                     },
@@ -496,7 +500,7 @@ Some text."#;
         assert_eq!(metadata["author"], "Test Author");
 
         let skipped = md.skip_metadata();
-        assert_eq!(skipped.content, "\nSome text.");
+        assert_eq!(skipped.content, "Some text.");
 
         #[derive(Debug, Deserialize)]
         struct DocInfo {

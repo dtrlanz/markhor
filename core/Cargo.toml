@@ -26,6 +26,7 @@ clap = { version = "4.5.35", features = ["cargo"] }
 pulldown-cmark = "0.13.0"
 sha2 = "0.10.9"
 hex = "0.4.3"
+mime_guess2 = "2.3.1"
 
 
 [dev-dependencies]
