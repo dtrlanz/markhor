@@ -62,7 +62,8 @@ impl<T: ?Sized> F11y<T> {
         let suffix = match self.functionality_type {
             _ => "",
         };
-        format!("{} {}{}", self.extension.uri(), self.functionality_type, suffix)
+        format!("{} {}{}", sanitize_filename::sanitize(self.extension.uri()),
+            self.functionality_type, suffix)
     }
 }
 
@@ -94,6 +95,7 @@ pub enum FunctionalityType {
 impl Display for FunctionalityType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         serde_json::to_string(self)
+            .map(|s| s.trim_matches('"').to_string())
             .map_err(|_| std::fmt::Error)?
             .fmt(f)
     }
