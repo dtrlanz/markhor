@@ -224,8 +224,9 @@ impl Document {
         Ok(chunks)
     }
 
-    #[instrument(skip(self), level = "trace", err)]
+    #[instrument(skip(self), fields(doc_path = %self.path().display()), level = "trace", err)]
     pub(crate) fn chunk(&self, idx: ChunkIdx) -> Result<Chunk<'_>, GetChunkError> {
+        trace!("Text parts: {:?}", self.text_parts);
         let text_part = self.text_parts.iter().find(|(id, _)| id == &idx.text_part_id)
             .ok_or_else(|| GetChunkError::NoSuchTextPart(idx.text_part_id.clone()))?;
         self.chunker_cache.get(&idx.chunker_id)
@@ -243,8 +244,9 @@ impl Document {
             })
     }
 
-    #[instrument(skip(self), level = "trace", err)]
+    #[instrument(skip(self), fields(doc_path = %self.path().display()), level = "trace", err)]
     pub(crate) fn chunk_mut(&mut self, idx: ChunkIdx) -> Result<ChunkMut<'_>, GetChunkError> {
+        trace!("Text parts: {:?}", self.text_parts);
         let text_part = self.text_parts.iter().find(|(id, _)| id == &idx.text_part_id)
             .ok_or_else(|| GetChunkError::NoSuchTextPart(idx.text_part_id.clone()))?;
         self.chunker_cache.get_mut(&idx.chunker_id)
@@ -797,7 +799,7 @@ pub(crate) struct ExtensionCache {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ChunkCache {
+pub(crate) struct ChunkCache {
     #[serde(flatten)]
     chunk: crate::chunking::ChunkData,
     hash: TextHash,
