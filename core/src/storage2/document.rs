@@ -353,6 +353,34 @@ impl Document {
         Ok(())
     }
 
+    pub(crate) async fn open(workspace: Workspace, absolute_path: &Path) -> Result<Self, AccessStorageError> {
+        // Check if path exists and all that
+        let absolute_path = fs::canonicalize(&absolute_path).await
+            .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound {
+                AccessStorageError::FileNotFound(absolute_path.to_path_buf())
+            } else {
+                AccessStorageError::Io(e)
+        })?;
+        // Check if path is inside of workspace
+        if !absolute_path.starts_with(&workspace.path()) {
+            return Err(AccessStorageError::NotInWorkspace(absolute_path));
+        }
+
+        let metadata = DocumentMetadata::from_path(&absolute_path);
+        let mut doc = Document {
+            absolute_path,
+            workspace,
+            metadata,
+            text_parts: Vec::new(),
+            text_hash: Default::default(),
+            doc_hash: Default::default(),
+            cache: Default::default(),
+            chunker_cache: Default::default(),
+        };
+        doc.load().await?;
+        Ok(doc)
+    }
+
     #[instrument(skip(self), level = "debug", err)]
     async fn load(&mut self) -> Result<(), AccessStorageError> {
         // Attempt to load cache from cache file
@@ -613,38 +641,6 @@ impl<'a> Iterator for Chunks<'a> {
         Some(chunk)
     }
 }
-
-pub(crate) async fn open_document(
-    absolute_path: &Path,
-    workspace: Workspace,
-) -> Result<Document, AccessStorageError> {
-    // Check if path exists and all that
-    let absolute_path = fs::canonicalize(&absolute_path).await
-        .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound {
-            AccessStorageError::FileNotFound(absolute_path.to_path_buf())
-        } else {
-            AccessStorageError::Io(e)
-    })?;
-    // Check if path is inside of workspace
-    if !absolute_path.starts_with(&workspace.path()) {
-        return Err(AccessStorageError::NotInWorkspace(absolute_path));
-    }
-
-    let metadata = DocumentMetadata::from_path(&absolute_path);
-    let mut doc = Document {
-        absolute_path,
-        workspace,
-        metadata,
-        text_parts: Vec::new(),
-        text_hash: Default::default(),
-        doc_hash: Default::default(),
-        cache: Default::default(),
-        chunker_cache: Default::default(),
-    };
-    doc.load().await?;
-    Ok(doc)
-}
-
 
 async fn read_markdown_file<T: DeserializeOwned>(path: &Path) -> Result<(String, Result<T, serde_yaml_ng::Error>), std::io::Error> {
     let content = fs::read_to_string(path).await?;
@@ -944,7 +940,7 @@ mod tests {
     use crate::storage2::fs_test_utils::{TempTree, fs_tree};
 
     #[tokio::test]
-    async fn helper_open_document() {
+    async fn document_open() {
         let metadata: DocumentMetadata = DocumentMetadata::new("text/markdown".parse().unwrap());
         let metadata_str = serde_yaml_ng::to_string(&metadata).unwrap();
 
@@ -955,19 +951,19 @@ mod tests {
         let ws = Workspace::open(&dir).await.unwrap();
 
         // Document without metadata
-        let doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+        let doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.workspace(), &ws);
         assert_eq!(doc.text().as_deref(), Some("foo"));
 
         // 2nd time
-        let doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+        let doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.workspace(), &ws);
         assert_eq!(doc.text().as_deref(), Some("foo"));
 
         // Document with metadata
-        let doc = open_document(&dir.join("doc2.md"), ws.clone()).await.unwrap();
+        let doc = Document::open(ws.clone(), &dir.join("doc2.md")).await.unwrap();
         assert_eq!(doc.path(), "doc2.md");
         assert_eq!(doc.workspace(), &ws);
         assert_eq!(doc.metadata.id, metadata.id);
@@ -988,7 +984,7 @@ extensions:
             },
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
-        let doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+        let doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
 
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.workspace(), &ws);
@@ -1005,7 +1001,7 @@ extensions:
             "doc.md" => "hello world",
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
-        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+        let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
 
         assert_eq!(doc.text().as_deref(), Some("hello world"));
 
@@ -1034,7 +1030,7 @@ extensions:
             "doc.md" => "hello world",
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
-        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+        let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
 
         let initial_text_hash = doc.text_hash();
         let initial_doc_hash = doc.doc_hash();
@@ -1055,7 +1051,7 @@ extensions:
             "doc.md" => "",
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
-        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+        let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
 
         // Set locations
         doc.metadata.metadata_location = MetadataLocation::SourceFile;
@@ -1078,7 +1074,7 @@ extensions:
             "doc.md" => "",
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
-        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+        let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
 
         // Set locations
         doc.metadata.metadata_location = MetadataLocation::MetadataFile;
@@ -1105,7 +1101,7 @@ extensions:
             "doc.pdf" => "",
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
-        let mut doc = open_document(&dir.join("doc.pdf"), ws.clone()).await.unwrap();
+        let mut doc = Document::open(ws.clone(), &dir.join("doc.pdf")).await.unwrap();
 
         // Set locations
         doc.metadata.metadata_location = MetadataLocation::MetadataFile;
@@ -1132,7 +1128,7 @@ extensions:
             "doc.md" => "hello world",
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
-        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+        let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
 
         // Update cache
         doc.cache.extensions.insert("foo".to_string(), ExtensionCache {
@@ -1156,7 +1152,7 @@ extensions:
             "doc.md" => "hello world",
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
-        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+        let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
 
         // Create chunk cache for a chunker
         let chunker_id = "test_chunker".to_string();
@@ -1192,7 +1188,7 @@ extensions:
             "doc.md" => "",
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
-        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+        let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
 
         // Ensure metadata is saved
         doc.metadata.metadata_location = MetadataLocation::SourceFile;
@@ -1253,7 +1249,7 @@ extensions:
         let ws = Workspace::open(&dir).await.unwrap();
 
         // Load document
-        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+        let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.text().as_deref(), Some("hello world"));
 
@@ -1276,7 +1272,7 @@ extensions:
         let ws = Workspace::open(&dir).await.unwrap();
 
         // Load document
-        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+        let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.text().as_deref(), Some("hello world"));
         assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
@@ -1299,7 +1295,7 @@ extensions:
         let ws = Workspace::open(&dir).await.unwrap();
 
         // Load document
-        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+        let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.text().as_deref(), Some("hello world"));
         assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
@@ -1323,7 +1319,7 @@ extensions:
         let ws = Workspace::open(&dir).await.unwrap();
 
         // Load document
-        let mut doc = open_document(&dir.join("doc.csv"), ws.clone()).await.unwrap();
+        let mut doc = Document::open(ws.clone(), &dir.join("doc.csv")).await.unwrap();
         assert_eq!(doc.path(), "doc.csv");
         assert_eq!(doc.text().as_deref(), Some("a,b,c\n1,2,3"));
 
@@ -1347,7 +1343,7 @@ extensions:
         let ws = Workspace::open(&dir).await.unwrap();
 
         // Load document
-        let mut doc = open_document(&dir.join("doc.csv"), ws.clone()).await.unwrap();
+        let mut doc = Document::open(ws.clone(), &dir.join("doc.csv")).await.unwrap();
         assert_eq!(doc.path(), "doc.csv");
         assert_eq!(doc.text().as_deref(), Some("a,b,c\n1,2,3"));
         assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
@@ -1371,7 +1367,7 @@ extensions:
         let ws = Workspace::open(&dir).await.unwrap();
 
         // Load document
-        let mut doc = open_document(&dir.join("doc.pdf"), ws.clone()).await.unwrap();
+        let mut doc = Document::open(ws.clone(), &dir.join("doc.pdf")).await.unwrap();
         assert_eq!(doc.path(), "doc.pdf");
         assert_eq!(doc.text(), None);
 
@@ -1395,7 +1391,7 @@ extensions:
         let ws = Workspace::open(&dir).await.unwrap();
 
         // Load document
-        let mut doc = open_document(&dir.join("doc.pdf"), ws.clone()).await.unwrap();
+        let mut doc = Document::open(ws.clone(), &dir.join("doc.pdf")).await.unwrap();
         assert_eq!(doc.path(), "doc.pdf");
         assert_eq!(doc.text(), None);
         assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
@@ -1420,7 +1416,7 @@ extensions:
         let ws = Workspace::open(&dir).await.unwrap();
         
         // Load document
-        let mut doc = open_document(&dir.join("doc.pdf"), ws.clone()).await.unwrap();
+        let mut doc = Document::open(ws.clone(), &dir.join("doc.pdf")).await.unwrap();
         assert_eq!(doc.path(), "doc.pdf");
         assert_eq!(doc.text().as_deref(), Some("Hello world"));
         assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());

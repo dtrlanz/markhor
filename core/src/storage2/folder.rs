@@ -3,7 +3,7 @@ use std::{backtrace, path::{Path, PathBuf}, sync::Arc};
 use tokio::fs::{self, ReadDir};
 use tracing::instrument;
 
-use crate::storage2::{AccessStorageError, Document, document::open_document, workspace::find_workspace_descendant};
+use crate::storage2::{AccessStorageError, Document};
 
 use super::Workspace;
 
@@ -108,7 +108,7 @@ impl Folder {
         } else {
             self.absolute_path.join(path)
         };
-        open_document(&absolute_path, self.workspace.clone()).await
+        Document::open(self.workspace.clone(), &absolute_path).await
     }
 }
 
@@ -160,8 +160,8 @@ impl Read {
                         if path.extension().and_then(|ext| ext.to_str()) == Some(crate::storage2::METADATA_EXTENSION) {
                             continue;
                         }
-                        let document = open_document(&path, self.workspace.clone()).await?;
-                        ReadEntry::Document(document)
+                            let document = Document::open(self.workspace.clone(), &path).await?;
+                            ReadEntry::Document(document)
                     } else {
                         // Ignore other types of entries (symlinks, etc.)
                         continue;
