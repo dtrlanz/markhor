@@ -1,15 +1,16 @@
 use mime::Mime;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256, digest::{OutputSizeUser, generic_array::GenericArray}};
-use thiserror::Error;
 use tokio::io::{AsyncWriteExt};
 use uuid::Uuid;
 use tokio::fs::{self, OpenOptions};
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, info, instrument, trace, warn};
 use std::{borrow::Borrow, collections::{HashMap, hash_map::Entry}, ffi::OsStr, path::{Path, PathBuf}, sync::Mutex};
 
-use crate::{chunking::{Chunker, ChunkerError}, embedding::Embedding, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES, WITHOUT_XML}, storage2::{ATTACHMENTS_DIR, AccessStorageError, METADATA_EXTENSION, Tag, Workspace}};
+use crate::{chunking::{Chunker, ChunkerError}, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES, WITHOUT_XML}, storage2::{ATTACHMENTS_DIR, AccessStorageError, METADATA_EXTENSION, Tag, Workspace}};
 
+pub mod chunks;
+use chunks::{Chunk, ChunkCache, ChunkIdx, ChunkMut, Chunks, GetChunkError};
 
 #[derive(Debug)]
 pub struct Document {
@@ -473,7 +474,7 @@ impl Document {
     pub async fn save(&mut self) -> Result<(), AccessStorageError> {
         info!("Saving document {:?}", self.absolute_path);
         // Save text and metadata to appropriate location
-        match (self.metadata.metadata_location) {
+        match self.metadata.metadata_location {
             MetadataLocation::SourceFile => {
                 if !self.metadata.source_is_markdown() {
                     return Err(AccessStorageError::MetadataLocation(
@@ -606,42 +607,6 @@ impl Document {
     }
 }
 
-pub struct Chunks<'a> {
-    chunker_id: String,
-    text_parts: Vec<&'a (String, String)>,
-    data: &'a HashMap<String, Vec<ChunkCache>>,
-    chunk_idx: usize,
-}
-
-impl<'a> Iterator for Chunks<'a> {
-    type Item = Chunk<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.text_parts.is_empty() {
-            return None;
-        }
-        let (text_id, _text) = self.text_parts[0];
-        let chunks = self.data.get(text_id)?;
-        if self.chunk_idx >= chunks.len() {
-            self.text_parts.remove(0);
-            self.chunk_idx = 0;
-            return self.next();
-        }
-        let chunk_data = &chunks[self.chunk_idx];
-        let chunk = Chunk {
-            data: chunk_data,
-            text: self.text_parts.iter().find(|(id, _text)| id == text_id).unwrap().1.as_str(),
-            idx: ChunkIdx {
-                chunker_id: self.chunker_id.clone(),
-                text_part_id: text_id.to_string(),
-                chunk_idx: self.chunk_idx,
-            },
-        };
-        self.chunk_idx += 1;
-        Some(chunk)
-    }
-}
-
 async fn read_markdown_file<T: DeserializeOwned>(path: &Path) -> Result<(String, Result<T, serde_yaml_ng::Error>), std::io::Error> {
     let content = fs::read_to_string(path).await?;
     let markdown = content.to_markdown(WITH_MILESTONES);
@@ -748,21 +713,6 @@ impl DocumentMetadata {
     }
 }
 
-// #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-// #[serde(rename_all = "kebab-case")]
-// pub enum TextLocation {
-//     SourceFile,
-//     MetadataFile,
-//     Inferred,
-//     None,
-// }
-
-// impl Default for TextLocation {
-//     fn default() -> Self {
-//         TextLocation::Inferred
-//     }
-// }
-
 mod mime_serde {
     use super::*;
     use serde::{Serializer, Deserializer};
@@ -794,104 +744,6 @@ pub(crate) struct ExtensionCache {
     data: serde_yaml_ng::Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct ChunkCache {
-    #[serde(flatten)]
-    chunk: crate::chunking::ChunkData,
-    hash: TextHash,
-    embeddings: HashMap<String, Embedding>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Chunk<'a> {
-    data: &'a ChunkCache,
-    text: &'a str,
-    idx: ChunkIdx,
-}
-
-impl<'a> Chunk<'a> {
-    pub fn text(&self) -> &'a str {
-        &self.text[self.data.chunk.text_range.clone()]
-    }
-
-    pub fn hash(&self) -> &TextHash {
-        &self.data.hash
-    }
-
-    pub(crate) fn chunk_idx(&self) -> &ChunkIdx {
-        &self.idx
-    }
-
-    pub fn embedding(&self, embedder_id: &str) -> Option<&Embedding> {
-        self.data.embeddings.get(embedder_id)
-    }
-}
-
-#[derive(Debug)]
-pub struct ChunkMut<'a> {
-    data: &'a mut ChunkCache,
-    text: &'a str,
-    idx: ChunkIdx,
-}
-
-impl<'a> ChunkMut<'a> {
-    pub fn text(&self) -> &'a str {
-        &self.text[self.data.chunk.text_range.clone()]
-    }
-
-    pub fn hash(&self) -> &TextHash {
-        &self.data.hash
-    }
-
-    pub(crate) fn chunk_idx(&self) -> &ChunkIdx {
-        &self.idx
-    }
-
-    pub fn embedding(&self, embedder_id: &str) -> Option<&Embedding> {
-        self.data.embeddings.get(embedder_id)
-    }
-
-    pub fn embedding_mut(&mut self, embedder_id: &str) -> Option<&mut Embedding> {
-        self.data.embeddings.get_mut(embedder_id)
-    }
-
-    pub fn embedding_entry(&mut self, embedder_id: String) -> Entry<'_, String, Embedding> {
-        self.data.embeddings.entry(embedder_id)
-    }
-}
-
-/// Index type for storing chunks in a vector store.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ChunkIdx {
-    // TODO: make this more efficient by using numeric IDs for chunkers and text parts instead of strings
-    chunker_id: String,
-    text_part_id: String,
-    chunk_idx: usize,
-}
-
-// Used in unit tests to create chunk indices without needing a chunker or document
-#[cfg(test)]
-impl ChunkIdx {
-    pub(crate) fn new(chunker_id: impl Into<String>, text_part_id: impl Into<String>, chunk_idx: usize) -> Self {
-        Self { chunker_id: chunker_id.into(), text_part_id: text_part_id.into(), chunk_idx }
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum GetChunkError {
-    #[error("No such text part in document: '{}'", .0)]
-    NoSuchTextPart(String),   // text_part_id
-
-    #[error("Cache not loaded for chunker '{}'", .0)]
-    CacheNotLoaded(String),    // chunker_id
-    
-    #[error("Text part not found for chunker '{}' and text part '{}'", .0, .1)]
-    TextPartNotChunked(String, String),   // chunker_id, text_part_id
-
-    #[error("Chunk index {} out of bounds for chunker '{}' and text part '{}'", .2, .0, .1)]
-    ChunkIdxOutOfBounds(String, String, usize),   // chunker_id, text_part_id, chunk_idx
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TextHash {
     value: GenericArray<u8, <Sha256 as OutputSizeUser>::OutputSize>,
@@ -915,7 +767,6 @@ impl<'a> FromIterator<&'a str> for TextHash {
     }
 }
 
-
 impl Serialize for TextHash {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
         let hex_string = self.value.iter().map(|byte| format!("{:02x}", byte)).collect::<String>();
@@ -936,7 +787,7 @@ impl<'de> Deserialize<'de> for TextHash {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{chunking::test_chunker::FixedSizeChunkerExtension, extension::{ActiveExtension}};
+    use crate::{chunking::test_chunker::FixedSizeChunkerExtension, embedding::Embedding, extension::ActiveExtension};
     use crate::storage2::fs_test_utils::{TempTree, fs_tree};
 
     #[tokio::test]

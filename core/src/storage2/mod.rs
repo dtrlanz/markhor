@@ -13,11 +13,10 @@ pub use document::{
     DocumentMetadata,
     // TextLocation,
     MetadataLocation,
-    Chunk,
-    ChunkMut,
+    chunks::{Chunk, ChunkMut},
     TextHash,
 };
-pub(crate) use document::{ChunkIdx};
+pub(crate) use document::chunks::ChunkIdx;
 pub use folder::Folder;
 pub use retriever::Retriever;
 pub use scope::{PrelimFilter, Scope};
