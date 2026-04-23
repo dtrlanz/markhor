@@ -1046,85 +1046,82 @@ extensions:
         assert_ne!(initial_doc_hash, updated_doc_hash);
     }
 
-    // #[tokio::test]
-    // #[test_log::test]
-    // async fn save_both_in_source_file() {
-    //     let dir: TempTree<'_> = TempTree::new(fs_tree! {
-    //         "doc.md" => "",
-    //     }).await.unwrap();
-    //     let ws = Workspace::open(&dir).await.unwrap();
-    //     let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+    #[tokio::test]
+    #[test_log::test]
+    async fn save_both_in_source_file() {
+        let dir: TempTree<'_> = TempTree::new(fs_tree! {
+            "doc.md" => "",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
 
-    //     // Set locations
-    //     doc.metadata.text_location = TextLocation::SourceFile;
-    //     doc.metadata_location = MetadataLocation::SourceFile;
-    //     // Set text
-    //     doc.update_text(Some("Hello world".to_string()));
+        // Set locations
+        doc.metadata.metadata_location = MetadataLocation::SourceFile;
+        // Set text
+        doc.update_text(Some("Hello world".to_string()));
 
-    //     // Save
-    //     doc.save().await.unwrap();
+        // Save
+        doc.save().await.unwrap();
 
-    //     // Check source file
-    //     let content = fs::read_to_string(&dir.join("doc.md")).await.unwrap();
-    //     let expected_metadata = serde_yaml_ng::to_string(&doc.metadata).unwrap();
-    //     assert_eq!(content, format!("---\n{}---\nHello world", expected_metadata));
-    // }
+        // Check source file
+        let content = fs::read_to_string(&dir.join("doc.md")).await.unwrap();
+        let expected_metadata = serde_yaml_ng::to_string(&doc.metadata).unwrap();
+        assert_eq!(content, format!("---\n{}---\nHello world", expected_metadata));
+    }
 
-    // #[tokio::test]
-    // #[test_log::test]
-    // async fn save_text_in_source_metadata_in_metadata_file() {
-    //     let dir = TempTree::new(fs_tree! {
-    //         "doc.md" => "",
-    //     }).await.unwrap();
-    //     let ws = Workspace::open(&dir).await.unwrap();
-    //     let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+    #[tokio::test]
+    #[test_log::test]
+    async fn save_text_in_source_metadata_in_metadata_file() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+        let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
 
-    //     // Set locations
-    //     doc.metadata.text_location = TextLocation::SourceFile;
-    //     doc.metadata_location = MetadataLocation::MetadataFile;
-    //     // Set text
-    //     doc.update_text(Some("Hello world".to_string()));
+        // Set locations
+        doc.metadata.metadata_location = MetadataLocation::MetadataFile;
+        // Set text
+        doc.update_text(Some("Hello world".to_string()));
 
-    //     // Save
-    //     doc.save().await.unwrap();
+        // Save
+        doc.save().await.unwrap();
 
-    //     // Check source file has text
-    //     let source_content = fs::read_to_string(&dir.join("doc.md")).await.unwrap();
-    //     assert_eq!(source_content, "Hello world");
+        // Check source file has text
+        let source_content = fs::read_to_string(&dir.join("doc.md")).await.unwrap();
+        assert_eq!(source_content, "Hello world");
 
-    //     // Check metadata file
-    //     let metadata_content = fs::read_to_string(&dir.join(format!("doc.md.{}", METADATA_EXTENSION))).await.unwrap();
-    //     let expected_metadata = serde_yaml_ng::to_string(&doc.metadata).unwrap();
-    //     assert_eq!(metadata_content, format!("---\n{}---\n", expected_metadata));
-    // }
+        // Check metadata file
+        let metadata_content = fs::read_to_string(&dir.join(format!("doc.md.{}", METADATA_EXTENSION))).await.unwrap();
+        let expected_metadata = serde_yaml_ng::to_string(&doc.metadata).unwrap();
+        assert_eq!(metadata_content, format!("---\n{}---\n", expected_metadata));
+    }
 
-    // #[tokio::test]
-    // #[test_log::test]
-    // async fn save_both_in_metadata_file() {
-    //     let dir = TempTree::new(fs_tree! {
-    //         "doc.md" => "",
-    //     }).await.unwrap();
-    //     let ws = Workspace::open(&dir).await.unwrap();
-    //     let mut doc = open_document(&dir.join("doc.md"), ws.clone()).await.unwrap();
+    #[tokio::test]
+    #[test_log::test]
+    async fn save_both_in_metadata_file() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.pdf" => "",
+        }).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+        let mut doc = open_document(&dir.join("doc.pdf"), ws.clone()).await.unwrap();
 
-    //     // Set locations
-    //     doc.metadata.text_location = TextLocation::MetadataFile;
-    //     doc.metadata_location = MetadataLocation::MetadataFile;
-    //     // Set text
-    //     doc.update_text(Some("Hello world".to_string()));
+        // Set locations
+        doc.metadata.metadata_location = MetadataLocation::MetadataFile;
+        // Set text
+        doc.update_text(Some("Hello world".to_string()));
 
-    //     // Save
-    //     doc.save().await.unwrap();
+        // Save
+        doc.save().await.unwrap();
 
-    //     // Check source file is empty or unchanged
-    //     let source_content = fs::read_to_string(&dir.join("doc.md")).await.unwrap();
-    //     assert_eq!(source_content, "");
+        // Check source file is empty or unchanged
+        let source_content = fs::read_to_string(&dir.join("doc.pdf")).await.unwrap();
+        assert_eq!(source_content, "");
 
-    //     // Check metadata file has both
-    //     let metadata_content = fs::read_to_string(&dir.join(format!("doc.md.{}", METADATA_EXTENSION))).await.unwrap();
-    //     let expected_metadata = serde_yaml_ng::to_string(&doc.metadata).unwrap();
-    //     assert_eq!(metadata_content, format!("---\n{}---\nHello world", expected_metadata));
-    // }
+        // Check metadata file has both
+        let metadata_content = fs::read_to_string(&dir.join(format!("doc.pdf.{}", METADATA_EXTENSION))).await.unwrap();
+        let expected_metadata = serde_yaml_ng::to_string(&doc.metadata).unwrap();
+        assert_eq!(metadata_content, format!("---\n{}---\nHello world", expected_metadata));
+    }
 
     #[tokio::test]
     #[test_log::test]
