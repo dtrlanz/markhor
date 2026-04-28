@@ -40,6 +40,19 @@ impl Text {
         &mut self.parts
     }
 
+    pub fn push_part(&mut self, part: Part) {
+        // Ensure unique id
+        if self.parts.iter().any(|p| p.id == part.id) {
+            // TODO: Handle duplicate part id error more robustly
+            warn!("Duplicate text part id '{}', skipping", part.id);
+            return;
+        }
+
+        // Text changed, so invalidate the hash
+        self.hash = OnceLock::new();
+        self.parts.push(part);
+    }
+
     pub fn import(&mut self, source_str: Option<&str>, keyword: Option<&str>) {
         // Invalidate hash
         self.hash = OnceLock::new();

@@ -11,6 +11,29 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    pub async fn create(path: impl AsRef<Path>) -> Result<Self, AccessStorageError> {
+        // TODO: consider creating workspace config directory and files directly, or add options 
+        // to control this behavior
+        // TODO: add unit tests
+        let absolute_path = fs::canonicalize(path.as_ref()).await
+            .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound {
+                AccessStorageError::DirectoryNotFound(path.as_ref().to_path_buf())
+            } else {
+                AccessStorageError::Io(e)
+        })?;
+        if let Some(ws) = find_workspace_descendant(&absolute_path).await? {
+            return Err(AccessStorageError::InWorkspace(ws));
+        }
+        fs::create_dir_all(&absolute_path).await?;
+        Ok(Self {
+            inner: Arc::new(WorkspaceInner {
+                absolute_path,
+                metadata: WorkspaceMetadata::default(),
+                embeddings: Default::default(),
+            }),
+        })
+    }
+
     /// Returns the root path of the workspace.
     pub fn path(&self) -> &Path {
         self.inner.absolute_path.as_path()

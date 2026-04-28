@@ -1,15 +1,15 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
-use crate::{chat::{chat::ChatApi, prompter::Prompter, ChatError}, chunking::Chunker, convert::{ConversionError, Converter}, embedding::{Embedder, EmbeddingError}, extension::{ActiveExtension, Extension, F11y, UseExtensionError}, storage::{self, Content, Document, Folder, Scope}};
+use crate::{chat::{chat::ChatApi, prompter::Prompter, ChatError}, chunking::Chunker, convert::{ConversionError, Converter}, embedding::{Embedder, EmbeddingError}, extension::{ActiveExtension, Extension, F11y, UseExtensionError}, storage2::{AccessStorageError, Document, Folder, Scope}};
 use mime::Mime;
 use thiserror::Error;
 use tokio::{io::AsyncRead, sync::mpsc::{error::SendError, UnboundedReceiver, UnboundedSender}, task::JoinHandle};
 use tracing::instrument;
 
-pub mod search;
+// pub mod search;
 mod chat;
 
-pub use chat::{chat, simple_rag};
+pub use chat::chat;
 
 /// A unit of work that can be executed asynchronously.
 /// 
@@ -113,12 +113,10 @@ impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> 
     }
 
     /// Add all documents in a folder to the job's assets.
-    pub async fn add_folder(&mut self, folder: Folder) -> Result<&mut Self, storage::Error> {
-        for doc in folder.list_documents().await? {
+    pub async fn add_folder(&mut self, folder: Folder) -> Result<&mut Self, AccessStorageError> {
+        let mut read = folder.read_recursive().await?;
+        while let Some(doc) = read.next_entry().await? {
             self.add_document(doc);
-        }
-        for folder in folder.list_folders().await? {
-            Box::pin(self.add_folder(folder)).await?;
         }
         Ok(self)
     }
@@ -251,7 +249,7 @@ impl Assets {
     /// This method will try to convert the input content to the specified output type using the
     /// available extensions. If no extension is able to perform the conversion, an error will be 
     /// returned.
-    pub async fn convert(&self, input: Content, output_type: Mime) -> Result<Vec<Box<dyn AsyncRead + Unpin>>, ConversionError> {
+    pub async fn convert(&self, input: PathBuf, output_type: Mime) -> Result<Vec<Box<dyn AsyncRead + Unpin>>, ConversionError> {
         tracing::debug!("Converting content to {}", output_type);
         let converters = self.extensions.iter()
             .filter_map(|ext| 
@@ -449,7 +447,7 @@ pub enum RunJobError {
     Prompt(#[from] crate::chat::prompter::PromptError),
 
     #[error("Job failed due to storage error: {0}")]
-    Storage(#[from] storage::Error),
+    Storage(#[from] AccessStorageError),
 
     #[error("Job failed: {0}")]
     Other(Box<dyn std::error::Error + Send + Sync>),

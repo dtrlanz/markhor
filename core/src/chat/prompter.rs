@@ -33,6 +33,9 @@ pub enum PromptError {
     #[error("Prompt input failed due to IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("Prompt failed due to storage error: {0}")]
+    Storage(#[from] crate::storage2::AccessStorageError),
+
     #[error("Prompt failed to execute to completion: {0}")]
     Async(#[from] tokio::task::JoinError),
 

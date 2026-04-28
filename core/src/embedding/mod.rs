@@ -1,12 +1,12 @@
 mod error;
 mod embedder;
-mod vector_store;
+// mod vector_store;
 
 use std::ops::Deref;
 
 pub use error::{EmbeddingError};
 pub use embedder::{Embedder, EmbeddingUseCase};
-pub use vector_store::{VectorStore, ChunkDataResult};
+// pub use vector_store::{VectorStore, ChunkDataResult};
 
 use serde::{Deserialize, Serialize};
 

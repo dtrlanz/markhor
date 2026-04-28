@@ -1,4 +1,4 @@
-use markhor_core::{chat::prompter::Prompter, extension::Extension, storage::Folder};
+use markhor_core::{chat::prompter::Prompter, extension::Extension, storage2::Folder};
 
 pub mod prompter;
 

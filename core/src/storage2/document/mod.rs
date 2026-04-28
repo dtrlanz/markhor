@@ -12,7 +12,7 @@ use crate::{chunking::{Chunker, ChunkerError}, extension::F11y, markdown::{ToMar
 pub mod chunks;
 pub mod text;
 use chunks::{Chunk, ChunkCache, ChunkIdx, ChunkMut, Chunks, GetChunkError};
-pub use text::Text;
+pub use text::{Text, Part};
 
 #[derive(Debug, Clone)]
 pub struct Document {
@@ -61,6 +61,10 @@ impl Document {
 
     pub async fn text_mut(&mut self) -> &mut Text {
         self.text.get_mut().unwrap()
+    }
+
+    pub fn metadata(&self) -> &DocumentMetadata {
+        &self.metadata
     }
 
     fn metadata_block(&self) -> Result<String, serde_yaml_ng::Error> {

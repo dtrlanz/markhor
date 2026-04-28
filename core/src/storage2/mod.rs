@@ -16,9 +16,11 @@ pub use document::{
     // TextLocation,
     MetadataLocation,
     chunks::{Chunk, ChunkMut},
+    Text, 
+    Part,
 };
 pub(crate) use document::chunks::ChunkIdx;
-pub use folder::Folder;
+pub use folder::{Folder, ReadEntry};
 pub use retriever::Retriever;
 pub use scope::{PrelimFilter, Scope};
 pub use tag::Tag;
