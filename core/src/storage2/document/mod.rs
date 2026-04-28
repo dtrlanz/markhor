@@ -14,7 +14,7 @@ pub mod text;
 use chunks::{Chunk, ChunkCache, ChunkIdx, ChunkMut, Chunks, GetChunkError};
 pub use text::Text;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Document {
     /// Absolute path to the source file
     pub(crate) absolute_path: PathBuf,
