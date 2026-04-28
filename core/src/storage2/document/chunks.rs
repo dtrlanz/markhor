@@ -3,7 +3,7 @@ use std::collections::{HashMap, hash_map::Entry};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{embedding::Embedding, storage2::{TextHash, document::text::Part}};
+use crate::{embedding::Embedding, storage2::{HashValue, document::text::Part}};
 
 pub struct Chunks<'a> {
     pub(crate) chunker_id: String,
@@ -46,7 +46,7 @@ impl<'a> Iterator for Chunks<'a> {
 pub(crate) struct ChunkCache {
     #[serde(flatten)]
     pub(crate) chunk: crate::chunking::ChunkData,
-    pub(crate) hash: TextHash,
+    pub(crate) hash: HashValue,
     pub(crate) embeddings: HashMap<String, Embedding>,
 }
 
@@ -62,7 +62,7 @@ impl<'a> Chunk<'a> {
         &self.text[self.data.chunk.text_range.clone()]
     }
 
-    pub fn hash(&self) -> &TextHash {
+    pub fn hash(&self) -> &HashValue {
         &self.data.hash
     }
 
@@ -87,7 +87,7 @@ impl<'a> ChunkMut<'a> {
         &self.text[self.data.chunk.text_range.clone()]
     }
 
-    pub fn hash(&self) -> &TextHash {
+    pub fn hash(&self) -> &HashValue {
         &self.data.hash
     }
 

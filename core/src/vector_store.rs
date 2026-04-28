@@ -4,7 +4,7 @@ use std::{collections::{HashMap}, hash::{Hash, Hasher}, sync::Arc};
 use tokio::sync::{RwLock, mpsc::Receiver};
 use uuid::Uuid;
 
-use crate::{embedding::Embedding, storage2::{ChunkIdx, Document, PrelimFilter, TextHash}};
+use crate::{embedding::Embedding, storage2::{ChunkIdx, Document, PrelimFilter, HashValue}};
 
 #[derive(Debug, Default, Clone)]
 pub struct VectorStore {
@@ -16,7 +16,7 @@ impl VectorStore {
         Self::default()
     }
 
-    pub async fn insert_docs(&self, mut docs: Receiver<(DocVersionId, Vec<(ChunkIdx, TextHash, Embedding)>)>) {
+    pub async fn insert_docs(&self, mut docs: Receiver<(DocVersionId, Vec<(ChunkIdx, HashValue, Embedding)>)>) {
         // Insert vectors as they come in. Write in bursts to reduce contention on the write lock.
         let mut buffer = Vec::new();
         while let Some((doc, chunks)) = docs.recv().await {
@@ -77,7 +77,7 @@ impl VectorStore {
         }
     }
 
-    pub async fn select<I: IntoIterator<Item = (Uuid, TextHash)>>(&self, doc_ids: I) -> Result<VectorView, Vec<(Uuid, TextHash)>> {
+    pub async fn select<I: IntoIterator<Item = (Uuid, HashValue)>>(&self, doc_ids: I) -> Result<VectorView, Vec<(Uuid, HashValue)>> {
         let data = self.data.read().await;
         let mut results = Vec::new();
         let mut missing = Vec::new();
@@ -110,7 +110,7 @@ struct VectorData {
     docs: HashMap<DocVersionId, usize>,
     doc_chunks: Vec<Vec<ChunkEntry>>,
     vectors: Vec<Embedding>,
-    vector_hashes: HashMap<TextHash, usize>,
+    vector_hashes: HashMap<HashValue, usize>,
 }
 
 impl VectorData {
@@ -118,7 +118,7 @@ impl VectorData {
         self.docs.contains_key(doc)
     }
 
-    fn insert_doc<I: Iterator<Item = (ChunkIdx, TextHash, Embedding)>>(&mut self, doc: DocVersionId, chunks: I) {
+    fn insert_doc<I: Iterator<Item = (ChunkIdx, HashValue, Embedding)>>(&mut self, doc: DocVersionId, chunks: I) {
         let chunks = chunks.map(|(idx, vector_hash, vector)| {
             let vector_idx = self.insert_vector(vector_hash, vector);
             ChunkEntry { idx, vector_idx }
@@ -128,7 +128,7 @@ impl VectorData {
         self.docs.insert(doc, doc_idx);
     }
 
-    fn insert_vector(&mut self, hash: TextHash, vector: Embedding) -> usize {
+    fn insert_vector(&mut self, hash: HashValue, vector: Embedding) -> usize {
         if let Some(idx) = self.vector_hashes.get(&hash) {
             return *idx;
         }
@@ -141,7 +141,7 @@ impl VectorData {
 
 pub struct VectorView {
     data: Arc<RwLock<VectorData>>,
-    docs: Vec<(Uuid, TextHash, usize)>,
+    docs: Vec<(Uuid, HashValue, usize)>,
     min_threshold: f32,
 }
 
@@ -204,7 +204,7 @@ pub struct DocVersionId {
     pub id: Uuid,
     // Uniquely identifies version of document. This important when the vector store contains 
     // multiple versions of the same document.
-    pub hash: TextHash,
+    pub hash: HashValue,
     // Useful for filtering by scope.
     pub filter: PrelimFilter,
 }
@@ -243,7 +243,7 @@ struct ChunkEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchResult {
     pub doc_id: Uuid,
-    pub doc_hash: TextHash,
+    pub doc_hash: HashValue,
     pub chunk_idx: ChunkIdx,
     pub similarity: f32,
 }
@@ -281,12 +281,12 @@ mod tests {
 
         // Prepare data for insertion
         let vec1 = text1.iter()
-            .map(|t| TextHash::from(t))
+            .map(|t| HashValue::from(t))
             .zip(embs1.into_iter()).enumerate()
             .map(|(i, (hash, emb))| (ChunkIdx::new("test", "text1", i), hash, emb))
             .collect();
         let vec2 = text2.iter()
-            .map(|t| TextHash::from(t))
+            .map(|t| HashValue::from(t))
             .zip(embs2.into_iter()).enumerate()
             .map(|(i, (hash, emb))| (ChunkIdx::new("test", "text2", i), hash, emb))
             .collect();
@@ -295,12 +295,12 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::channel(2);
         tx.send((DocVersionId {
             id: Uuid::new_v4(),
-            hash: TextHash::from("doc1"),
+            hash: HashValue::from("doc1"),
             filter: PrelimFilter {},
         }, vec1)).await.unwrap();
         tx.send((DocVersionId {
             id: Uuid::new_v4(),
-            hash: TextHash::from("doc2"),
+            hash: HashValue::from("doc2"),
             filter: PrelimFilter {},
         }, vec2)).await.unwrap();
         mem::drop(tx);  // Close the channel so the vector store knows when to stop waiting for more docs
@@ -317,17 +317,17 @@ mod tests {
         // Top-k search
         let results = view.top_k(sample.clone(), 4).await;
         assert_eq!(results.len(), 4);
-        assert_eq!(results[0].doc_hash, TextHash::from("doc1"));
+        assert_eq!(results[0].doc_hash, HashValue::from("doc1"));
         assert_eq!(results[0].chunk_idx, ChunkIdx::new("test", "text1", 0));
         assert!((results[0].similarity - 1.0).abs() < 1e-6);  // Exact match
-        assert_eq!(results[1].doc_hash, TextHash::from("doc1"));
+        assert_eq!(results[1].doc_hash, HashValue::from("doc1"));
         assert_eq!(results[1].chunk_idx, ChunkIdx::new("test", "text1", 1));
         assert!((results[1].similarity - 1.0).abs() > 0.1);  // Similar but not exact
         assert!((results[1].similarity - 1.0).abs() < 0.2);
-        assert_eq!(results[2].doc_hash, TextHash::from("doc2"));
+        assert_eq!(results[2].doc_hash, HashValue::from("doc2"));
         assert_eq!(results[2].chunk_idx, ChunkIdx::new("test", "text2", 0));
         assert!((results[2].similarity - 1.0).abs() < 0.6);
-        assert_eq!(results[3].doc_hash, TextHash::from("doc2"));
+        assert_eq!(results[3].doc_hash, HashValue::from("doc2"));
         assert_eq!(results[3].chunk_idx, ChunkIdx::new("test", "text2", 1));
         assert!((results[3].similarity - 1.0).abs() < 0.6);
 

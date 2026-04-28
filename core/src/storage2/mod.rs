@@ -14,7 +14,7 @@ pub use document::{
     // TextLocation,
     MetadataLocation,
     chunks::{Chunk, ChunkMut},
-    TextHash,
+    HashValue,
 };
 pub(crate) use document::chunks::ChunkIdx;
 pub use folder::Folder;

@@ -23,7 +23,7 @@ pub struct Document {
     workspace: Workspace,
     text: tokio::sync::OnceCell<Text>,
     metadata: DocumentMetadata,
-    metadata_hash: std::sync::OnceLock<TextHash>,
+    metadata_hash: std::sync::OnceLock<HashValue>,
     cache: DocCache,
     chunker_cache: HashMap<String, HashMap<String, Vec<ChunkCache>>>,
 }
@@ -68,14 +68,14 @@ impl Document {
         Ok(format!("---\n{}---\n", yaml))
     }
 
-    pub async fn doc_hash(&self) -> TextHash {
+    pub async fn doc_hash(&self) -> HashValue {
         let md_hash = self.metadata_hash.get_or_init(|| {
             let mut hasher = Sha256::new();
             hasher.update(serde_yaml_ng::to_string(&self.metadata).unwrap());
             // Path is included because it affects which scopes the document belongs in the same
             // way that metadata tags do.
             hasher.update(self.absolute_path.as_os_str().as_encoded_bytes());
-            TextHash { value: hasher.finalize() }
+            HashValue { value: hasher.finalize() }
         });
         self.text().await.hash() ^ *md_hash
     }
@@ -677,58 +677,58 @@ struct DocCache {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct ExtensionCache {
     #[serde(default)] #[serde(skip_serializing_if = "is_default")]
-    hash: Option<TextHash>,
+    hash: Option<HashValue>,
     #[serde(default)] #[serde(skip_serializing_if = "is_default")]
     data: serde_yaml_ng::Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TextHash {
+pub struct HashValue {
     value: GenericArray<u8, <Sha256 as OutputSizeUser>::OutputSize>,
 }
 
-impl BitXor for TextHash {
+impl BitXor for HashValue {
     type Output = Self;
 
     fn bitxor(self, rhs: Self) -> Self::Output {
         let value = self.value.iter().zip(rhs.value.iter())
             .map(|(a, b)| a ^ b)
             .collect::<Vec<u8>>();
-        TextHash { value: GenericArray::from_slice(&value).clone() }
+        HashValue { value: GenericArray::from_slice(&value).clone() }
     }
 }
 
-impl<T: Borrow<str> + ?Sized> From<&T> for TextHash {
+impl<T: Borrow<str> + ?Sized> From<&T> for HashValue {
     fn from(value: &T) -> Self {
         let mut hasher = sha2::Sha256::new();
         hasher.update(value.borrow().as_bytes());
-        TextHash { value: hasher.finalize() }
+        HashValue { value: hasher.finalize() }
     }
 }
 
-impl<'a> FromIterator<&'a str> for TextHash {
-    fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
-        let mut hasher = sha2::Sha256::new();
-        for value in iter {
-            hasher.update(value.as_bytes());
-        }
-        TextHash { value: hasher.finalize() }
-    }
-}
+// impl<'a> FromIterator<&'a str> for HashValue {
+//     fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
+//         let mut hasher = sha2::Sha256::new();
+//         for value in iter {
+//             hasher.update(value.as_bytes());
+//         }
+//         HashValue { value: hasher.finalize() }
+//     }
+// }
 
-impl Serialize for TextHash {
+impl Serialize for HashValue {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
         let hex_string = self.value.iter().map(|byte| format!("{:02x}", byte)).collect::<String>();
         serializer.serialize_str(&hex_string)
     }
 }
 
-impl<'de> Deserialize<'de> for TextHash {
+impl<'de> Deserialize<'de> for HashValue {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> where D: serde::Deserializer<'de> {
         let hex_string = String::deserialize(deserializer)?;
         let bytes = hex::decode(hex_string).map_err(serde::de::Error::custom)?;
         let value = GenericArray::from_slice(&bytes).clone();
-        Ok(TextHash { value })
+        Ok(HashValue { value })
     }
 }
 
@@ -927,7 +927,7 @@ extensions:
 
         // Update cache
         doc.cache.extensions.insert("foo".to_string(), ExtensionCache {
-            hash: Some(TextHash::from("hello world")),
+            hash: Some(HashValue::from("hello world")),
             data: 42.into(),
         });
 
@@ -956,12 +956,12 @@ extensions:
             (text_part_id.clone(), vec![
                 ChunkCache {
                     chunk: crate::chunking::ChunkData { text_range: 0..5, heading_path: None, token_count: None },
-                    hash: TextHash::from("hello"),
+                    hash: HashValue::from("hello"),
                     embeddings: HashMap::new(),
                 },
                 ChunkCache {
                     chunk: crate::chunking::ChunkData { text_range: 5..11, heading_path: None, token_count: None },
-                    hash: TextHash::from(" world"),
+                    hash: HashValue::from(" world"),
                     embeddings: HashMap::new(),
                 },
             ])

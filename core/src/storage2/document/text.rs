@@ -3,11 +3,11 @@ use std::{collections::HashMap, ops::{Deref, DerefMut}, sync::OnceLock};
 
 use tracing::{debug, info, instrument, trace, warn};
 
-use crate::{chunking::{Chunker, ChunkerError}, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES, WITHOUT_XML}, storage2::{TextHash, document::chunks::ChunkCache}};
+use crate::{chunking::{Chunker, ChunkerError}, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES, WITHOUT_XML}, storage2::{HashValue, document::chunks::ChunkCache}};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Text {
-    hash: OnceLock<TextHash>,
+    hash: OnceLock<HashValue>,
     parts: Vec<Part>,
 }
 
@@ -19,14 +19,14 @@ impl Text {
         }
     }
 
-    pub fn hash(&self) -> TextHash {
+    pub fn hash(&self) -> HashValue {
         self.hash.get_or_init(|| {
             let mut hasher = Sha256::new();
             for part in &self.parts {
                 hasher.update(part.id.as_bytes());
                 hasher.update(part.content.as_bytes());
             }
-            TextHash { value: hasher.finalize().into() }
+            HashValue { value: hasher.finalize().into() }
         }).clone()
     }
 
@@ -126,7 +126,7 @@ impl Part {
         cached_chunks.truncate(chunks.len());
         for (idx, chunk) in chunks.into_iter().enumerate() {
             let chunk_text = &self.content[chunk.text_range.clone()];
-            let hash = TextHash::from(chunk_text);
+            let hash = HashValue::from(chunk_text);
             if idx < cached_chunks.len() {
                 // Chunk has been cached before; check equality
                 if cached_chunks[idx].chunk != chunk || cached_chunks[idx].hash != hash {
