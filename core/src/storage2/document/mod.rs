@@ -1,16 +1,18 @@
 use mime::Mime;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256, digest::{OutputSizeUser, generic_array::GenericArray}};
-use tokio::io::{AsyncWriteExt};
+use tokio::{io::AsyncWriteExt};
 use uuid::Uuid;
 use tokio::fs::{self, OpenOptions};
-use tracing::{debug, info, instrument, trace, warn};
-use std::{borrow::Borrow, collections::{HashMap, hash_map::Entry}, ffi::OsStr, path::{Path, PathBuf}, sync::Mutex};
+use tracing::{debug, error, info, instrument, trace, warn};
+use std::{borrow::Borrow, collections::{HashMap, hash_map::Entry}, ffi::OsStr, ops::BitXor, path::{Path, PathBuf}, sync::Mutex};
 
 use crate::{chunking::{Chunker, ChunkerError}, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES, WITHOUT_XML}, storage2::{ATTACHMENTS_DIR, AccessStorageError, METADATA_EXTENSION, Tag, Workspace}};
 
 pub mod chunks;
+pub mod text;
 use chunks::{Chunk, ChunkCache, ChunkIdx, ChunkMut, Chunks, GetChunkError};
+pub use text::Text;
 
 #[derive(Debug)]
 pub struct Document {
@@ -19,10 +21,9 @@ pub struct Document {
 
     /// Workspace owning this document
     workspace: Workspace,
+    text: tokio::sync::OnceCell<Text>,
     metadata: DocumentMetadata,
-    text_parts: Vec<(String, String)>,
-    text_hash: Mutex<Option<TextHash>>,
-    doc_hash: Mutex<Option<TextHash>>,
+    metadata_hash: std::sync::OnceLock<TextHash>,
     cache: DocCache,
     chunker_cache: HashMap<String, HashMap<String, Vec<ChunkCache>>>,
 }
@@ -52,20 +53,14 @@ impl Document {
         std::iter::empty()
     }
 
-    pub fn text(&self) -> Option<String> {
-        if self.text_parts.is_empty() {
-            None
-        } else if self.text_parts.len() == 1 && self.text_parts[0].0.is_empty() {
-            Some(self.text_parts[0].1.clone())
-        } else {
-            let mut text = String::new();
-            for (id, part) in self.text_parts.iter() {
-                text.push_str(part.to_markdown(WITHOUT_XML)
-                    .prepend_milestone("part".into(), id, vec![]).as_ref());
-                text.push_str("\n");
-            }
-            Some(text)
-        }
+    pub async fn text(&self) -> &Text {
+        self.text.get_or_init(|| async { 
+            unimplemented!()
+        }).await
+    }
+
+    pub async fn text_mut(&mut self) -> &mut Text {
+        self.text.get_mut().unwrap()
     }
 
     fn metadata_block(&self) -> Result<String, serde_yaml_ng::Error> {
@@ -73,45 +68,16 @@ impl Document {
         Ok(format!("---\n{}---\n", yaml))
     }
 
-    pub fn text_parts(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.text_parts.iter().map(|(id, text)| (id.as_str(), text.as_str()))
-    }
-
-    pub fn text_parts_mut(&mut self) -> impl Iterator<Item = (&str, &mut String)> {
-        // Content may change, invalidate text hash
-        self.text_hash.get_mut().unwrap().take();
-        self.doc_hash.get_mut().unwrap().take();
-        self.text_parts.iter_mut().map(|(id, text)| (id.as_str(), text))
-    }
-
-    fn text_hash(&self) -> TextHash {
-        let mut text_hash = self.text_hash.lock().unwrap();
-        if text_hash.is_none() {
-            let text_iter = self.text_parts.iter()
-                .map(|(id, text)| [&**id, &**text].into_iter())
-                .flatten();
-            let r = TextHash::from_iter(text_iter);
-            *text_hash = Some(r);
-            r
-        } else {
-            text_hash.unwrap()
-        }
-    }
-
-    pub fn doc_hash(&self) -> TextHash {
-        let mut doc_hash = self.doc_hash.lock().unwrap();
-        if doc_hash.is_none() {
-            // hash of text and metadata
-            let text_hash = self.text_hash();
-            let mut hasher = sha2::Sha256::new();
-            hasher.update(text_hash.value);
+    pub async fn doc_hash(&self) -> TextHash {
+        let md_hash = self.metadata_hash.get_or_init(|| {
+            let mut hasher = Sha256::new();
             hasher.update(serde_yaml_ng::to_string(&self.metadata).unwrap());
-            let r = TextHash { value: hasher.finalize() };
-            *doc_hash = Some(r);
-            r
-        } else {
-            doc_hash.unwrap()
-        }
+            // Path is included because it affects which scopes the document belongs in the same
+            // way that metadata tags do.
+            hasher.update(self.absolute_path.as_os_str().as_encoded_bytes());
+            TextHash { value: hasher.finalize() }
+        });
+        self.text().await.hash() ^ *md_hash
     }
 
     pub(crate) fn extension_cache(&self, extension: &str) -> Option<&ExtensionCache> {
@@ -124,7 +90,11 @@ impl Document {
     /// Returns an iterator over all chunks in the document for the given chunker.
     async fn chunks(&mut self, chunker: &F11y<dyn Chunker>) -> Result<Chunks<'_>, ChunkerError> {
         let chunker_id = chunker.metadata_id();
-        let text_hash = self.text_hash();
+        // Get reference to text with lifetime tied to `self.text` only, not to `self` as a whole
+        self.text().await;
+        let text = self.text.get().unwrap();
+
+        let text_hash = text.hash();
         let chunker_cache_is_valid = self.cache.extensions
             .get(&chunker_id)
             .map(|ext_cache| ext_cache.hash == Some(text_hash))
@@ -144,39 +114,13 @@ impl Document {
 
         if !chunker_cache_is_valid {
             // Delete cache for any text parts that no longer exist
-            let text_part_ids: Vec<_> = self.text_parts.iter().map(|(id, _)| id).collect();
-            chunker_cache.retain(|text_id, _| text_part_ids.contains(&text_id));
+            let text_part_ids: Vec<_> = text.parts().iter().map(|p| p.id()).collect();
+            chunker_cache.retain(|text_id, _| text_part_ids.contains(&text_id.as_str()));
 
-            // Re-chunk the document
-            for (id, text) in self.text_parts.iter() {
-                let cached_chunks = chunker_cache.entry(id.clone()).or_default();
-                let chunks = chunker.chunk(&text)?;
-                debug!("Generated {} chunks for text part '{}'", chunks.len(), id);
-                cached_chunks.truncate(chunks.len());
-                for (idx, chunk) in chunks.into_iter().enumerate() {
-                    let chunk_text = &text[chunk.text_range.clone()];
-                    let hash = TextHash::from(chunk_text);
-                    if idx < cached_chunks.len() {
-                        // Chunk has been cached before; check equality
-                        if cached_chunks[idx].chunk == chunk && cached_chunks[idx].hash == hash {
-                            // Cache is valid, skip
-                            continue;
-                        }
-                        // Cache is outdated, update & drop invalid embeddings
-                        cached_chunks[idx] = ChunkCache {
-                            chunk,
-                            hash,
-                            embeddings: HashMap::new(),
-                        };
-                    } else {
-                        // New chunk, add to cache
-                        cached_chunks.push(ChunkCache {
-                            chunk: chunk,
-                            hash,
-                            embeddings: HashMap::new(),
-                        });
-                    }
-                }
+            // Re-chunk existing text parts
+            for part in text.parts() {
+                let cached_chunks = chunker_cache.entry(part.id().into()).or_default();
+                part.validate_cached_chunks(chunker, cached_chunks)?;
             }
 
             // Update extension cache hash, indicating extension cache overall is now valid
@@ -185,7 +129,7 @@ impl Document {
 
         Ok(Chunks {
             chunker_id: chunker.metadata_id(),
-            text_parts: self.text_parts.iter().collect(),
+            text_parts: text.parts(),
             data: chunker_cache,
             chunk_idx: 0,
         })
@@ -198,13 +142,15 @@ impl Document {
         let chunker_id = chunker.metadata_id();
         self.chunks(chunker).await?;
 
-        // Create iterator over all chunks with text parts
-        let text_parts = &self.text_parts;
+        // Get reference to text parts with lifetime tied to `self.text` only, not to `self` as a whole
+        self.text().await;
+        let text_parts = self.text.get().unwrap().parts();
+
         let with_text_part = self.chunker_cache.get_mut(&chunker_id).unwrap()
             .iter_mut()
             .map(|(text_id, chunks)| {
-                let text_part = text_parts.iter().find(|(id, _)| id == text_id).unwrap();
-                (text_id, text_part.1.as_str(), chunks)
+                let part = text_parts.iter().find(|p| p.id() == text_id).unwrap();
+                (text_id, part.as_str(), chunks)
             });
         let chunk_parts = with_text_part
             .flat_map(|(text_id, text, chunks)| chunks.iter_mut()
@@ -227,8 +173,15 @@ impl Document {
 
     #[instrument(skip(self), fields(doc_path = %self.path().display()), level = "trace", err)]
     pub(crate) fn chunk(&self, idx: ChunkIdx) -> Result<Chunk<'_>, GetChunkError> {
-        trace!("Text parts: {:?}", self.text_parts);
-        let text_part = self.text_parts.iter().find(|(id, _)| id == &idx.text_part_id)
+        let text_part = self.text.get()
+            .ok_or_else(|| {
+                // TODO: come up with a more elegant solution here
+                // It might be cleaner if this was a method of `Text` instead of `Document`.
+                // Not a big deal for now because the method is not public.
+                error!("Text not loaded for document {:?} when trying to get chunk", self.absolute_path);
+                GetChunkError::NoSuchTextPart(idx.text_part_id.clone())
+            })?
+            .parts().iter().find(|p| p.id() == &idx.text_part_id)
             .ok_or_else(|| GetChunkError::NoSuchTextPart(idx.text_part_id.clone()))?;
         self.chunker_cache.get(&idx.chunker_id)
             .ok_or_else(|| GetChunkError::CacheNotLoaded(idx.chunker_id.clone()))?
@@ -238,7 +191,7 @@ impl Document {
             .ok_or_else(|| GetChunkError::ChunkIdxOutOfBounds(idx.chunker_id.clone(), idx.text_part_id.clone(), idx.chunk_idx))
             .and_then(|chunk_cache| {
                 Ok(Chunk {
-                    text: text_part.1.as_str(),
+                    text: text_part.as_str(),
                     data: chunk_cache,
                     idx,
                 })
@@ -247,8 +200,13 @@ impl Document {
 
     #[instrument(skip(self), fields(doc_path = %self.path().display()), level = "trace", err)]
     pub(crate) fn chunk_mut(&mut self, idx: ChunkIdx) -> Result<ChunkMut<'_>, GetChunkError> {
-        trace!("Text parts: {:?}", self.text_parts);
-        let text_part = self.text_parts.iter().find(|(id, _)| id == &idx.text_part_id)
+        let text_part = self.text.get()
+            .ok_or_else(|| {
+                // TODO: see above
+                error!("Text not loaded for document {:?} when trying to get chunk", self.absolute_path);
+                GetChunkError::NoSuchTextPart(idx.text_part_id.clone())
+            })?
+            .parts().iter().find(|p| p.id() == &idx.text_part_id)
             .ok_or_else(|| GetChunkError::NoSuchTextPart(idx.text_part_id.clone()))?;
         self.chunker_cache.get_mut(&idx.chunker_id)
             .ok_or_else(|| GetChunkError::CacheNotLoaded(idx.chunker_id.clone()))?
@@ -258,7 +216,7 @@ impl Document {
             .ok_or_else(|| GetChunkError::ChunkIdxOutOfBounds(idx.chunker_id.clone(), idx.text_part_id.clone(), idx.chunk_idx))
             .and_then(|chunk_cache| {
                 Ok(ChunkMut {
-                    text: text_part.1.as_str(),
+                    text: text_part.as_str(),
                     data: chunk_cache,
                     idx,
                 })
@@ -371,10 +329,9 @@ impl Document {
         let mut doc = Document {
             absolute_path,
             workspace,
+            text: Default::default(),
             metadata,
-            text_parts: Vec::new(),
-            text_hash: Default::default(),
-            doc_hash: Default::default(),
+            metadata_hash: Default::default(),
             cache: Default::default(),
             chunker_cache: Default::default(),
         };
@@ -390,7 +347,7 @@ impl Document {
             read_cache.await
         });
 
-        self.update_text(None);
+        let mut text_import = None;
 
         if self.metadata.metadata_location == MetadataLocation::MetadataFile 
             || self.metadata.metadata_location == MetadataLocation::Unknown
@@ -408,7 +365,7 @@ impl Document {
                         } else {
                             // Source is not a text file. Use text suffixed to metadata if available.
                             if text.trim_start() != "" {
-                                self.update_text(Some(text));
+                                text_import = Some(text);
                             }
                         }
                         self.metadata = metadata;
@@ -455,15 +412,25 @@ impl Document {
                 }
             };
             self.metadata = metadata;
-            self.update_text(Some(text));
+            text_import = Some(text);
         } else {
             self.metadata.metadata_location.update_unknown(MetadataLocation::None);
             if self.metadata.source_is_text() {
                 // Read text from source file
                 let text = fs::read_to_string(&self.absolute_path).await?;
-                self.update_text(Some(text));
+                text_import = Some(text);
             }
         }
+
+        // The API is meant to support accessing only a document's metadata and loading everything
+        // else lazily. This is helpful when you're filtering documents by metadata and don't want 
+        // to load more data than necessary.
+        // However, the current implementation still loads the text content and some of the cache 
+        // immediately, so we're getting the worst of both worlds.
+        // TODO: Be lazy
+        let mut text = Text::new();
+        text.import(text_import.as_deref(), self.metadata.doc_parts.as_deref());
+        self.text = text.into();
 
         self.cache = cache.await.unwrap().ok().flatten().unwrap_or_default();
 
@@ -473,6 +440,9 @@ impl Document {
     #[instrument(skip(self), fields(doc_path = %self.path().display()), err)]
     pub async fn save(&mut self) -> Result<(), AccessStorageError> {
         info!("Saving document {:?}", self.absolute_path);
+        let mut doc_parts = self.metadata.doc_parts.clone();
+        let text_export = self.text().await.export(&mut doc_parts);
+        self.metadata.doc_parts = doc_parts;
         // Save text and metadata to appropriate location
         match self.metadata.metadata_location {
             MetadataLocation::SourceFile => {
@@ -484,29 +454,27 @@ impl Document {
                 }
                 // Save both in source file
                 debug!("Saving text and metadata in source file for document {:?}", self.absolute_path);
-                let mut content = self.metadata_block()?;
-                content.push_str(&self.text().unwrap_or_default());
-                fs::write(&self.absolute_path, content).await?;
+                let mut output = self.metadata_block()?;
+                output.push_str(&text_export.unwrap_or_default());
+                fs::write(&self.absolute_path, output).await?;
             },
             MetadataLocation::MetadataFile => {
                 if self.metadata.source_is_text() {
                     // Save to separate files
                     debug!("Saving text in source file and metadata in metadata file for document {:?}", self.absolute_path);
-                    fs::write(&self.absolute_path, self.text().unwrap_or_default()).await?;
+                    fs::write(&self.absolute_path, text_export.unwrap_or_default()).await?;
                     trace!("Metadata file path: {:?}", self.metadata_path());
                     fs::write(&self.metadata_path(), self.metadata_block()?).await?;
                 } else {
                     // Source is not a text file. Save text in metadata file.
                     debug!("Saving text and metadata in metadata file for document {:?}", self.absolute_path);
                     let mut content = self.metadata_block()?;
-                    if let Some(text) = self.text() {
-                        content.push_str(&text);
-                    }
+                    content.push_str(&text_export.unwrap_or_default());
                     fs::write(&self.metadata_path(), content).await?;
                 }
             },
             MetadataLocation::None => {
-                if let Some(text) = self.text() {
+                if let Some(text) = text_export {
                     if self.metadata.source_is_text() {
                         debug!("Saving text in source file for document {:?}", self.absolute_path);
                         fs::write(&self.absolute_path, text).await?;
@@ -532,36 +500,6 @@ impl Document {
         }
 
         Ok(())
-    }
-
-    fn update_text(&mut self, new_text: Option<String>) {
-        self.text_hash.get_mut().unwrap().take();
-        self.doc_hash.get_mut().unwrap().take();
-        match (new_text, self.metadata.doc_parts.as_ref()) {
-            // Text representation of document only has one part
-            (Some(text), None) => {
-                self.text_parts = vec![(String::new(), text)];
-            },
-            // Text representation has multiple parts (e.g., spreadsheet converted to multiple
-            // tables in markdown or CSV)
-            (Some(text), Some(_parts)) => {
-                self.text_parts.clear();
-                for r in text.to_markdown(WITH_MILESTONES).regions() {
-                    if &*r.unit == "part" {
-                        let id = r.attribute("id").flatten().map(|s| s.to_string()).unwrap_or_default();
-                        if self.text_parts.iter().any(|(part_id, _)| part_id == &id) {
-                            warn!("Duplicate text part id '{}' in document {:?}, skipping", id, self.absolute_path);
-                            continue;
-                        }
-                        self.text_parts.push((id, r.content().to_string()));
-                    }
-                }
-            },
-            // No text representation available
-            (None, _) => {
-                self.text_parts.clear();
-            },
-        };
     }
 
     fn metadata_path(&self) -> PathBuf {
@@ -749,6 +687,17 @@ pub struct TextHash {
     value: GenericArray<u8, <Sha256 as OutputSizeUser>::OutputSize>,
 }
 
+impl BitXor for TextHash {
+    type Output = Self;
+
+    fn bitxor(self, rhs: Self) -> Self::Output {
+        let value = self.value.iter().zip(rhs.value.iter())
+            .map(|(a, b)| a ^ b)
+            .collect::<Vec<u8>>();
+        TextHash { value: GenericArray::from_slice(&value).clone() }
+    }
+}
+
 impl<T: Borrow<str> + ?Sized> From<&T> for TextHash {
     fn from(value: &T) -> Self {
         let mut hasher = sha2::Sha256::new();
@@ -787,6 +736,7 @@ impl<'de> Deserialize<'de> for TextHash {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage2::document::text::Part;
     use crate::{chunking::test_chunker::FixedSizeChunkerExtension, embedding::Embedding, extension::ActiveExtension};
     use crate::storage2::fs_test_utils::{TempTree, fs_tree};
 
@@ -805,20 +755,14 @@ mod tests {
         let doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.workspace(), &ws);
-        assert_eq!(doc.text().as_deref(), Some("foo"));
-
-        // 2nd time
-        let doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
-        assert_eq!(doc.path(), "doc.md");
-        assert_eq!(doc.workspace(), &ws);
-        assert_eq!(doc.text().as_deref(), Some("foo"));
+        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("foo"));
 
         // Document with metadata
         let doc = Document::open(ws.clone(), &dir.join("doc2.md")).await.unwrap();
         assert_eq!(doc.path(), "doc2.md");
         assert_eq!(doc.workspace(), &ws);
         assert_eq!(doc.metadata.id, metadata.id);
-        assert_eq!(doc.text().as_deref(), Some("foo"));
+        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("foo"));
     }
 
     #[tokio::test]
@@ -839,7 +783,7 @@ extensions:
 
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.workspace(), &ws);
-        assert_eq!(doc.text().as_deref(), Some("hello world"));
+        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("hello world"));
         assert_eq!(doc.extension_cache("foo"), Some(&ExtensionCache {
             hash: None,
             data: 42.into(),
@@ -854,7 +798,7 @@ extensions:
         let ws = Workspace::open(&dir).await.unwrap();
         let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
 
-        assert_eq!(doc.text().as_deref(), Some("hello world"));
+        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("hello world"));
 
         let chunker = ActiveExtension::new(FixedSizeChunkerExtension::new(5), Default::default())
             .chunkers().next().unwrap();
@@ -882,14 +826,14 @@ extensions:
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
         let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
-
-        let initial_text_hash = doc.text_hash();
-        let initial_doc_hash = doc.doc_hash();
+        let initial_doc_hash = doc.doc_hash().await;
+        let mut text = doc.text_mut().await;
+        let initial_text_hash = text.hash();
 
         // Update text and check that hashes change
-        doc.text_parts_mut().next().unwrap().1.push_str("!");
-        let updated_text_hash = doc.text_hash();
-        let updated_doc_hash = doc.doc_hash();
+        text.parts_mut()[0].push_str("!");
+        let updated_text_hash = text.hash();
+        let updated_doc_hash = doc.doc_hash().await;
 
         assert_ne!(initial_text_hash, updated_text_hash);
         assert_ne!(initial_doc_hash, updated_doc_hash);
@@ -907,7 +851,7 @@ extensions:
         // Set locations
         doc.metadata.metadata_location = MetadataLocation::SourceFile;
         // Set text
-        doc.update_text(Some("Hello world".to_string()));
+        doc.text_mut().await.import(Some("Hello world"), None);
 
         // Save
         doc.save().await.unwrap();
@@ -930,7 +874,7 @@ extensions:
         // Set locations
         doc.metadata.metadata_location = MetadataLocation::MetadataFile;
         // Set text
-        doc.update_text(Some("Hello world".to_string()));
+        doc.text_mut().await.import(Some("Hello world"), None);
 
         // Save
         doc.save().await.unwrap();
@@ -957,7 +901,7 @@ extensions:
         // Set locations
         doc.metadata.metadata_location = MetadataLocation::MetadataFile;
         // Set text
-        doc.update_text(Some("Hello world".to_string()));
+        doc.text_mut().await.import(Some("Hello world"), None);
 
         // Save
         doc.save().await.unwrap();
@@ -1047,11 +991,11 @@ extensions:
         // Set metadata to have multiple text parts
         doc.metadata.doc_parts = Some("not-none".to_string());
         // Set text parts
-        doc.text_parts = vec![
-            ("part1".to_string(), "Hello".to_string()),
-            ("part2".to_string(), "world".to_string()),
-        ];
-        println!("Text: {:?}", doc.text());
+        let text: Text = vec![
+            Part::new("part1", "Hello"),
+            Part::new("part2", "world"),
+        ].into_iter().collect();
+        doc.text = text.into();
 
         // Save
         doc.save().await.unwrap();
@@ -1102,7 +1046,7 @@ extensions:
         // Load document
         let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
         assert_eq!(doc.path(), "doc.md");
-        assert_eq!(doc.text().as_deref(), Some("hello world"));
+        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("hello world"));
 
         // Save document
         doc.save().await.unwrap();
@@ -1125,7 +1069,7 @@ extensions:
         // Load document
         let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
         assert_eq!(doc.path(), "doc.md");
-        assert_eq!(doc.text().as_deref(), Some("hello world"));
+        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("hello world"));
         assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
 
         // Save document
@@ -1148,7 +1092,7 @@ extensions:
         // Load document
         let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
         assert_eq!(doc.path(), "doc.md");
-        assert_eq!(doc.text().as_deref(), Some("hello world"));
+        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("hello world"));
         assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
 
         // Save document
@@ -1172,7 +1116,7 @@ extensions:
         // Load document
         let mut doc = Document::open(ws.clone(), &dir.join("doc.csv")).await.unwrap();
         assert_eq!(doc.path(), "doc.csv");
-        assert_eq!(doc.text().as_deref(), Some("a,b,c\n1,2,3"));
+        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("a,b,c\n1,2,3"));
 
         // Save document
         doc.save().await.unwrap();
@@ -1196,7 +1140,7 @@ extensions:
         // Load document
         let mut doc = Document::open(ws.clone(), &dir.join("doc.csv")).await.unwrap();
         assert_eq!(doc.path(), "doc.csv");
-        assert_eq!(doc.text().as_deref(), Some("a,b,c\n1,2,3"));
+        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("a,b,c\n1,2,3"));
         assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
 
         // Save document
@@ -1220,7 +1164,7 @@ extensions:
         // Load document
         let mut doc = Document::open(ws.clone(), &dir.join("doc.pdf")).await.unwrap();
         assert_eq!(doc.path(), "doc.pdf");
-        assert_eq!(doc.text(), None);
+        assert_eq!(doc.text().await.export(&mut None), None);
 
         // Save document
         doc.save().await.unwrap();
@@ -1244,7 +1188,7 @@ extensions:
         // Load document
         let mut doc = Document::open(ws.clone(), &dir.join("doc.pdf")).await.unwrap();
         assert_eq!(doc.path(), "doc.pdf");
-        assert_eq!(doc.text(), None);
+        assert_eq!(doc.text().await.export(&mut None), None);
         assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
 
         // Save document
@@ -1269,7 +1213,7 @@ extensions:
         // Load document
         let mut doc = Document::open(ws.clone(), &dir.join("doc.pdf")).await.unwrap();
         assert_eq!(doc.path(), "doc.pdf");
-        assert_eq!(doc.text().as_deref(), Some("Hello world"));
+        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("Hello world"));
         assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
 
         // Save document

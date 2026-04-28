@@ -36,14 +36,19 @@ impl VectorStore {
 
     pub async fn retain_missing_docs(&self, docs: &mut Vec<Document>) {
         let data = self.data.read().await;
-        docs.retain(|doc| {
+        let mut idx = 0;
+        while idx < docs.len() {
             let doc_id = DocVersionId {
-                id: doc.id().clone(),
-                hash: doc.doc_hash(),
+                id: docs[idx].id().clone(),
+                hash: docs[idx].doc_hash().await,
                 filter: PrelimFilter {},    // dummy value
             };
-            !data.contains_doc(&doc_id)
-        });
+            if data.contains_doc(&doc_id) {
+                idx += 1;
+            } else {
+                docs.remove(idx);
+            }
+        }
     }
 
     pub async fn all(&self) -> VectorView {
@@ -204,6 +209,16 @@ pub struct DocVersionId {
     pub filter: PrelimFilter,
 }
 
+impl DocVersionId {
+    pub async fn from_document(document: &Document) -> Self {
+        DocVersionId {
+            id: document.id().clone(),
+            hash: document.doc_hash().await,
+            filter: PrelimFilter::from(document),
+        }
+    }
+}
+
 impl PartialEq for DocVersionId {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.hash == other.hash
@@ -216,16 +231,6 @@ impl Hash for DocVersionId {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
         self.hash.hash(state);
-    }
-}
-
-impl From<&Document> for DocVersionId {
-    fn from(document: &Document) -> Self {
-        DocVersionId {
-            id: document.id().clone(),
-            hash: document.doc_hash(),
-            filter: PrelimFilter::from(document),
-        }
     }
 }
 

@@ -3,11 +3,11 @@ use std::collections::{HashMap, hash_map::Entry};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{embedding::Embedding, storage2::TextHash};
+use crate::{embedding::Embedding, storage2::{TextHash, document::text::Part}};
 
 pub struct Chunks<'a> {
     pub(crate) chunker_id: String,
-    pub(crate) text_parts: Vec<&'a (String, String)>,
+    pub(crate) text_parts: &'a [Part],
     pub(crate) data: &'a HashMap<String, Vec<ChunkCache>>,
     pub(crate) chunk_idx: usize,
 }
@@ -19,17 +19,18 @@ impl<'a> Iterator for Chunks<'a> {
         if self.text_parts.is_empty() {
             return None;
         }
-        let (text_id, _text) = self.text_parts[0];
+        let part = &self.text_parts[0];
+        let text_id = part.id();
         let chunks = self.data.get(text_id)?;
         if self.chunk_idx >= chunks.len() {
-            self.text_parts.remove(0);
+            self.text_parts = &self.text_parts[1..];
             self.chunk_idx = 0;
             return self.next();
         }
         let chunk_data = &chunks[self.chunk_idx];
         let chunk = Chunk {
             data: chunk_data,
-            text: self.text_parts.iter().find(|(id, _text)| id == text_id).unwrap().1.as_str(),
+            text: part.as_str(),
             idx: ChunkIdx {
                 chunker_id: self.chunker_id.clone(),
                 text_part_id: text_id.to_string(),

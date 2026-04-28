@@ -229,12 +229,12 @@ mod tests {
         let doc = ws.document("doc.md").await.unwrap();
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.workspace().path(), ws.path());
-        assert_eq!(doc.text().as_deref(), Some("foo"));
+        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("foo"));
 
         let child = ws.folder("child").await.unwrap();
         let doc = child.document("nested.md").await.unwrap();
         assert_eq!(doc.path(), "child/nested.md");
         assert_eq!(doc.workspace().path(), ws.path());
-        assert_eq!(doc.text().as_deref(), Some("nested"));
+        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("nested"));
     }
 }

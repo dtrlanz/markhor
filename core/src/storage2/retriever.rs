@@ -31,11 +31,15 @@ impl Retriever {
         let mut doc_map = HashMap::new();
         let mut doc_stream = scope.docs(&workspace).await?;
         while let Some(doc) = doc_stream.next_doc().await.unwrap() {
-            trace!("Found doc {} with hash {:?}", doc.path().display(), doc.doc_hash());
-            doc_map.insert(*doc.id(), IncludedDoc::OnDisk(doc.doc_hash(), doc.path().to_path_buf()));
+            trace!("Found doc {} with hash {:?}", doc.path().display(), doc.doc_hash().await);
+            doc_map.insert(*doc.id(), IncludedDoc::OnDisk(doc.doc_hash().await, doc.path().to_path_buf()));
             loaded_docs.push(doc);
         }
-        let doc_ids = loaded_docs.iter().map(|doc| (*doc.id(), doc.doc_hash()));
+        
+        let mut doc_ids = Vec::new();
+        for doc in &loaded_docs {
+            doc_ids.push((*doc.id(), doc.doc_hash().await));
+        }
 
         let view = match vector_store.select(doc_ids).await {
             Ok(view) => {
@@ -49,8 +53,8 @@ impl Retriever {
                 let (tx, rx) = tokio::sync::mpsc::channel(100);
                 let mut tasks = Vec::new();
                 for doc in loaded_docs {
-                    doc_ids.push((*doc.id(), doc.doc_hash()));
-                    if missing_set.contains(&(*doc.id(), doc.doc_hash())) {
+                    doc_ids.push((*doc.id(), doc.doc_hash().await));
+                    if missing_set.contains(&(*doc.id(), doc.doc_hash().await)) {
                         debug!("Doc {} is missing from vector store, generating vectors", doc.path().display());
                         let task = tokio::spawn(
                             Self::send_doc_vectors(doc, utils.clone(), tx.clone())
@@ -94,7 +98,7 @@ impl Retriever {
         let chunker = &utils.0;
         let embedder = &utils.1;
 
-        let id = DocVersionId::from(&doc);
+        let id = DocVersionId::from_document(&doc).await;
         let chunks = doc.chunks_mut(chunker).await?;
         let mut vectors = Vec::new();
         for mut chunk in chunks {
@@ -122,14 +126,14 @@ impl Retriever {
         for r in results {
             let doc = match self.docs.get(&r.doc_id).unwrap() {
                 IncludedDoc::InMemory(doc) => {
-                    assert_eq!(doc.doc_hash(), r.doc_hash);
+                    assert_eq!(doc.doc_hash().await, r.doc_hash);
                     doc.clone()
                 },
                 IncludedDoc::OnDisk(hash, path) => {
                     assert_eq!(hash, &r.doc_hash);
                     trace!("Loading doc {} from disk for top-k result", path.display());
                     let mut doc = self.workspace.document(path).await.unwrap();
-                    trace!("Doc contents: {:?}", doc.text());
+                    trace!("Doc contents: {:?}", doc.text().await.export(&mut None));
                     doc.chunker_cache_mut(&self.chunker.metadata_id()).await.unwrap();
                     Arc::new(doc)
                 },
