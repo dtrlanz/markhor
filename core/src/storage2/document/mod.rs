@@ -316,6 +316,33 @@ impl Document {
         Ok(())
     }
 
+    pub(crate) async fn create(workspace: Workspace, absolute_path: &Path) -> Result<Self, AccessStorageError> {
+        // TODO: Add unit tests
+        // Check if path is valid and does not already exist
+        let absolute_path = fs::canonicalize(absolute_path.parent().unwrap()).await
+            .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound {
+                AccessStorageError::DirectoryNotFound(absolute_path.parent().unwrap().to_path_buf())
+            } else {
+                AccessStorageError::Io(e)
+            })?;
+        if absolute_path.exists() {
+            todo!("Handle error when creating document with path that already exists");
+            // return Err(AccessStorageError::FileAlreadyExists(absolute_path.to_path_buf()));
+        }
+        let metadata = DocumentMetadata::from_path(&absolute_path);
+        let mut doc = Self {
+            absolute_path,
+            workspace,
+            text: Default::default(),
+            metadata,
+            metadata_hash: Default::default(),
+            cache: Default::default(),
+            chunker_cache: Default::default(),
+        };
+        doc.save().await?;
+        Ok(doc)
+    }
+
     pub(crate) async fn open(workspace: Workspace, absolute_path: &Path) -> Result<Self, AccessStorageError> {
         // Check if path exists and all that
         let absolute_path = fs::canonicalize(&absolute_path).await

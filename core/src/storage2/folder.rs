@@ -80,6 +80,15 @@ impl Folder {
         }
     }
 
+    pub async fn create_document(&self, name: impl AsRef<str>) -> Result<Document, AccessStorageError> {
+        let name = name.as_ref();
+        if name.contains(std::path::MAIN_SEPARATOR) {
+            todo!("Handle error or otherwise handle situation where document name contains path separator");
+        }
+        let path = self.absolute_path.join(name);
+        Document::create(self.workspace.clone(), &path).await
+    }
+
     /// Opens the folder with the specified name.
     /// 
     /// # Errors
