@@ -1,13 +1,13 @@
 use mime::Mime;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use sha2::{Digest, Sha256, digest::{OutputSizeUser, generic_array::GenericArray}};
+use sha2::{Digest, Sha256};
 use tokio::{io::AsyncWriteExt};
 use uuid::Uuid;
 use tokio::fs::{self, OpenOptions};
 use tracing::{debug, error, info, instrument, trace, warn};
-use std::{borrow::Borrow, collections::{HashMap, hash_map::Entry}, ffi::OsStr, ops::BitXor, path::{Path, PathBuf}, sync::Mutex};
+use std::{collections::{HashMap, hash_map::Entry}, ffi::OsStr, path::{Path, PathBuf}};
 
-use crate::{chunking::{Chunker, ChunkerError}, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES, WITHOUT_XML}, storage2::{ATTACHMENTS_DIR, AccessStorageError, METADATA_EXTENSION, Tag, Workspace}};
+use crate::{chunking::{Chunker, ChunkerError}, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES}, storage2::{ATTACHMENTS_DIR, AccessStorageError, HashValue, METADATA_EXTENSION, Tag, Workspace}};
 
 pub mod chunks;
 pub mod text;
@@ -681,57 +681,6 @@ pub(crate) struct ExtensionCache {
     #[serde(default)] #[serde(skip_serializing_if = "is_default")]
     data: serde_yaml_ng::Value,
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct HashValue {
-    value: GenericArray<u8, <Sha256 as OutputSizeUser>::OutputSize>,
-}
-
-impl BitXor for HashValue {
-    type Output = Self;
-
-    fn bitxor(self, rhs: Self) -> Self::Output {
-        let value = self.value.iter().zip(rhs.value.iter())
-            .map(|(a, b)| a ^ b)
-            .collect::<Vec<u8>>();
-        HashValue { value: GenericArray::from_slice(&value).clone() }
-    }
-}
-
-impl<T: Borrow<str> + ?Sized> From<&T> for HashValue {
-    fn from(value: &T) -> Self {
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(value.borrow().as_bytes());
-        HashValue { value: hasher.finalize() }
-    }
-}
-
-// impl<'a> FromIterator<&'a str> for HashValue {
-//     fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
-//         let mut hasher = sha2::Sha256::new();
-//         for value in iter {
-//             hasher.update(value.as_bytes());
-//         }
-//         HashValue { value: hasher.finalize() }
-//     }
-// }
-
-impl Serialize for HashValue {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
-        let hex_string = self.value.iter().map(|byte| format!("{:02x}", byte)).collect::<String>();
-        serializer.serialize_str(&hex_string)
-    }
-}
-
-impl<'de> Deserialize<'de> for HashValue {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> where D: serde::Deserializer<'de> {
-        let hex_string = String::deserialize(deserializer)?;
-        let bytes = hex::decode(hex_string).map_err(serde::de::Error::custom)?;
-        let value = GenericArray::from_slice(&bytes).clone();
-        Ok(HashValue { value })
-    }
-}
-
 
 #[cfg(test)]
 mod tests {

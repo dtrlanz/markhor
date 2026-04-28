@@ -5,7 +5,9 @@ mod scope;
 mod tag;
 mod workspace;
 
-use std::path::PathBuf;
+use std::{borrow::Borrow, ops::BitXor, path::PathBuf};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256, digest::{OutputSizeUser, generic_array::GenericArray}};
 use thiserror::Error;
 
 pub use document::{
@@ -14,7 +16,6 @@ pub use document::{
     // TextLocation,
     MetadataLocation,
     chunks::{Chunk, ChunkMut},
-    HashValue,
 };
 pub(crate) use document::chunks::ChunkIdx;
 pub use folder::Folder;
@@ -58,6 +59,56 @@ pub enum AccessStorageError {
 
     #[error("Invalid ID: {0}")]
     InvalidId(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HashValue {
+    value: GenericArray<u8, <Sha256 as OutputSizeUser>::OutputSize>,
+}
+
+impl BitXor for HashValue {
+    type Output = Self;
+
+    fn bitxor(self, rhs: Self) -> Self::Output {
+        let value = self.value.iter().zip(rhs.value.iter())
+            .map(|(a, b)| a ^ b)
+            .collect::<Vec<u8>>();
+        HashValue { value: GenericArray::from_slice(&value).clone() }
+    }
+}
+
+impl<T: Borrow<str> + ?Sized> From<&T> for HashValue {
+    fn from(value: &T) -> Self {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(value.borrow().as_bytes());
+        HashValue { value: hasher.finalize() }
+    }
+}
+
+// impl<'a> FromIterator<&'a str> for HashValue {
+//     fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
+//         let mut hasher = sha2::Sha256::new();
+//         for value in iter {
+//             hasher.update(value.as_bytes());
+//         }
+//         HashValue { value: hasher.finalize() }
+//     }
+// }
+
+impl Serialize for HashValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
+        let hex_string = self.value.iter().map(|byte| format!("{:02x}", byte)).collect::<String>();
+        serializer.serialize_str(&hex_string)
+    }
+}
+
+impl<'de> Deserialize<'de> for HashValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> where D: serde::Deserializer<'de> {
+        let hex_string = String::deserialize(deserializer)?;
+        let bytes = hex::decode(hex_string).map_err(serde::de::Error::custom)?;
+        let value = GenericArray::from_slice(&bytes).clone();
+        Ok(HashValue { value })
+    }
 }
 
 #[cfg(test)]
