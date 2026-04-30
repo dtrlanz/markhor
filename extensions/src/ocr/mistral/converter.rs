@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
-use markhor_core::{convert::{ConversionError, Converter}, storage::Content};
+use markhor_core::{convert::{ConversionError, Converter}};
 use mime::Mime;
 use tokio::io::AsyncRead;
 
@@ -12,7 +12,7 @@ pub struct MistralOcr(pub(crate) Arc<MistralClientInner>);
 
 #[async_trait]
 impl Converter for MistralOcr {
-    async fn convert(&self, input: Content, output_type: Mime) -> Result<Vec<Box<dyn AsyncRead + Unpin>>, ConversionError> {
+    async fn convert(&self, input: PathBuf, output_type: Mime) -> Result<Vec<Box<dyn AsyncRead + Unpin>>, ConversionError> {
         // Check if markdown is expected
         if output_type != "text/markdown" {
             return Err(ConversionError::UnsupportedMimeType(output_type));
@@ -23,7 +23,7 @@ impl Converter for MistralOcr {
         let dir = tempfile::tempdir().map_err(|e| ConversionError::Other(Box::new(e)))?;
         let output_path = dir.path().join("output.md");
 
-        self.0.ocr_file_to_markdown(input.path(), &*output_path).await.map_err(|e| ConversionError::Other(Box::new(e)))?;
+        self.0.ocr_file_to_markdown(input, &*output_path).await.map_err(|e| ConversionError::Other(Box::new(e)))?;
 
         let file = tokio::fs::File::open(&output_path).await.map_err(|e| ConversionError::IoError(e))?;
         let reader = tokio::io::BufReader::new(file);

@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use async_trait::async_trait;
 
-use markhor_core::{chat::prompter::{PromptError, Prompter}, job::AssetSender, storage::Folder};
+use markhor_core::{chat::prompter::{PromptError, Prompter}, job::AssetSender, library::{Folder, ReadEntry}};
 use nu_ansi_term::{Color, Style};
 use reedline::{default_emacs_keybindings, ColumnarMenu, Completer, DefaultPrompt, DefaultPromptSegment, Emacs, Highlighter, KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal, Span, StyledText, Suggestion};
 use tokio::sync::Mutex;
@@ -91,9 +91,17 @@ impl Prompter for ConsolePrompter {
 
         // Create a list of document names from the folder
         let doc_names = if let Some(folder) = self.folder.as_ref() {
-            folder.list_documents().await.unwrap_or_default()
-                .iter().map(|doc| doc.name().to_lowercase())
-                .collect::<Vec<_>>()
+            // folder.list_documents().await.unwrap_or_default()
+            //     .iter().map(|doc| doc.name().to_lowercase())
+            //     .collect::<Vec<_>>()
+            let mut read = folder.read().await?;
+            let mut names = vec![];
+            while let Some(entry) = read.next_entry().await? {
+                if let ReadEntry::Document(doc) = entry {
+                    names.push(doc.name().to_lowercase());
+                }
+            }
+            names
         } else {
             vec![]
         };
@@ -157,7 +165,7 @@ impl Prompter for ConsolePrompter {
             for (prefix,range, suffix) in  ConsolePrompter::isolate_document_names_with_prefix_suffix(&input) {
                 prefix_suffix.push((prefix, suffix));
                 let file_name = &input[range];
-                match folder.document_by_name(file_name).await {
+                match folder.document(file_name).await {
                     Ok(doc) => {
                         // Send document to job via the asset sender
                         sender.send_document(doc).unwrap_or_else(|e| {

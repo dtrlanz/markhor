@@ -6,7 +6,7 @@ use crate::{app::Markhor, cli::{
     ChatArgs, ConfigArgs, ConfigCommands, ImportArgs, InstallArgs, OpenArgs, SearchArgs, ShowArgs, WorkspaceArgs, WorkspaceCommands
 }};
 use anyhow::Result;
-use markhor_core::storage::Workspace;
+use markhor_core::library::Workspace;
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -63,60 +63,62 @@ pub async fn handle_show(args: ShowArgs, markhor: Markhor) -> Result<()> {
             }
         };
         
-        let metadata = doc.read_metadata().await?;
+        let metadata = doc.metadata();
         println!("  Document Path: {:?}", doc.path().display());
         println!("  Document ID: {:?}", doc.id());
 
-        let files = metadata.files_with_metadata().collect::<Vec<_>>();
+        // let files = metadata.files_with_metadata().collect::<Vec<_>>();
 
         if args.metadata {
-            println!();
-            println!("  Document metadata version: {:?}", metadata.markhor_version());
-            println!("  Files with metadata: {}", files.join(", "));
+            // println!();
+            // println!("  Document metadata version: {:?}", metadata.markhor_version());
+            // println!("  Files with metadata: {}", files.join(", "));
+            unimplemented!("Metadata display not implemented");
         }
 
         if args.embeddings {
-            let embedders = markhor.extensions.iter()
-                .flat_map(|ext| ext.embedders())
-                .collect::<Vec<_>>();
+            // let embedders = markhor.extensions.iter()
+            //     .flat_map(|ext| ext.embedders())
+            //     .collect::<Vec<_>>();
 
-            for embedder in embedders {
-                println!();
-                println!("  Embedding model: {}", embedder.model_name());
-                for &file in files.iter() {
-                    if let Some(file_embeddings) = metadata.file(file)
-                        .and_then(|md| md.embeddings(&embedder)) 
-                    {
-                        println!();
-                        println!("  File: {}", file);
-                        println!("    No. |     Range    | Bytes | Tokens | Heading");
-                        println!("    ----|--------------|-------|--------|-------------------------------------------------------------------");
+            // for embedder in embedders {
+            //     println!();
+            //     println!("  Embedding model: {}", embedder.model_name());
+            //     for &file in files.iter() {
+            //         if let Some(file_embeddings) = metadata.file(file)
+            //             .and_then(|md| md.embeddings(&embedder)) 
+            //         {
+            //             println!();
+            //             println!("  File: {}", file);
+            //             println!("    No. |     Range    | Bytes | Tokens | Heading");
+            //             println!("    ----|--------------|-------|--------|-------------------------------------------------------------------");
                         
 
-                        for (idx, (_, chunk_data)) in file_embeddings.iter().enumerate() {
-                            print!("   {:4} | {:5?} | {:5} | ", idx, chunk_data.text_range, chunk_data.text_range.len());
-                            if let Some(token_count) = chunk_data.token_count {
-                                print!("{:6} | ", token_count);
-                            } else {
-                                print!("  --   | ");
-                            }
-                            if let Some(heading_path) = chunk_data.heading_path.as_ref() {
-                                const HEADING_LENGTH_CUTOFF: usize = 70;
-                                if heading_path.len() <= HEADING_LENGTH_CUTOFF {
-                                    print!("{}", heading_path);
-                                } else {
-                                    let mut i = heading_path.len() - HEADING_LENGTH_CUTOFF;
-                                    while !heading_path.is_char_boundary(i) {
-                                        i -= 1;
-                                    }
-                                    print!("...{}.", &heading_path[i..]);
-                                }
-                            }
-                            println!();
-                        }
-                    }
-                }
-            }
+            //             for (idx, (_, chunk_data)) in file_embeddings.iter().enumerate() {
+            //                 print!("   {:4} | {:5?} | {:5} | ", idx, chunk_data.text_range, chunk_data.text_range.len());
+            //                 if let Some(token_count) = chunk_data.token_count {
+            //                     print!("{:6} | ", token_count);
+            //                 } else {
+            //                     print!("  --   | ");
+            //                 }
+            //                 if let Some(heading_path) = chunk_data.heading_path.as_ref() {
+            //                     const HEADING_LENGTH_CUTOFF: usize = 70;
+            //                     if heading_path.len() <= HEADING_LENGTH_CUTOFF {
+            //                         print!("{}", heading_path);
+            //                     } else {
+            //                         let mut i = heading_path.len() - HEADING_LENGTH_CUTOFF;
+            //                         while !heading_path.is_char_boundary(i) {
+            //                             i -= 1;
+            //                         }
+            //                         print!("...{}.", &heading_path[i..]);
+            //                     }
+            //                 }
+            //                 println!();
+            //             }
+            //         }
+            //     }
+            // }
+            unimplemented!("Embedding display not implemented");
         }
         
     } else {
@@ -140,7 +142,8 @@ pub async fn handle_search(args: SearchArgs, markhor: Markhor) -> Result<()> {
         .map(|s| PathBuf::from(s))
         .collect::<Vec<_>>();
 
-    markhor.search(&args.query, args.limit, paths).await?;
+    // markhor.search(&args.query, args.limit, paths).await?;
+    unimplemented!("Search command not implemented yet");
     Ok(())
 }
 
@@ -208,7 +211,7 @@ pub async fn handle_workspace(args: WorkspaceArgs, markhor: Markhor) -> Result<(
                 target_path.push(n);
             }
 
-            let new_ws = Workspace::create(&markhor.storage, &target_path).await?;
+            let _new_ws = Workspace::create(&target_path).await?;
             println!("  Workspace created successfully.");
         }
         WorkspaceCommands::List {} => {

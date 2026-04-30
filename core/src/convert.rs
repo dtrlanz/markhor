@@ -1,4 +1,5 @@
-use crate::storage::Content;
+use std::path::PathBuf;
+
 use async_trait::async_trait;
 use mime::Mime;
 use thiserror::Error;
@@ -6,7 +7,7 @@ use tokio::io::AsyncRead;
 
 #[async_trait]
 pub trait Converter {
-    async fn convert(&self, input: Content, output_type: Mime) -> Result<Vec<Box<dyn AsyncRead + Unpin>>, ConversionError>;
+    async fn convert(&self, input: PathBuf, output_type: Mime) -> Result<Vec<Box<dyn AsyncRead + Unpin>>, ConversionError>;
 }
 
 #[derive(Debug, Error)]

@@ -1,13 +1,16 @@
 pub mod chat;
 pub mod chunking;
 pub mod convert;
+pub mod content;
 pub mod extension;
 pub mod embedding;
 pub mod event;
 pub mod job;
 pub mod markdown;
-pub mod storage;
+// pub mod storage;
+pub mod library;
 pub mod tool;
+pub mod vector_store;
 
 pub mod error {
     use thiserror::Error;

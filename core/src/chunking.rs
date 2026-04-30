@@ -126,3 +126,73 @@ impl<'a> Display for Chunk<'a> {
     }
 }
 
+#[cfg(test)]
+pub(crate) mod test_chunker {
+    use super::*;
+
+    /// A simple test chunker that chunks text into fixed-size byte ranges, ignoring semantic structure.
+    #[derive(Debug, Clone)]
+    pub struct FixedSizeChunker {
+        chunk_size: usize,
+    }
+
+    impl FixedSizeChunker {
+        pub fn new(chunk_size: usize) -> Self {
+            Self { chunk_size }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Chunker for FixedSizeChunker {
+        fn chunk(&self, source_text: &str) -> Result<Vec<ChunkData>, ChunkerError> {
+            if self.chunk_size == 0 {
+                return Err(ChunkerError::Configuration("chunk_size must be greater than 0".to_string()));
+            }
+
+            let mut chunks = Vec::new();
+            let mut start = 0;
+            let text_len = source_text.len();
+
+            while start < text_len {
+                let end = usize::min(start + self.chunk_size, text_len);
+                chunks.push(ChunkData {
+                    text_range: start..end,
+                    heading_path: None,
+                    token_count: None,
+                });
+                start = end;
+            }
+
+            Ok(chunks)
+        }
+    }
+
+    pub struct FixedSizeChunkerExtension {
+        chunk_size: usize,
+    }
+
+    impl FixedSizeChunkerExtension {
+        pub fn new(chunk_size: usize) -> Self {
+            Self { chunk_size }
+        }
+    }
+
+    impl crate::extension::Extension for FixedSizeChunkerExtension {
+        fn uri(&self) -> &str {
+            "markhor://chunker/fixed-size"
+        }
+
+        fn name(&self) -> &str {
+            "Fixed Size Chunker"
+        }
+
+        fn description(&self) -> &str {
+            "A simple chunker that splits text into fixed-size byte ranges, ignoring semantic structure."
+        }
+
+        fn chunker(&self) -> Option<Box<dyn Chunker>> {
+            Some(Box::new(FixedSizeChunker::new(self.chunk_size)))
+        }
+    }
+}
+

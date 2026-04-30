@@ -10,7 +10,7 @@ use markhor::app::Markhor;
 use markhor::cli::{Cli, Commands};
 use markhor::commands;
 use markhor_core::extension::{ActiveExtension, Extension};
-use markhor_core::storage::{Storage, Workspace};
+use markhor_core::library::Workspace;
 use markhor_extensions::chunking::Chunkers;
 use markhor_extensions::cli::CliExtension;
 use markhor_extensions::gemini::GeminiClientExtension;
@@ -73,8 +73,7 @@ async fn main() -> Result<()> {
 
     // --- Workspace Initialization ---
 
-    let storage = Arc::new(Storage::new());
-    let workspace = get_workspace(&storage, cli.workspace.clone()).await;
+    let workspace = get_workspace(cli.workspace.clone()).await;
     // If the workspace is found, use current directory as default folder
     let folder = match &workspace {
         Ok(ws) => match std::env::current_dir() {
@@ -94,7 +93,6 @@ async fn main() -> Result<()> {
     ));
 
     let app = Markhor {
-        storage,
         workspace,
         folder,
         extensions,
@@ -207,26 +205,26 @@ fn setup_tracing(verbosity: u8, quiet: bool) {
 }
 
 
-async fn get_workspace(storage: &Arc<Storage>, cli_ws_flag: Option<PathBuf>) -> Result<Arc<Workspace>> {
+async fn get_workspace(cli_ws_flag: Option<PathBuf>) -> Result<Arc<Workspace>> {
     if let Some(ws_path) = cli_ws_flag {
         // Open the workspace at the specified path
         debug!("Opening workspace at: {}", ws_path.display());
-        let ws = Workspace::open(storage, &ws_path).await;
+        let ws = Workspace::open(&ws_path).await;
         if let Err(e) = ws {
             error!("Could not open workspace specified in workspace flag: {}", e);
             return Err(anyhow::anyhow!("Failed to open workspace at {}: {}", ws_path.display(), e));
         }
-        return Ok(ws?);
+        return Ok(ws?.into());
     } else {
         // If no workspace is specified, find it in the current directory or its parents
         debug!("Finding workspace in current directory or its parents");
         // Start from the current directory
         let mut dir = std::env::current_dir()?;
         while let Some(parent) = dir.parent() {
-            match Workspace::open(storage, &*dir).await {
+            match Workspace::open(&dir).await {
                 Ok(ws) => {
                     info!("Found workspace at: {}", dir.display());
-                    return Ok(ws);
+                    return Ok(ws.into());
                 }
                 Err(e) => {
                     debug!("No workspace found in: {}", dir.display());

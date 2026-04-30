@@ -1,6 +1,7 @@
 use std::fmt::{Debug, Display};
 use std::ops::{Deref, Range};
-use pulldown_cmark::{html, CowStr, HeadingLevel, Parser};
+use pulldown_cmark::{html, CowStr, HeadingLevel, Parser, Event, Tag, TagEnd};
+use serde::Deserialize;
 
 use crate::markdown::traversal::{TraversalEvent, Traversal};
 use crate::markdown::xml::XmlTag;
@@ -26,6 +27,63 @@ impl<'a> Markdown<'a> {
         &mut self.options
     }
 
+    pub fn metadata<'b, T: Deserialize<'b>>(&self) -> Result<T, serde_yaml_ng::Error> 
+        where 'a: 'b
+    {
+        let mut parser = self.parser().into_offset_iter();
+        if let Some((Event::Start(Tag::MetadataBlock(..)), _)) = parser.next() {
+        } else {
+            return serde_yaml_ng::from_str("{}");
+        };
+
+        let mut start = 0;
+        let mut stop = 0;
+
+        while let Some((event, range)) = parser.next() {
+            match event {
+                Event::Text(_) => {
+                    if start == 0 {
+                        start = range.start;
+                    }
+                    stop = range.end;
+                },
+                Event::End(TagEnd::MetadataBlock(..)) => {
+                    return serde_yaml_ng::from_str(&self.content[start..stop]);
+                },
+                _ => {},
+            }
+        }
+        unreachable!()
+    }
+
+    pub fn skip_metadata(&self) -> Self {
+        let mut parser = self.parser().into_offset_iter();
+        if let Some((Event::Start(Tag::MetadataBlock(..)), _)) = parser.next() {
+            let mut inside_yaml = true;
+            while let Some((event, range)) = parser.next() {
+                match event {
+                    Event::End(TagEnd::MetadataBlock(..)) => {
+                        inside_yaml = false;
+                    },
+                    Event::Start(_) if !inside_yaml => {
+                        return Markdown {
+                            content: &self.content[range.start..],
+                            options: self.options.clone(),
+                        };
+                    },
+                    _ => {},
+                }
+            }
+            if inside_yaml == false {
+                return Markdown {
+                    content: "",
+                    options: self.options.clone(),
+                };
+            }
+        }
+        self.clone()
+    }
+
     pub fn sections(&self) -> Sections<'_> {
         Sections {
             iter: Traversal::new(self),
@@ -42,7 +100,20 @@ impl<'a> Markdown<'a> {
         }
     }
 
-    pub fn parser(&self) -> Parser<'_> {
+    pub fn prepend_milestone(&self, unit: &str, value: &str, attrs: Vec<(&'a str, Option<&'a str>)>) -> String {
+        let mut attrs_str = String::new();
+        for (attr_name, attr_value) in attrs {
+            if let Some(attr_value) = attr_value {
+                attrs_str.push_str(&format!(" {}=\"{}\"", attr_name, attr_value));
+            } else {
+                attrs_str.push_str(&format!(" {}", attr_name));
+            }
+        }
+        let output = format!("<milestone unit=\"{}\" n=\"{}\"{} />\n{}", unit, value, attrs_str, self.content);
+        output
+    }
+
+    fn parser(&self) -> Parser<'_> {
         Parser::new_ext(self.content, self.options.md_options)
     }
 
@@ -167,6 +238,15 @@ pub struct Region<'a> {
 impl<'a> Region<'a> {
     pub fn content(&self) -> &'a str {
         &self.md.content[self.range.clone()]
+    }
+
+    pub fn attribute(&self, name: &str) -> Option<Option<CowStr<'a>>> {
+        for (attr_name, attr_value) in &self.attrs {
+            if *attr_name == name {
+                return Some(attr_value.clone());
+            }
+        }
+        None
     }
 }
 
@@ -348,6 +428,8 @@ impl<'a> Iterator for Regions<'a> {
 
 #[cfg(test)]
 mod tests {
+    use serde_yaml_ng::Value;
+
     use crate::markdown::to_markdown::ToMarkdown;
 
     use super::*;
@@ -408,4 +490,46 @@ And more."#;
         assert_eq!(&text[regions[1].range.clone()], "\nAnd more.");
         assert_eq!(regions[1].to_html(), "<p>And more.</p>\n");
     }
+
+    #[test]
+    fn metadata_some() {
+        let text = r#"---
+title: Sample Document
+author: Test Author
+---
+Some text."#;
+
+        let md = text.to_markdown(WITHOUT_XML);
+
+        let metadata: Value = md.metadata().unwrap();
+        assert_eq!(metadata["title"], "Sample Document");
+        assert_eq!(metadata["author"], "Test Author");
+
+        let skipped = md.skip_metadata();
+        assert_eq!(skipped.content, "Some text.");
+
+        #[derive(Debug, Deserialize)]
+        struct DocInfo {
+            title: String,
+            author: String,
+        }
+
+        let metadata_typed: Result<DocInfo, _> = md.metadata();
+        let metadata_typed = metadata_typed.unwrap();
+        assert_eq!(metadata_typed.title, "Sample Document");
+        assert_eq!(metadata_typed.author, "Test Author");
+    }
+
+    #[test]
+    fn metadata_none() {
+
+        let text = r#"Some text without metadata."#;
+        let md = text.to_markdown(WITHOUT_XML);
+        let metadata: Value = md.metadata().unwrap();
+        assert_eq!(metadata, Value::Mapping(serde_yaml_ng::Mapping::new()));
+
+        let skipped = md.skip_metadata();
+        assert_eq!(skipped.content, text);
+    }
+
 }

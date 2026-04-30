@@ -33,6 +33,9 @@ pub enum PromptError {
     #[error("Prompt input failed due to IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("Prompt failed due to error accessing library: {0}")]
+    Library(#[from] crate::library::AccessLibraryError),
+
     #[error("Prompt failed to execute to completion: {0}")]
     Async(#[from] tokio::task::JoinError),
 

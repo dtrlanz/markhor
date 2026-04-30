@@ -1,8 +1,8 @@
-use std::{path::{Path, PathBuf}, sync::{atomic::{AtomicBool, Ordering}, Arc}};
+use std::{fs, path::{Path, PathBuf}, sync::{Arc, atomic::{AtomicBool, Ordering}}};
 
-use markhor_core::{chat::chat::Message, extension::{ActiveExtension, Extension}, job::{self, Job}, storage::{Content, Document, Folder, Storage, Workspace}};
+use markhor_core::{chat::chat::Message, extension::{ActiveExtension, Extension}, job::{self, Job}, library::{Document, Folder, Part, Workspace}};
 use markhor_extensions::cli::CliExtension;
-use tokio::io::{AsyncRead, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
 use tracing::error;
 use console::Term;
 use textwrap::wrap;
@@ -11,7 +11,6 @@ use crate::cli::ChatArgs;
 
 
 pub struct Markhor {
-    pub storage: Arc<Storage>,
     pub workspace: anyhow::Result<Arc<Workspace>>,
     pub folder: Option<Folder>,
     pub extensions: Vec<ActiveExtension>,
@@ -38,8 +37,16 @@ impl Markhor {
             anyhow::bail!("Cannot import document without a target folder");
         };
 
-        // Create document in the target folder
-        let doc = folder.create_document(file.file_stem().unwrap().to_str().unwrap()).await?;
+        // Copy document to target folder (if not already there)
+        let folder_path = folder.workspace().path().join(folder.path());
+        let file_path = tokio::fs::canonicalize(file).await?;
+        let file_path = if file_path.starts_with(&folder_path) {
+            file_path
+        } else {
+            let target_path = folder_path.join(file.file_name().unwrap());
+            tokio::fs::copy(&file_path, &target_path).await?;
+            target_path
+        };
 
         let original_extension = match file.extension().and_then(|s| s.to_str()) {
             Some(ext) => ext,
@@ -48,12 +55,11 @@ impl Markhor {
             }
         };
 
-        // Add original file to the document
-        let mut original = BufReader::new(tokio::fs::File::open(file).await?);
-        doc.add_file(original_extension, &mut original).await?;
+        // Open document
+        let mut doc = folder.document(file_path).await?;
 
         // Convert the file to markdown using the extensions
-        let input = Content::File(file.to_path_buf());
+        let input = file.to_path_buf();
         let output_type = "text/markdown".parse().unwrap();
         let job: Job<Vec<Box<dyn AsyncRead + Unpin>>, _> = 
             Job::new(async |assets| {
@@ -63,10 +69,17 @@ impl Markhor {
             .with_extensions(self.extensions.iter().cloned());
 
         let result = job.run().await;
+        let mut part_idx = 0;
         match result {
             Ok(vec) => {
-                for mut reader in vec {
-                    doc.add_file("md", &mut reader).await?;
+                for reader in vec {
+                    // Read to string
+                    let mut reader = BufReader::new(reader);
+                    let mut contents = String::new();
+                    reader.read_to_string(&mut contents).await?;
+
+                    doc.text_mut().await?.push_part(Part::new(format!("part-{}", part_idx), contents));
+                    part_idx += 1;
                 }
             }
             Err(e) => {
@@ -77,53 +90,53 @@ impl Markhor {
         Ok(doc)
     }
 
-    pub async fn search(&self, query: &str, limit: usize, paths: Vec<PathBuf>) -> Result<(), anyhow::Error> {
-        let mut job = job::search::search_job(query, limit)
-            .with_extensions(self.extensions.iter().cloned());
+    // pub async fn search(&self, query: &str, limit: usize, paths: Vec<PathBuf>) -> Result<(), anyhow::Error> {
+    //     let mut job = job::search::search_job(query, limit)
+    //         .with_extensions(self.extensions.iter().cloned());
 
-        let ws = self.workspace.as_ref()
-            .map_err(|e| anyhow::anyhow!("Error getting workspace: {}", e))?;
+    //     let ws = self.workspace.as_ref()
+    //         .map_err(|e| anyhow::anyhow!("Error getting workspace: {}", e))?;
 
-        if paths.is_empty() {
-            // Add all documents in the workspace to the job
-            job.add_folder(ws.root().await).await?;
-        } else {
-            // Add specific documents or folders to the job
-            for path in paths {
-                // Check if the path is a file or folder
-                if path.is_file() {
-                    // If it's a file, add it
-                    let doc = ws.document(&*path).await?;
-                    job.add_document(doc);
-                } else if path.is_dir() {
-                    // If it's a folder, add the documents in the folder
-                    let folder = ws.folder(&*path).await?;
-                    job.add_folder(folder).await?;
-                } else {
-                    println!("Path is neither a file nor a folder: {}", path.display());
-                }
-            }
-        }
+    //     if paths.is_empty() {
+    //         // Add all documents in the workspace to the job
+    //         job.add_folder(ws.root().await).await?;
+    //     } else {
+    //         // Add specific documents or folders to the job
+    //         for path in paths {
+    //             // Check if the path is a file or folder
+    //             if path.is_file() {
+    //                 // If it's a file, add it
+    //                 let doc = ws.document(&*path).await?;
+    //                 job.add_document(doc);
+    //             } else if path.is_dir() {
+    //                 // If it's a folder, add the documents in the folder
+    //                 let folder = ws.folder(&*path).await?;
+    //                 job.add_folder(folder).await?;
+    //             } else {
+    //                 println!("Path is neither a file nor a folder: {}", path.display());
+    //             }
+    //         }
+    //     }
 
-        println!("Searching for: {}", query);
-        println!("Searching {} document(s)...", job.documents().len());
+    //     println!("Searching for: {}", query);
+    //     println!("Searching {} document(s)...", job.documents().len());
 
-        // Run search
-        let result = job.run().await?;
+    //     // Run search
+    //     let result = job.run().await?;
 
-        // Print results
-        for doc in result.documents() {
-            println!("Document: {}", doc.document().path().display());
-            for file in doc.files() {
-                println!("  File: {}", file.file_name());
-                for chunk in file.chunks().await? {
-                    println!("    Chunk #{} (similarity {})", chunk.rank(), chunk.similarity());
-                    println!("      Text: {}", chunk.chunk().text());
-                }
-            }
-        }
-        Ok(())
-    }
+    //     // Print results
+    //     for doc in result.documents() {
+    //         println!("Document: {}", doc.document().path().display());
+    //         for file in doc.files() {
+    //             println!("  File: {}", file.file_name());
+    //             for chunk in file.chunks().await? {
+    //                 println!("    Chunk #{} (similarity {})", chunk.rank(), chunk.similarity());
+    //                 println!("      Text: {}", chunk.chunk().text());
+    //             }
+    //         }
+    //     }
+    //     Ok(())
+    // }
 
     pub fn use_extension(&mut self, extension: impl Extension + 'static) -> &mut Self {
         self.extensions.push(ActiveExtension::new(extension, Default::default()));
