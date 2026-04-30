@@ -232,7 +232,7 @@ impl Embedder for GeminiEmbedder {
 
     fn dimensions(&self) -> Option<usize> {
         match self.model_name() {
-            "embedding-001" => Some(768),
+            "gemini-embedding-001" => Some(3072),
             "text-embedding-004" => Some(768),
             _ => {
                 warn!(model = %self.model_name(), "Unknown Gemini embedding model, dimensions not set.");

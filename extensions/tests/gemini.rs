@@ -237,7 +237,7 @@ async fn integration_test_gemini_embed_success() {
     let api_key = get_api_key().await;
 
     // Use a known, generally available model
-    let model_name = "embedding-001";
+    let model_name = "gemini-embedding-001";
 
     let embedder = match GeminiEmbedder::new(api_key, model_name) {
             Ok(e) => e,
@@ -273,7 +273,7 @@ async fn integration_test_gemini_embed_success() {
 async fn integration_test_gemini_embed_with_task_type() {
     let api_key = get_api_key().await;
 
-    let model_name = "embedding-001";
+    let model_name = "gemini-embedding-001";
     let task_type = "RETRIEVAL_DOCUMENT".to_string();
 
     let embedder = match GeminiEmbedder::new_with_options(
@@ -311,7 +311,7 @@ async fn integration_test_gemini_embed_with_task_type() {
 #[ignore]
 async fn integration_test_gemini_embed_invalid_api_key() {
     let invalid_api_key = "THIS_IS_NOT_A_VALID_API_KEY";
-    let model_name = "embedding-001"; // Use a real model name
+    let model_name = "gemini-embedding-001"; // Use a real model name
 
     // Creation should succeed, the key isn't validated until the API call
     let embedder = match GeminiEmbedder::new(invalid_api_key, model_name) {
@@ -373,14 +373,14 @@ async fn integration_test_gemini_embed_invalid_model_name() {
 async fn integration_test_gemini_batch_limit_error() {
     let api_key = get_api_key().await;
 
-    let model_name = "embedding-001";
+    let model_name = "gemini-embedding-001";
 
     let embedder = match GeminiEmbedder::new(api_key, model_name) {
             Ok(e) => e,
             Err(e) => panic!("Failed to create GeminiEmbedder: {}", e),
     };
 
-    // Create a batch larger than the expected limit (100 for embedding-001)
+    // Create a batch larger than the expected limit (100 for gemini-embedding-001)
     let large_batch: Vec<&str> = (0..101).map(|_| "text").collect();
 
     let result = embedder.embed(&large_batch).await;
