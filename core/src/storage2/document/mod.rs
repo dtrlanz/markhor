@@ -53,14 +53,14 @@ impl Document {
         std::iter::empty()
     }
 
-    pub async fn text(&self) -> &Text {
-        self.text.get_or_init(|| async { 
+    pub async fn text(&self) -> Result<&Text, AccessStorageError> {
+        Ok(self.text.get_or_init(|| async { 
             unimplemented!()
-        }).await
+        }).await)
     }
 
-    pub async fn text_mut(&mut self) -> &mut Text {
-        self.text.get_mut().unwrap()
+    pub async fn text_mut(&mut self) -> Result<&mut Text, AccessStorageError> {
+        Ok(self.text.get_mut().unwrap())
     }
 
     pub fn metadata(&self) -> &DocumentMetadata {
@@ -72,7 +72,7 @@ impl Document {
         Ok(format!("---\n{}---\n", yaml))
     }
 
-    pub async fn doc_hash(&self) -> HashValue {
+    pub async fn doc_hash(&self) -> Result<HashValue, AccessStorageError> {
         let md_hash = self.metadata_hash.get_or_init(|| {
             let mut hasher = Sha256::new();
             hasher.update(serde_yaml_ng::to_string(&self.metadata).unwrap());
@@ -81,7 +81,7 @@ impl Document {
             hasher.update(self.absolute_path.as_os_str().as_encoded_bytes());
             HashValue { value: hasher.finalize() }
         });
-        self.text().await.hash() ^ *md_hash
+        Ok(self.text().await?.hash() ^ *md_hash)
     }
 
     pub(crate) fn extension_cache(&self, extension: &str) -> Option<&ExtensionCache> {
@@ -472,7 +472,7 @@ impl Document {
     pub async fn save(&mut self) -> Result<(), AccessStorageError> {
         info!("Saving document {:?}", self.absolute_path);
         let mut doc_parts = self.metadata.doc_parts.clone();
-        let text_export = self.text().await.export(&mut doc_parts);
+        let text_export = self.text().await?.export(&mut doc_parts);
         self.metadata.doc_parts = doc_parts;
         // Save text and metadata to appropriate location
         match self.metadata.metadata_location {
@@ -735,14 +735,14 @@ mod tests {
         let doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.workspace(), &ws);
-        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("foo"));
+        assert_eq!(doc.text().await.unwrap().export(&mut None).as_deref(), Some("foo"));
 
         // Document with metadata
         let doc = Document::open(ws.clone(), &dir.join("doc2.md")).await.unwrap();
         assert_eq!(doc.path(), "doc2.md");
         assert_eq!(doc.workspace(), &ws);
         assert_eq!(doc.metadata.id, metadata.id);
-        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("foo"));
+        assert_eq!(doc.text().await.unwrap().export(&mut None).as_deref(), Some("foo"));
     }
 
     #[tokio::test]
@@ -763,7 +763,7 @@ extensions:
 
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.workspace(), &ws);
-        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("hello world"));
+        assert_eq!(doc.text().await.unwrap().export(&mut None).as_deref(), Some("hello world"));
         assert_eq!(doc.extension_cache("foo"), Some(&ExtensionCache {
             hash: None,
             data: 42.into(),
@@ -778,7 +778,7 @@ extensions:
         let ws = Workspace::open(&dir).await.unwrap();
         let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
 
-        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("hello world"));
+        assert_eq!(doc.text().await.unwrap().export(&mut None).as_deref(), Some("hello world"));
 
         let chunker = ActiveExtension::new(FixedSizeChunkerExtension::new(5), Default::default())
             .chunkers().next().unwrap();
@@ -806,14 +806,14 @@ extensions:
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
         let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
-        let initial_doc_hash = doc.doc_hash().await;
-        let mut text = doc.text_mut().await;
+        let initial_doc_hash = doc.doc_hash().await.unwrap();
+        let mut text = doc.text_mut().await.unwrap();
         let initial_text_hash = text.hash();
 
         // Update text and check that hashes change
         text.parts_mut()[0].push_str("!");
         let updated_text_hash = text.hash();
-        let updated_doc_hash = doc.doc_hash().await;
+        let updated_doc_hash = doc.doc_hash().await.unwrap();
 
         assert_ne!(initial_text_hash, updated_text_hash);
         assert_ne!(initial_doc_hash, updated_doc_hash);
@@ -831,7 +831,7 @@ extensions:
         // Set locations
         doc.metadata.metadata_location = MetadataLocation::SourceFile;
         // Set text
-        doc.text_mut().await.import(Some("Hello world"), None);
+        doc.text_mut().await.unwrap().import(Some("Hello world"), None);
 
         // Save
         doc.save().await.unwrap();
@@ -854,7 +854,7 @@ extensions:
         // Set locations
         doc.metadata.metadata_location = MetadataLocation::MetadataFile;
         // Set text
-        doc.text_mut().await.import(Some("Hello world"), None);
+        doc.text_mut().await.unwrap().import(Some("Hello world"), None);
 
         // Save
         doc.save().await.unwrap();
@@ -881,7 +881,7 @@ extensions:
         // Set locations
         doc.metadata.metadata_location = MetadataLocation::MetadataFile;
         // Set text
-        doc.text_mut().await.import(Some("Hello world"), None);
+        doc.text_mut().await.unwrap().import(Some("Hello world"), None);
 
         // Save
         doc.save().await.unwrap();
@@ -1026,7 +1026,7 @@ extensions:
         // Load document
         let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
         assert_eq!(doc.path(), "doc.md");
-        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("hello world"));
+        assert_eq!(doc.text().await.unwrap().export(&mut None).as_deref(), Some("hello world"));
 
         // Save document
         doc.save().await.unwrap();
@@ -1049,7 +1049,7 @@ extensions:
         // Load document
         let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
         assert_eq!(doc.path(), "doc.md");
-        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("hello world"));
+        assert_eq!(doc.text().await.unwrap().export(&mut None).as_deref(), Some("hello world"));
         assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
 
         // Save document
@@ -1072,7 +1072,7 @@ extensions:
         // Load document
         let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
         assert_eq!(doc.path(), "doc.md");
-        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("hello world"));
+        assert_eq!(doc.text().await.unwrap().export(&mut None).as_deref(), Some("hello world"));
         assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
 
         // Save document
@@ -1096,7 +1096,7 @@ extensions:
         // Load document
         let mut doc = Document::open(ws.clone(), &dir.join("doc.csv")).await.unwrap();
         assert_eq!(doc.path(), "doc.csv");
-        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("a,b,c\n1,2,3"));
+        assert_eq!(doc.text().await.unwrap().export(&mut None).as_deref(), Some("a,b,c\n1,2,3"));
 
         // Save document
         doc.save().await.unwrap();
@@ -1120,7 +1120,7 @@ extensions:
         // Load document
         let mut doc = Document::open(ws.clone(), &dir.join("doc.csv")).await.unwrap();
         assert_eq!(doc.path(), "doc.csv");
-        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("a,b,c\n1,2,3"));
+        assert_eq!(doc.text().await.unwrap().export(&mut None).as_deref(), Some("a,b,c\n1,2,3"));
         assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
 
         // Save document
@@ -1144,7 +1144,7 @@ extensions:
         // Load document
         let mut doc = Document::open(ws.clone(), &dir.join("doc.pdf")).await.unwrap();
         assert_eq!(doc.path(), "doc.pdf");
-        assert_eq!(doc.text().await.export(&mut None), None);
+        assert_eq!(doc.text().await.unwrap().export(&mut None), None);
 
         // Save document
         doc.save().await.unwrap();
@@ -1168,7 +1168,7 @@ extensions:
         // Load document
         let mut doc = Document::open(ws.clone(), &dir.join("doc.pdf")).await.unwrap();
         assert_eq!(doc.path(), "doc.pdf");
-        assert_eq!(doc.text().await.export(&mut None), None);
+        assert_eq!(doc.text().await.unwrap().export(&mut None), None);
         assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
 
         // Save document
@@ -1193,7 +1193,7 @@ extensions:
         // Load document
         let mut doc = Document::open(ws.clone(), &dir.join("doc.pdf")).await.unwrap();
         assert_eq!(doc.path(), "doc.pdf");
-        assert_eq!(doc.text().await.export(&mut None).as_deref(), Some("Hello world"));
+        assert_eq!(doc.text().await.unwrap().export(&mut None).as_deref(), Some("Hello world"));
         assert_eq!(doc.metadata.id, Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap());
 
         // Save document

@@ -142,8 +142,8 @@ mod tests {
         docs.sort_by_key(|doc| doc.path().to_owned());
 
         assert_eq!(docs[0].path(), "child/nested.md");
-        assert_eq!(docs[0].text().await.export(&mut None).as_deref(), Some("nested"));
+        assert_eq!(docs[0].text().await.unwrap().export(&mut None).as_deref(), Some("nested"));
         assert_eq!(docs[1].path(), "doc.md");
-        assert_eq!(docs[1].text().await.export(&mut None).as_deref(), Some("foo"));
+        assert_eq!(docs[1].text().await.unwrap().export(&mut None).as_deref(), Some("foo"));
     }
 }

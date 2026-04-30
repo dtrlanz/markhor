@@ -67,7 +67,7 @@ pub fn chat<F1: FnMut(&Message) + Send, F2: FnMut(&[Document]) + Send>(mut messa
 async fn attach_docs<F: FnMut(&[Document]) + Send>(user_message: &str, docs: &[Document], on_attachment: &mut F) -> Result<Message, AccessStorageError> {
     let mut doc_contents = vec![];
     for doc in docs {
-        let parts = doc.text().await.parts();
+        let parts = doc.text().await?.parts();
         if parts.is_empty() {
             tracing::warn!("No text content found for document: {}", doc.path().display());
             continue;

@@ -4,7 +4,7 @@ use std::{collections::{HashMap}, hash::{Hash, Hasher}, sync::Arc};
 use tokio::sync::{RwLock, mpsc::Receiver};
 use uuid::Uuid;
 
-use crate::{embedding::Embedding, storage2::{ChunkIdx, Document, PrelimFilter, HashValue}};
+use crate::{embedding::Embedding, storage2::{AccessStorageError, ChunkIdx, Document, HashValue, PrelimFilter}};
 
 #[derive(Debug, Default, Clone)]
 pub struct VectorStore {
@@ -34,13 +34,14 @@ impl VectorStore {
         }
     }
 
-    pub async fn retain_missing_docs(&self, docs: &mut Vec<Document>) {
+    // TODO: consider removing (no longer unused)
+    pub async fn retain_missing_docs(&self, docs: &mut Vec<Document>) -> Result<(), AccessStorageError> {
         let data = self.data.read().await;
         let mut idx = 0;
         while idx < docs.len() {
             let doc_id = DocVersionId {
                 id: docs[idx].id().clone(),
-                hash: docs[idx].doc_hash().await,
+                hash: docs[idx].doc_hash().await?,
                 filter: PrelimFilter {},    // dummy value
             };
             if data.contains_doc(&doc_id) {
@@ -49,6 +50,7 @@ impl VectorStore {
                 docs.remove(idx);
             }
         }
+        Ok(())
     }
 
     pub async fn all(&self) -> VectorView {
@@ -210,12 +212,12 @@ pub struct DocVersionId {
 }
 
 impl DocVersionId {
-    pub async fn from_document(document: &Document) -> Self {
-        DocVersionId {
+    pub async fn from_document(document: &Document) -> Result<Self, AccessStorageError> {
+        Ok(DocVersionId {
             id: document.id().clone(),
-            hash: document.doc_hash().await,
+            hash: document.doc_hash().await?,
             filter: PrelimFilter::from(document),
-        }
+        })
     }
 }
 
