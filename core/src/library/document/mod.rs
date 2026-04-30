@@ -821,7 +821,7 @@ extensions:
         let ws = Workspace::open(&dir).await.unwrap();
         let mut doc = Document::open(ws.clone(), &dir.join("doc.md")).await.unwrap();
         let initial_doc_hash = doc.doc_hash().await.unwrap();
-        let mut text = doc.text_mut().await.unwrap();
+        let text = doc.text_mut().await.unwrap();
         let initial_text_hash = text.hash();
 
         // Update text and check that hashes change

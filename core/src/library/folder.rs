@@ -1,4 +1,4 @@
-use std::{backtrace, path::{Path, PathBuf}, sync::Arc};
+use std::{path::{Path, PathBuf}};
 
 use tokio::fs::{self, ReadDir};
 use tracing::instrument;

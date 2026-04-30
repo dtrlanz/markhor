@@ -105,14 +105,14 @@ pub struct PrelimFilter {
 impl PrelimFilter {
     /// Returns true if the document from which this filter was created may be included in the 
     /// given scope, false if it is definitely not.
-    pub fn maybe_matches(&self, scope: &Scope) -> bool {
+    pub fn maybe_matches(&self, _scope: &Scope) -> bool {
         // TODO
         true
     }
 }
 
 impl From<&Document> for PrelimFilter {
-    fn from(document: &Document) -> Self {
+    fn from(_document: &Document) -> Self {
         // TODO
         PrelimFilter {}
     }
