@@ -3,7 +3,7 @@ use std::collections::{HashMap, hash_map::Entry};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{embedding::Embedding, storage2::{HashValue, document::text::Part}};
+use crate::{embedding::Embedding, library::{HashValue, document::text::Part}};
 
 pub struct Chunks<'a> {
     pub(crate) chunker_id: String,

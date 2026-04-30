@@ -3,7 +3,7 @@ use std::{backtrace, path::{Path, PathBuf}, sync::Arc};
 use tokio::fs::{self, ReadDir};
 use tracing::instrument;
 
-use crate::storage2::{AccessStorageError, Document};
+use crate::library::{AccessStorageError, Document};
 
 use super::Workspace;
 
@@ -166,7 +166,7 @@ impl Read {
                         ReadEntry::Folder(folder)
                     } else if metadata.is_file() {
                         // Include source files only, ignore metadata files
-                        if path.extension().and_then(|ext| ext.to_str()) == Some(crate::storage2::METADATA_EXTENSION) {
+                        if path.extension().and_then(|ext| ext.to_str()) == Some(crate::library::METADATA_EXTENSION) {
                             continue;
                         }
                             let document = Document::open(self.workspace.clone(), &path).await?;
@@ -237,8 +237,8 @@ impl ReadRecursive {
 
 #[cfg(test)]
 mod tests {
-    use crate::storage2::fs_test_utils::{TempTree, fs_tree};
-    use crate::storage2::WORKSPACE_CONFIG_DIR;
+    use crate::library::fs_test_utils::{TempTree, fs_tree};
+    use crate::library::WORKSPACE_CONFIG_DIR;
 
     use super::*;
 

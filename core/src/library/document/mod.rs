@@ -7,7 +7,7 @@ use tokio::fs::{self, OpenOptions};
 use tracing::{debug, error, info, instrument, trace, warn};
 use std::{collections::{HashMap, hash_map::Entry}, ffi::OsStr, path::{Path, PathBuf}};
 
-use crate::{chunking::{Chunker, ChunkerError}, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES}, storage2::{ATTACHMENTS_DIR, AccessStorageError, HashValue, METADATA_EXTENSION, Tag, Workspace}};
+use crate::{chunking::{Chunker, ChunkerError}, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES}, library::{ATTACHMENTS_DIR, AccessStorageError, HashValue, METADATA_EXTENSION, Tag, Workspace}};
 
 pub mod chunks;
 pub mod text;
@@ -716,9 +716,9 @@ pub(crate) struct ExtensionCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage2::document::text::Part;
+    use crate::library::document::text::Part;
     use crate::{chunking::test_chunker::FixedSizeChunkerExtension, embedding::Embedding, extension::ActiveExtension};
-    use crate::storage2::fs_test_utils::{TempTree, fs_tree};
+    use crate::library::fs_test_utils::{TempTree, fs_tree};
 
     #[tokio::test]
     async fn document_open() {

@@ -10,7 +10,7 @@ use markhor::app::Markhor;
 use markhor::cli::{Cli, Commands};
 use markhor::commands;
 use markhor_core::extension::{ActiveExtension, Extension};
-use markhor_core::storage2::Workspace;
+use markhor_core::library::Workspace;
 use markhor_extensions::chunking::Chunkers;
 use markhor_extensions::cli::CliExtension;
 use markhor_extensions::gemini::GeminiClientExtension;

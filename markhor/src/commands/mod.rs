@@ -6,7 +6,7 @@ use crate::{app::Markhor, cli::{
     ChatArgs, ConfigArgs, ConfigCommands, ImportArgs, InstallArgs, OpenArgs, SearchArgs, ShowArgs, WorkspaceArgs, WorkspaceCommands
 }};
 use anyhow::Result;
-use markhor_core::storage2::Workspace;
+use markhor_core::library::Workspace;
 use tracing::{error, info};
 use uuid::Uuid;
 

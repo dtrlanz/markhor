@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use async_trait::async_trait;
 
-use markhor_core::{chat::prompter::{PromptError, Prompter}, job::AssetSender, storage2::{Folder, ReadEntry}};
+use markhor_core::{chat::prompter::{PromptError, Prompter}, job::AssetSender, library::{Folder, ReadEntry}};
 use nu_ansi_term::{Color, Style};
 use reedline::{default_emacs_keybindings, ColumnarMenu, Completer, DefaultPrompt, DefaultPromptSegment, Emacs, Highlighter, KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal, Span, StyledText, Suggestion};
 use tokio::sync::Mutex;

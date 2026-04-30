@@ -341,7 +341,7 @@ pub(crate) mod fs_test_utils {
         fn into_node_bytes(self) -> Cow<'a, [u8]> {
             Cow::Borrowed(self.as_slice())
         }
-    }    
+    }
 
     #[macro_export]
     macro_rules! fs_tree {
@@ -356,7 +356,7 @@ pub(crate) mod fs_test_utils {
 
         // 2. Match a nested folder (returns FsNode)
         (@node $name:expr => { $($child_name:expr => $child_content:tt),* $(,)? }) => {
-            $crate::storage2::fs_test_utils::FsNode::folder(
+            $crate::library::fs_test_utils::FsNode::folder(
                 $name,
                 vec![
                     $( fs_tree!(@node $child_name => $child_content) ),*
@@ -366,7 +366,7 @@ pub(crate) mod fs_test_utils {
 
         // 3. Match a nested file (returns FsNode)
         (@node $name:expr => $contents:expr) => {
-            $crate::storage2::fs_test_utils::FsNode::file($name, $contents)
+            $crate::library::fs_test_utils::FsNode::file($name, $contents)
         };
     }
     pub use fs_tree;

@@ -3,7 +3,7 @@ use std::{collections::HashMap, ops::{Deref, DerefMut}, sync::OnceLock};
 
 use tracing::{debug, info, instrument, trace, warn};
 
-use crate::{chunking::{Chunker, ChunkerError}, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES, WITHOUT_XML}, storage2::{HashValue, document::chunks::ChunkCache}};
+use crate::{chunking::{Chunker, ChunkerError}, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES, WITHOUT_XML}, library::{HashValue, document::chunks::ChunkCache}};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Text {

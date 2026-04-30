@@ -1,6 +1,6 @@
 use std::{fs, path::{Path, PathBuf}, sync::{Arc, atomic::{AtomicBool, Ordering}}};
 
-use markhor_core::{chat::chat::Message, extension::{ActiveExtension, Extension}, job::{self, Job}, storage2::{Document, Folder, Part, Workspace}};
+use markhor_core::{chat::chat::Message, extension::{ActiveExtension, Extension}, job::{self, Job}, library::{Document, Folder, Part, Workspace}};
 use markhor_extensions::cli::CliExtension;
 use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
 use tracing::error;

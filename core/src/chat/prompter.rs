@@ -34,7 +34,7 @@ pub enum PromptError {
     Io(#[from] std::io::Error),
 
     #[error("Prompt failed due to storage error: {0}")]
-    Storage(#[from] crate::storage2::AccessStorageError),
+    Storage(#[from] crate::library::AccessStorageError),
 
     #[error("Prompt failed to execute to completion: {0}")]
     Async(#[from] tokio::task::JoinError),

@@ -1,6 +1,6 @@
 use std::{collections::HashSet, path::{Path, PathBuf}};
 
-use crate::storage2::{AccessStorageError, Document, Folder, Tag, Workspace, folder::ReadRecursive};
+use crate::library::{AccessStorageError, Document, Folder, Tag, Workspace, folder::ReadRecursive};
 
 
 
@@ -122,7 +122,7 @@ impl From<&Document> for PrelimFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage2::fs_test_utils::{TempTree, fs_tree};
+    use crate::library::fs_test_utils::{TempTree, fs_tree};
 
     #[tokio::test]
     async fn docs() {

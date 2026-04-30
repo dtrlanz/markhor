@@ -1,6 +1,6 @@
 use tokio::sync::mpsc::Sender;
 
-use crate::{chat::{chat::{ContentPart, Message}, prompter::PromptError}, extension::UseExtensionError, storage2::{AccessStorageError, Document}};
+use crate::{chat::{chat::{ContentPart, Message}, prompter::PromptError}, extension::UseExtensionError, library::{AccessStorageError, Document}};
 
 use super::{Assets, Job, RunJobError};
 

@@ -4,7 +4,7 @@ use thiserror::Error;
 use tracing::{instrument, debug, trace};
 use uuid::Uuid;
 
-use crate::{chunking::{Chunker, ChunkerError}, embedding::{Embedder, Embedding, EmbeddingError}, extension::F11y, storage2::{AccessStorageError, ChunkIdx, Document, Scope, HashValue, Workspace}, vector_store::{DocVersionId, VectorView}};
+use crate::{chunking::{Chunker, ChunkerError}, embedding::{Embedder, Embedding, EmbeddingError}, extension::F11y, library::{AccessStorageError, ChunkIdx, Document, Scope, HashValue, Workspace}, vector_store::{DocVersionId, VectorView}};
 
 
 
@@ -170,7 +170,7 @@ mod tests {
     use super::*;
     use crate::embedding::test_utils::MockEmbedderExtension;
     use crate::{chunking::test_chunker::FixedSizeChunkerExtension, extension::ActiveExtension};
-    use crate::storage2::fs_test_utils::{TempTree, fs_tree};
+    use crate::library::fs_test_utils::{TempTree, fs_tree};
 
     #[tokio::test]
     async fn retriever_initialization() {

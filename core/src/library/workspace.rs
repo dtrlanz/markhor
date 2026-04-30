@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::{Path, PathBuf}, sync::{Arc, Mutex}};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
-use crate::{embedding::Embedder, extension::F11y, storage2::{AccessStorageError, Document, Folder, WORKSPACE_CONFIG_DIR, WORKSPACE_METADATA_FILENAME}, vector_store::VectorStore};
+use crate::{embedding::Embedder, extension::F11y, library::{AccessStorageError, Document, Folder, WORKSPACE_CONFIG_DIR, WORKSPACE_METADATA_FILENAME}, vector_store::VectorStore};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
@@ -164,7 +164,7 @@ pub struct WorkspaceMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage2::fs_test_utils::{TempTree, fs_tree};
+    use crate::library::fs_test_utils::{TempTree, fs_tree};
 
     #[tokio::test]
     async fn workspace_open() {

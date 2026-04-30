@@ -4,7 +4,7 @@ use std::{collections::{HashMap}, hash::{Hash, Hasher}, sync::Arc};
 use tokio::sync::{RwLock, mpsc::Receiver};
 use uuid::Uuid;
 
-use crate::{embedding::Embedding, storage2::{AccessStorageError, ChunkIdx, Document, HashValue, PrelimFilter}};
+use crate::{embedding::Embedding, library::{AccessStorageError, ChunkIdx, Document, HashValue, PrelimFilter}};
 
 #[derive(Debug, Default, Clone)]
 pub struct VectorStore {
