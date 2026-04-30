@@ -3,7 +3,7 @@ use std::{backtrace, path::{Path, PathBuf}, sync::Arc};
 use tokio::fs::{self, ReadDir};
 use tracing::instrument;
 
-use crate::library::{AccessStorageError, Document};
+use crate::library::{AccessLibraryError, Document};
 
 use super::Workspace;
 
@@ -66,11 +66,11 @@ impl Folder {
     /// # Errors
     /// 
     /// Returns an error if the directory cannot be opened or does not exist.
-    pub async fn open(path: impl AsRef<Path>) -> Result<Self, AccessStorageError> {
+    pub async fn open(path: impl AsRef<Path>) -> Result<Self, AccessLibraryError> {
         let path = std::path::absolute(path)?;
         match Workspace::open(&path).await {
             Ok(workspace) => Ok(workspace.root()),
-            Err(AccessStorageError::InWorkspace(ws)) => {
+            Err(AccessLibraryError::InWorkspace(ws)) => {
                 println!("In workspace: {:?}", ws);
                 let ws = Workspace::open(ws).await?;
                 println!("Opened workspace: {:?}", ws);
@@ -80,7 +80,7 @@ impl Folder {
         }
     }
 
-    pub async fn create_document(&self, name: impl AsRef<str>) -> Result<Document, AccessStorageError> {
+    pub async fn create_document(&self, name: impl AsRef<str>) -> Result<Document, AccessLibraryError> {
         let name = name.as_ref();
         if name.contains(std::path::MAIN_SEPARATOR) {
             todo!("Handle error or otherwise handle situation where document name contains path separator");
@@ -94,7 +94,7 @@ impl Folder {
     /// # Errors
     /// 
     /// Returns an error if the folder cannot be opened or does not exist.
-    pub async fn folder(&self, name: impl AsRef<Path>) -> Result<Folder, AccessStorageError> {
+    pub async fn folder(&self, name: impl AsRef<Path>) -> Result<Folder, AccessLibraryError> {
         let path = name.as_ref();
         let absolute_path = if path.is_absolute() {
             path.to_path_buf()
@@ -110,7 +110,7 @@ impl Folder {
     /// 
     /// Returns an error if the document cannot be opened or does not exist.
     #[instrument(skip(self), fields(folder_path = %self.absolute_path.display(), name = %name.as_ref().display()))]
-    pub async fn document(&self, name: impl AsRef<Path>) -> Result<Document, AccessStorageError> {
+    pub async fn document(&self, name: impl AsRef<Path>) -> Result<Document, AccessLibraryError> {
         let path = name.as_ref();
         let absolute_path = if path.is_absolute() {
             path.to_path_buf()
@@ -124,22 +124,22 @@ impl Folder {
 async fn open_folder(
     absolute_path: PathBuf,
     workspace: Workspace,
-) -> Result<Folder, AccessStorageError> {
+) -> Result<Folder, AccessLibraryError> {
     // Check if path exists and all that
     let absolute_path = fs::canonicalize(&absolute_path).await
         .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound {
-            AccessStorageError::DirectoryNotFound(absolute_path)
+            AccessLibraryError::DirectoryNotFound(absolute_path)
         } else {
-            AccessStorageError::Io(e)
+            AccessLibraryError::Io(e)
     })?;
     // Check if path is inside of workspace
     if !absolute_path.starts_with(&workspace.path()) {
-        return Err(AccessStorageError::NotInWorkspace(absolute_path));
+        return Err(AccessLibraryError::NotInWorkspace(absolute_path));
     }
     // Check if path points to a directory
     let path_metadata = fs::metadata(&absolute_path).await?;
     if !path_metadata.is_dir() {
-        return Err(AccessStorageError::NotADirectory(absolute_path));
+        return Err(AccessLibraryError::NotADirectory(absolute_path));
     }
     // All good
     Ok(Folder {
@@ -155,7 +155,7 @@ pub struct Read {
 }
 
 impl Read {
-    pub async fn next_entry(&mut self) -> Result<Option<ReadEntry>, AccessStorageError> {
+    pub async fn next_entry(&mut self) -> Result<Option<ReadEntry>, AccessLibraryError> {
         loop {
             match self.read_dir.next_entry().await? {
                 Some(entry) => {
@@ -182,7 +182,7 @@ impl Read {
         }
     }
 
-    pub async fn into_vec(mut self) -> Result<Vec<ReadEntry>, AccessStorageError> {
+    pub async fn into_vec(mut self) -> Result<Vec<ReadEntry>, AccessLibraryError> {
         let mut entries = vec![];
         while let Some(entry) = self.next_entry().await? {
             entries.push(entry);
@@ -203,7 +203,7 @@ pub struct ReadRecursive {
 }
 
 impl ReadRecursive {
-    pub async fn next_entry(&mut self) -> Result<Option<Document>, AccessStorageError> {
+    pub async fn next_entry(&mut self) -> Result<Option<Document>, AccessLibraryError> {
         while let Some(read) = self.vec.last_mut() {
             match read.next_entry().await? {
                 Some(entry) => {
@@ -225,7 +225,7 @@ impl ReadRecursive {
         Ok(None)
     }
 
-    pub async fn into_vec(mut self) -> Result<Vec<Document>, AccessStorageError> {
+    pub async fn into_vec(mut self) -> Result<Vec<Document>, AccessLibraryError> {
         let mut entries = vec![];
         while let Some(entry) = self.next_entry().await? {
             entries.push(entry);

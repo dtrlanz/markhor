@@ -1,6 +1,6 @@
 use std::{collections::HashSet, path::{Path, PathBuf}};
 
-use crate::library::{AccessStorageError, Document, Folder, Tag, Workspace, folder::ReadRecursive};
+use crate::library::{AccessLibraryError, Document, Folder, Tag, Workspace, folder::ReadRecursive};
 
 
 
@@ -26,10 +26,10 @@ impl Scope {
         true
     }
 
-    pub async fn docs(&self, workspace: &Workspace) -> Result<Docs<'_>, AccessStorageError> {
+    pub async fn docs(&self, workspace: &Workspace) -> Result<Docs<'_>, AccessLibraryError> {
         // Check if workspace contains the scope's path
         if !self.folder_path.starts_with(workspace.path()) {
-            return Err(AccessStorageError::NotInWorkspace(self.folder_path.clone()));
+            return Err(AccessLibraryError::NotInWorkspace(self.folder_path.clone()));
         }
         let folder = workspace.folder(&self.folder_path).await?;
         let read_recursive = folder.read_recursive().await?;
@@ -65,7 +65,7 @@ pub struct Docs<'a> {
 }
 
 impl<'a> Docs<'a> {
-    pub async fn next_doc(&mut self) -> Result<Option<Document>, AccessStorageError> {
+    pub async fn next_doc(&mut self) -> Result<Option<Document>, AccessLibraryError> {
         while let Some(doc) = self.doc_stream.next_entry().await? {
             if self.scope.contains(&doc) {
                 return Ok(Some(doc));
@@ -74,7 +74,7 @@ impl<'a> Docs<'a> {
         Ok(None)
     }
 
-    pub async fn into_vec(mut self) -> Result<Vec<Document>, AccessStorageError> {
+    pub async fn into_vec(mut self) -> Result<Vec<Document>, AccessLibraryError> {
         let mut docs = Vec::new();
         while let Some(doc) = self.next_doc().await? {
             docs.push(doc);

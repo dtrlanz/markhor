@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::{Path, PathBuf}, sync::{Arc, Mutex}};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
-use crate::{embedding::Embedder, extension::F11y, library::{AccessStorageError, Document, Folder, WORKSPACE_CONFIG_DIR, WORKSPACE_METADATA_FILENAME}, vector_store::VectorStore};
+use crate::{embedding::Embedder, extension::F11y, library::{AccessLibraryError, Document, Folder, WORKSPACE_CONFIG_DIR, WORKSPACE_METADATA_FILENAME}, vector_store::VectorStore};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
@@ -11,18 +11,18 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    pub async fn create(path: impl AsRef<Path>) -> Result<Self, AccessStorageError> {
+    pub async fn create(path: impl AsRef<Path>) -> Result<Self, AccessLibraryError> {
         // TODO: consider creating workspace config directory and files directly, or add options 
         // to control this behavior
         // TODO: add unit tests
         let absolute_path = fs::canonicalize(path.as_ref()).await
             .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound {
-                AccessStorageError::DirectoryNotFound(path.as_ref().to_path_buf())
+                AccessLibraryError::DirectoryNotFound(path.as_ref().to_path_buf())
             } else {
-                AccessStorageError::Io(e)
+                AccessLibraryError::Io(e)
         })?;
         if let Some(ws) = find_workspace_descendant(&absolute_path).await? {
-            return Err(AccessStorageError::InWorkspace(ws));
+            return Err(AccessLibraryError::InWorkspace(ws));
         }
         fs::create_dir_all(&absolute_path).await?;
         Ok(Self {
@@ -47,19 +47,19 @@ impl Workspace {
     /// Opens an existing directory as a workspace.
     ///
     /// Loads workspace metadata from the config subdirectory if it exists.
-    pub async fn open(path: impl AsRef<Path>) -> Result<Self, AccessStorageError> {
+    pub async fn open(path: impl AsRef<Path>) -> Result<Self, AccessLibraryError> {
         let absolute_path = fs::canonicalize(path.as_ref()).await
             .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound {
-                AccessStorageError::DirectoryNotFound(path.as_ref().to_path_buf())
+                AccessLibraryError::DirectoryNotFound(path.as_ref().to_path_buf())
             } else {
-                AccessStorageError::Io(e)
+                AccessLibraryError::Io(e)
         })?;
         let path_metadata = fs::metadata(&absolute_path).await?;
         if !path_metadata.is_dir() {
-            return Err(AccessStorageError::NotADirectory(absolute_path));
+            return Err(AccessLibraryError::NotADirectory(absolute_path));
         }
         if let Some(ws) = find_workspace_descendant(&absolute_path).await? {
-            return Err(AccessStorageError::InWorkspace(ws));
+            return Err(AccessLibraryError::InWorkspace(ws));
         }
 
         let config_dir = absolute_path.join(WORKSPACE_CONFIG_DIR);
@@ -70,7 +70,7 @@ impl Workspace {
                 WorkspaceMetadata::default()
             },
             Err(e) => {
-                return Err(AccessStorageError::Io(e));
+                return Err(AccessLibraryError::Io(e));
             }
         };
 
@@ -88,7 +88,7 @@ impl Workspace {
     /// # Errors
     /// 
     /// Returns an error if the folder cannot be opened or does not exist.
-    pub async fn folder(&self, name: impl AsRef<Path>) -> Result<Folder, AccessStorageError> {
+    pub async fn folder(&self, name: impl AsRef<Path>) -> Result<Folder, AccessLibraryError> {
         self.root().folder(name).await
     }
 
@@ -97,7 +97,7 @@ impl Workspace {
     /// # Errors
     /// 
     /// Returns an error if the document cannot be opened or does not exist.
-    pub async fn document(&self, name: impl AsRef<Path>) -> Result<Document, AccessStorageError> {
+    pub async fn document(&self, name: impl AsRef<Path>) -> Result<Document, AccessLibraryError> {
         self.root().document(name).await
     }
 
@@ -133,7 +133,7 @@ impl Eq for WorkspaceInner {}
 /// - `Some` if the path is a descendant of a workspace
 /// - `None` if the path is outside of any workspace
 /// - `None` if the path is a workspace itself (i.e., points to the root directory)
-pub(crate) async fn find_workspace_descendant(absolute_path: &Path) -> Result<Option<PathBuf>, AccessStorageError> {
+pub(crate) async fn find_workspace_descendant(absolute_path: &Path) -> Result<Option<PathBuf>, AccessLibraryError> {
     if let Some(parent) = absolute_path.parent() {
         for ancestor in parent.ancestors() {
             let config_dir = ancestor.join(WORKSPACE_CONFIG_DIR);
@@ -147,7 +147,7 @@ pub(crate) async fn find_workspace_descendant(absolute_path: &Path) -> Result<Op
                     continue;
                 },
                 Err(e) => {
-                    return Err(AccessStorageError::Io(e));
+                    return Err(AccessLibraryError::Io(e));
                 }
             }
         }
@@ -205,7 +205,7 @@ mod tests {
         // Try opening workspace descendant as workspace
         let result = Workspace::open(&dir.join("child")).await;
         match result {
-            Err(AccessStorageError::InWorkspace(path)) => {
+            Err(AccessLibraryError::InWorkspace(path)) => {
                 let ws_path = fs::canonicalize(&dir).await.unwrap();
                 assert_eq!(path, ws_path);
             },
@@ -218,7 +218,7 @@ mod tests {
         let result = Workspace::open(&dir.join("fake")).await;
         assert!(result.is_err());
         match result {
-            Err(AccessStorageError::DirectoryNotFound(path)) => {
+            Err(AccessLibraryError::DirectoryNotFound(path)) => {
                 assert_eq!(path, dir.join("fake"));
             },
             _ => {
@@ -230,7 +230,7 @@ mod tests {
         let result = Workspace::open(&dir.join("file.txt")).await;
         assert!(result.is_err());
         match result {
-            Err(AccessStorageError::NotADirectory(path)) => {
+            Err(AccessLibraryError::NotADirectory(path)) => {
                 assert_eq!(path, fs::canonicalize(dir.join("file.txt")).await.unwrap());
             },
             _ => {

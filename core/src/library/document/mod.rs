@@ -7,7 +7,7 @@ use tokio::fs::{self, OpenOptions};
 use tracing::{debug, error, info, instrument, trace, warn};
 use std::{collections::{HashMap, hash_map::Entry}, ffi::OsStr, path::{Path, PathBuf}};
 
-use crate::{chunking::{Chunker, ChunkerError}, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES}, library::{ATTACHMENTS_DIR, AccessStorageError, HashValue, METADATA_EXTENSION, Tag, Workspace}};
+use crate::{chunking::{Chunker, ChunkerError}, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES}, library::{ATTACHMENTS_DIR, AccessLibraryError, HashValue, METADATA_EXTENSION, Tag, Workspace}};
 
 pub mod chunks;
 pub mod text;
@@ -53,13 +53,13 @@ impl Document {
         std::iter::empty()
     }
 
-    pub async fn text(&self) -> Result<&Text, AccessStorageError> {
+    pub async fn text(&self) -> Result<&Text, AccessLibraryError> {
         Ok(self.text.get_or_init(|| async { 
             unimplemented!()
         }).await)
     }
 
-    pub async fn text_mut(&mut self) -> Result<&mut Text, AccessStorageError> {
+    pub async fn text_mut(&mut self) -> Result<&mut Text, AccessLibraryError> {
         Ok(self.text.get_mut().unwrap())
     }
 
@@ -72,7 +72,7 @@ impl Document {
         Ok(format!("---\n{}---\n", yaml))
     }
 
-    pub async fn doc_hash(&self) -> Result<HashValue, AccessStorageError> {
+    pub async fn doc_hash(&self) -> Result<HashValue, AccessLibraryError> {
         let md_hash = self.metadata_hash.get_or_init(|| {
             let mut hasher = Sha256::new();
             hasher.update(serde_yaml_ng::to_string(&self.metadata).unwrap());
@@ -227,14 +227,14 @@ impl Document {
             })
     }
 
-    fn read_cache_file<T: DeserializeOwned>(&self, name: &str) -> impl Future<Output = Result<Option<T>, AccessStorageError>> + use<T> {
+    fn read_cache_file<T: DeserializeOwned>(&self, name: &str) -> impl Future<Output = Result<Option<T>, AccessLibraryError>> + use<T> {
         let cache_path = self.attachment_path_raw(name);
         // Use async block instead of async fn to avoid capturing lifetime of `&self`
         async move {
             match fs::read_to_string(&cache_path).await {
                 Ok(content) => serde_yaml_ng::from_str(&content).map_err(|e| {
                     warn!("Failed to parse cache file: {:?}", cache_path.file_name());
-                    AccessStorageError::MetadataFormat(e)
+                    AccessLibraryError::MetadataFormat(e)
                 }),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     debug!("Cache file not found {:?}", cache_path.file_name());
@@ -248,7 +248,7 @@ impl Document {
         }
     }
 
-    async fn chunker_cache(&self, chunker_id: &str) -> Result<&HashMap<String, Vec<ChunkCache>>, AccessStorageError> {
+    async fn chunker_cache(&self, chunker_id: &str) -> Result<&HashMap<String, Vec<ChunkCache>>, AccessLibraryError> {
         if self.chunker_cache.contains_key(chunker_id) {
             return Ok(self.chunker_cache.get(chunker_id).unwrap());
         }
@@ -267,7 +267,7 @@ impl Document {
     }
 
     #[instrument(skip(self), level = "debug", err)]
-    pub(crate) async fn chunker_cache_mut(&mut self, chunker_id: &str) -> Result<&mut HashMap<String, Vec<ChunkCache>>, AccessStorageError> {
+    pub(crate) async fn chunker_cache_mut(&mut self, chunker_id: &str) -> Result<&mut HashMap<String, Vec<ChunkCache>>, AccessLibraryError> {
         let read_cache = self.read_cache_file(format!(".chunks_{}.yaml", chunker_id).as_str());
         Self::load_chunker_cache(
             &mut self.chunker_cache, 
@@ -278,12 +278,12 @@ impl Document {
     }
 
     #[instrument(skip(chunker_cache, read_cache, handle_err), level = "debug", err)]
-    async fn load_chunker_cache<'a, F: FnOnce(AccessStorageError) -> Result<HashMap<String, Vec<ChunkCache>>, AccessStorageError> + Sized>(
+    async fn load_chunker_cache<'a, F: FnOnce(AccessLibraryError) -> Result<HashMap<String, Vec<ChunkCache>>, AccessLibraryError> + Sized>(
         chunker_cache: &'a mut HashMap<String, HashMap<String, Vec<ChunkCache>>>,
         chunker_id: &str,
-        read_cache: impl Future<Output = Result<Option<HashMap<String, Vec<ChunkCache>>>, AccessStorageError>>,
+        read_cache: impl Future<Output = Result<Option<HashMap<String, Vec<ChunkCache>>>, AccessLibraryError>>,
         handle_err: F,
-    ) -> Result<&'a mut HashMap<String, Vec<ChunkCache>>, AccessStorageError> {
+    ) -> Result<&'a mut HashMap<String, Vec<ChunkCache>>, AccessLibraryError> {
         match chunker_cache.entry(chunker_id.to_string()) {
             Entry::Occupied(occupied) => Ok(occupied.into_mut()),
             Entry::Vacant(vacant) => {
@@ -299,7 +299,7 @@ impl Document {
     }
 
     #[instrument(skip(self, data), level = "debug", err)]
-    async fn write_cache_file<T: Serialize + ?Sized>(&self, name: &str, data: &T) -> Result<(), AccessStorageError> {
+    async fn write_cache_file<T: Serialize + ?Sized>(&self, name: &str, data: &T) -> Result<(), AccessLibraryError> {
         let cache_path = self.attachment_path_raw(name);
         debug!("Writing cache file {:?}", cache_path);
         let content = serde_yaml_ng::to_string(data)?;
@@ -316,14 +316,14 @@ impl Document {
         Ok(())
     }
 
-    pub(crate) async fn create(workspace: Workspace, absolute_path: &Path) -> Result<Self, AccessStorageError> {
+    pub(crate) async fn create(workspace: Workspace, absolute_path: &Path) -> Result<Self, AccessLibraryError> {
         // TODO: Add unit tests
         // Check if path is valid and does not already exist
         let absolute_path = fs::canonicalize(absolute_path.parent().unwrap()).await
             .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound {
-                AccessStorageError::DirectoryNotFound(absolute_path.parent().unwrap().to_path_buf())
+                AccessLibraryError::DirectoryNotFound(absolute_path.parent().unwrap().to_path_buf())
             } else {
-                AccessStorageError::Io(e)
+                AccessLibraryError::Io(e)
             })?;
         if absolute_path.exists() {
             todo!("Handle error when creating document with path that already exists");
@@ -343,17 +343,17 @@ impl Document {
         Ok(doc)
     }
 
-    pub(crate) async fn open(workspace: Workspace, absolute_path: &Path) -> Result<Self, AccessStorageError> {
+    pub(crate) async fn open(workspace: Workspace, absolute_path: &Path) -> Result<Self, AccessLibraryError> {
         // Check if path exists and all that
         let absolute_path = fs::canonicalize(&absolute_path).await
             .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound {
-                AccessStorageError::FileNotFound(absolute_path.to_path_buf())
+                AccessLibraryError::FileNotFound(absolute_path.to_path_buf())
             } else {
-                AccessStorageError::Io(e)
+                AccessLibraryError::Io(e)
         })?;
         // Check if path is inside of workspace
         if !absolute_path.starts_with(&workspace.path()) {
-            return Err(AccessStorageError::NotInWorkspace(absolute_path));
+            return Err(AccessLibraryError::NotInWorkspace(absolute_path));
         }
 
         let metadata = DocumentMetadata::from_path(&absolute_path);
@@ -371,7 +371,7 @@ impl Document {
     }
 
     #[instrument(skip(self), level = "debug", err)]
-    async fn load(&mut self) -> Result<(), AccessStorageError> {
+    async fn load(&mut self) -> Result<(), AccessLibraryError> {
         // Attempt to load cache from cache file
         let read_cache = self.read_cache_file(".cache.yaml");
         let cache = tokio::spawn(async move {
@@ -410,13 +410,13 @@ impl Document {
                 },
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     if self.metadata.metadata_location == MetadataLocation::MetadataFile {
-                        return Err(AccessStorageError::MetadataLocation(MetadataLocation::MetadataFile, "Metadata file not found".into()));
+                        return Err(AccessLibraryError::MetadataLocation(MetadataLocation::MetadataFile, "Metadata file not found".into()));
                     }
                     // Metadata file not found, try source file
                     debug!("Metadata file not found for document {:?}, trying source file", self.absolute_path);
                 },
                 Err(e) => {
-                    return Err(AccessStorageError::Io(e));
+                    return Err(AccessLibraryError::Io(e));
                 },
             }
         }
@@ -432,7 +432,7 @@ impl Document {
                 Err(e) => {
                     if self.metadata.metadata_location == MetadataLocation::SourceFile {
                         // Metadata was expected. Return error.
-                        return Err(AccessStorageError::MetadataFormat(e));
+                        return Err(AccessLibraryError::MetadataFormat(e));
                     }
                     // Not an error. Metadata blocks are not required.
                     debug!("Could not read metadata from source file {:?}: {}", self.absolute_path, e);
@@ -469,7 +469,7 @@ impl Document {
     }
 
     #[instrument(skip(self), fields(doc_path = %self.path().display()), err)]
-    pub async fn save(&mut self) -> Result<(), AccessStorageError> {
+    pub async fn save(&mut self) -> Result<(), AccessLibraryError> {
         info!("Saving document {:?}", self.absolute_path);
         let mut doc_parts = self.metadata.doc_parts.clone();
         let text_export = self.text().await?.export(&mut doc_parts);
@@ -478,7 +478,7 @@ impl Document {
         match self.metadata.metadata_location {
             MetadataLocation::SourceFile => {
                 if !self.metadata.source_is_markdown() {
-                    return Err(AccessStorageError::MetadataLocation(
+                    return Err(AccessLibraryError::MetadataLocation(
                         self.metadata.metadata_location, 
                         "Cannot save metadata in source file that is not markdown".into(),
                     ));
@@ -518,7 +518,7 @@ impl Document {
                 }
             },
             MetadataLocation::Unknown => {
-                return Err(AccessStorageError::MetadataLocation(MetadataLocation::Unknown, "Invalid when saving".into()));
+                return Err(AccessLibraryError::MetadataLocation(MetadataLocation::Unknown, "Invalid when saving".into()));
             }
         }
 
@@ -584,7 +584,7 @@ async fn read_markdown_file<T: DeserializeOwned>(path: &Path) -> Result<(String,
     Ok((text, metadata_result))
 }
 
-async fn write_markdown_file<T: Serialize + ?Sized>(path: &Path, text: &str, metadata: &T) -> Result<(), AccessStorageError> {
+async fn write_markdown_file<T: Serialize + ?Sized>(path: &Path, text: &str, metadata: &T) -> Result<(), AccessLibraryError> {
     let metadata = serde_yaml_ng::to_string(metadata)?;
     let markdown = format!("---\n{}\n---\n{}", metadata, text);
     let mut file = OpenOptions::new()

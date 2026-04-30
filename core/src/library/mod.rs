@@ -34,7 +34,7 @@ const WORKSPACE_METADATA_FILENAME: &str = "workspace.yaml";
 
 
 #[derive(Debug, Error)]
-pub enum AccessStorageError {
+pub enum AccessLibraryError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 

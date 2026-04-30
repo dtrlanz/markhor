@@ -4,7 +4,7 @@ use std::{collections::{HashMap}, hash::{Hash, Hasher}, sync::Arc};
 use tokio::sync::{RwLock, mpsc::Receiver};
 use uuid::Uuid;
 
-use crate::{embedding::Embedding, library::{AccessStorageError, ChunkIdx, Document, HashValue, PrelimFilter}};
+use crate::{embedding::Embedding, library::{AccessLibraryError, ChunkIdx, Document, HashValue, PrelimFilter}};
 
 #[derive(Debug, Default, Clone)]
 pub struct VectorStore {
@@ -35,7 +35,7 @@ impl VectorStore {
     }
 
     // TODO: consider removing (no longer unused)
-    pub async fn retain_missing_docs(&self, docs: &mut Vec<Document>) -> Result<(), AccessStorageError> {
+    pub async fn retain_missing_docs(&self, docs: &mut Vec<Document>) -> Result<(), AccessLibraryError> {
         let data = self.data.read().await;
         let mut idx = 0;
         while idx < docs.len() {
@@ -212,7 +212,7 @@ pub struct DocVersionId {
 }
 
 impl DocVersionId {
-    pub async fn from_document(document: &Document) -> Result<Self, AccessStorageError> {
+    pub async fn from_document(document: &Document) -> Result<Self, AccessLibraryError> {
         Ok(DocVersionId {
             id: document.id().clone(),
             hash: document.doc_hash().await?,

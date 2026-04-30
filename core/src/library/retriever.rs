@@ -4,7 +4,7 @@ use thiserror::Error;
 use tracing::{instrument, debug, trace};
 use uuid::Uuid;
 
-use crate::{chunking::{Chunker, ChunkerError}, embedding::{Embedder, Embedding, EmbeddingError}, extension::F11y, library::{AccessStorageError, ChunkIdx, Document, Scope, HashValue, Workspace}, vector_store::{DocVersionId, VectorView}};
+use crate::{chunking::{Chunker, ChunkerError}, embedding::{Embedder, Embedding, EmbeddingError}, extension::F11y, library::{AccessLibraryError, ChunkIdx, Document, Scope, HashValue, Workspace}, vector_store::{DocVersionId, VectorView}};
 
 
 
@@ -119,7 +119,7 @@ impl Retriever {
         Ok(())
     }
 
-    pub async fn top_k(&self, query: Embedding, k: usize) -> Result<Vec<(Arc<Document>, ChunkIdx, f32)>, AccessStorageError> {
+    pub async fn top_k(&self, query: Embedding, k: usize) -> Result<Vec<(Arc<Document>, ChunkIdx, f32)>, AccessLibraryError> {
         let results = self.embeddings.top_k(query, k).await;
         // TODO: load docs concurrently
         let mut output = Vec::new();
@@ -152,16 +152,16 @@ enum IncludedDoc {
 #[derive(Debug, Error)]
 pub enum InitRetrieverError {
     /// An error occurred while accessing the document or workspace storage.
-    #[error("Storage error: {0}")]
-    StorageError(#[from] AccessStorageError),
+    #[error("Retriever initialization failed due to error accessing library: {0}")]
+    Library(#[from] AccessLibraryError),
 
     /// An error occurred while chunking a document to prepare it for embedding.
-    #[error("Chunker error: {0}")]
-    ChunkerError(#[from] ChunkerError),
+    #[error("Retriever initialization failed due chunker error: {0}")]
+    Chunker(#[from] ChunkerError),
 
     /// An error occurred while generating or retrieving an embedding for a document chunk.
-    #[error("Embedding error: {0}")]
-    EmbeddingError(#[from] EmbeddingError),
+    #[error("Retriever initialization failed due to embedding error: {0}")]
+    Embedding(#[from] EmbeddingError),
 }
 
 

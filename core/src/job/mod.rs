@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
-use crate::{chat::{chat::ChatApi, prompter::Prompter, ChatError}, chunking::Chunker, convert::{ConversionError, Converter}, embedding::{Embedder, EmbeddingError}, extension::{ActiveExtension, Extension, F11y, UseExtensionError}, library::{AccessStorageError, Document, Folder, Scope}};
+use crate::{chat::{chat::ChatApi, prompter::Prompter, ChatError}, chunking::Chunker, convert::{ConversionError, Converter}, embedding::{Embedder, EmbeddingError}, extension::{ActiveExtension, Extension, F11y, UseExtensionError}, library::{AccessLibraryError, Document, Folder, Scope}};
 use mime::Mime;
 use thiserror::Error;
 use tokio::{io::AsyncRead, sync::mpsc::{error::SendError, UnboundedReceiver, UnboundedSender}, task::JoinHandle};
@@ -113,7 +113,7 @@ impl<T, F: AsyncFnOnce(&mut Assets) -> Result<T, RunJobError> + Send> Job<T, F> 
     }
 
     /// Add all documents in a folder to the job's assets.
-    pub async fn add_folder(&mut self, folder: Folder) -> Result<&mut Self, AccessStorageError> {
+    pub async fn add_folder(&mut self, folder: Folder) -> Result<&mut Self, AccessLibraryError> {
         let mut read = folder.read_recursive().await?;
         while let Some(doc) = read.next_entry().await? {
             self.add_document(doc);
@@ -446,8 +446,8 @@ pub enum RunJobError {
     #[error("Job failed due to prompt error: {0}")]
     Prompt(#[from] crate::chat::prompter::PromptError),
 
-    #[error("Job failed due to storage error: {0}")]
-    Storage(#[from] AccessStorageError),
+    #[error("Job failed due to error accessing library: {0}")]
+    Library(#[from] AccessLibraryError),
 
     #[error("Job failed: {0}")]
     Other(Box<dyn std::error::Error + Send + Sync>),

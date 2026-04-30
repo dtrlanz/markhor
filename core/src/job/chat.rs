@@ -1,6 +1,6 @@
 use tokio::sync::mpsc::Sender;
 
-use crate::{chat::{chat::{ContentPart, Message}, prompter::PromptError}, extension::UseExtensionError, library::{AccessStorageError, Document}};
+use crate::{chat::{chat::{ContentPart, Message}, prompter::PromptError}, extension::UseExtensionError, library::{AccessLibraryError, Document}};
 
 use super::{Assets, Job, RunJobError};
 
@@ -64,7 +64,7 @@ pub fn chat<F1: FnMut(&Message) + Send, F2: FnMut(&[Document]) + Send>(mut messa
 
 
 
-async fn attach_docs<F: FnMut(&[Document]) + Send>(user_message: &str, docs: &[Document], on_attachment: &mut F) -> Result<Message, AccessStorageError> {
+async fn attach_docs<F: FnMut(&[Document]) + Send>(user_message: &str, docs: &[Document], on_attachment: &mut F) -> Result<Message, AccessLibraryError> {
     let mut doc_contents = vec![];
     for doc in docs {
         let parts = doc.text().await?.parts();
