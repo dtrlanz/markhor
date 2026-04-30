@@ -53,7 +53,7 @@ impl Text {
         self.parts.push(part);
     }
 
-    pub fn import(&mut self, source_str: Option<&str>, keyword: Option<&str>) {
+    pub(crate) fn import(&mut self, source_str: Option<&str>, keyword: Option<&str>) {
         // Invalidate hash
         self.hash = OnceLock::new();
 
@@ -89,7 +89,7 @@ impl Text {
         }
     }
 
-    pub fn export(&self, _keyword: &mut Option<String>) -> Option<String> {
+    pub(crate) fn export(&self, _keyword: &mut Option<String>) -> Option<String> {
         if self.parts.is_empty() {
             None
         } else if self.parts.len() == 1 && self.parts[0].id.is_empty() {
