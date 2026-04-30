@@ -95,7 +95,17 @@ impl Document {
     async fn chunks(&mut self, chunker: &F11y<dyn Chunker>) -> Result<Chunks<'_>, ChunkerError> {
         let chunker_id = chunker.metadata_id();
         // Get reference to text with lifetime tied to `self.text` only, not to `self` as a whole
-        self.text().await;
+        if let Err(e) = self.text().await {
+            error!("Failed to load text for document {:?} when trying to get chunks for chunker '{}': {}", self.absolute_path, chunker_id, e);
+            // Since chunks depend on the text, relevant methods should be refactored accordingly.
+            // That will make error handling trivial. Until then, let's just punt.
+            // Side note: The solution is probably not simply to move these methods into `text`, 
+            // since they also depend on the chunk cache stored in `Document`. (We don't want to
+            // the logic around locating and loading cache files across two modules.) Instead,
+            // consider something like a struct `Chunked` that wraps access to `Text` alongside
+            // a reference to the data associated with a specific chunker.
+            todo!("Handle error when loading text for chunks");
+        }
         let text = self.text.get().unwrap();
 
         let text_hash = text.hash();
@@ -147,7 +157,11 @@ impl Document {
         self.chunks(chunker).await?;
 
         // Get reference to text parts with lifetime tied to `self.text` only, not to `self` as a whole
-        self.text().await;
+        if let Err(e) = self.text().await {
+            error!("Failed to load text for document {:?} when trying to get mutable chunks for chunker '{}': {}", self.absolute_path, chunker_id, e);
+            // Same issue and solution as in `chunks()`
+            todo!("Handle error when loading text for chunks");
+        }
         let text_parts = self.text.get().unwrap().parts();
 
         let with_text_part = self.chunker_cache.get_mut(&chunker_id).unwrap()
