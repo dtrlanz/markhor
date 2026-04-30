@@ -72,13 +72,13 @@ impl Markhor {
         let mut part_idx = 0;
         match result {
             Ok(vec) => {
-                for mut reader in vec {
+                for reader in vec {
                     // Read to string
                     let mut reader = BufReader::new(reader);
                     let mut contents = String::new();
                     reader.read_to_string(&mut contents).await?;
 
-                    doc.text_mut().await.push_part(Part::new(format!("part-{}", part_idx), contents));
+                    doc.text_mut().await?.push_part(Part::new(format!("part-{}", part_idx), contents));
                     part_idx += 1;
                 }
             }
