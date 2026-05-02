@@ -2,13 +2,13 @@ pub mod chat;
 pub mod chunking;
 pub mod convert;
 pub mod content;
+pub mod dependencies;
 pub mod extension;
 pub mod embedding;
 pub mod event;
 pub mod job;
-pub mod markdown;
-// pub mod storage;
 pub mod library;
+pub mod markdown;
 pub mod tool;
 pub mod vector_store;
 

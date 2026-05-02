@@ -7,12 +7,14 @@ pub use active_extension::{ActiveExtension, ExtensionConfig};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{chat::{chat::ChatApi, prompter::Prompter}, chunking::Chunker, convert::Converter, embedding::Embedder};
+use crate::{chat::{chat::ChatApi, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::MeetRequirementError, embedding::Embedder};
 
 pub trait Extension: Send + Sync {
     fn uri(&self) -> &str;
     fn name(&self) -> &str;
     fn description(&self) -> &str;
+    // TODO:
+    // async fn initialize(&mut self) -> Result<(), InitExtensionError> { Ok(()) }
 
     fn chat_model(&self) -> Option<Box<dyn ChatApi>> { None }
     fn embedding_model(&self) -> Option<Box<dyn Embedder>> { None }
@@ -20,6 +22,12 @@ pub trait Extension: Send + Sync {
     fn converter(&self) -> Option<Box<dyn Converter>> { None }
     fn prompters(&self) -> Vec<Box<dyn Prompter>> { vec![] }
     fn tools(&self) -> Vec<Box<dyn crate::tool::Tool>> { vec![] }
+}
+
+#[derive(Debug, Error)]
+pub enum InitExtensionError {
+    #[error("Failed to initialize extension: {0}")]
+    Requirement(#[from] MeetRequirementError),
 }
 
 #[derive(Debug, Error)]
