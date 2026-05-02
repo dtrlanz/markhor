@@ -7,6 +7,7 @@ repository = "https://github.com/dtrlanz/markhor"
 version.workspace = true
 
 [dependencies]
+derive_require = { path = "../core_derive_require" }
 async-trait = "0.1.88"
 crossbeam-skiplist = "0.1.3"
 dynosaur = "0.2.0"
