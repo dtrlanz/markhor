@@ -27,9 +27,10 @@ pub fn derive_require(input: TokenStream) -> TokenStream {
                     #(
                         let #field_names = <#field_types>::require(assets)?;
                     )*
-                    Ok(Self {
+                    // Wrap the constructed struct in an iterator of length 1
+                    Ok(std::iter::once(Self {
                         #( #field_names_init ),*
-                    })
+                    }))
                 }
             }
             // Tuple structs: struct Foo(Bar, Baz)
@@ -37,17 +38,17 @@ pub fn derive_require(input: TokenStream) -> TokenStream {
                 let field_types = fields.unnamed.iter().map(|f| &f.ty);
                 
                 quote! {
-                    Ok(Self(
+                    Ok(std::iter::once(Self(
                         #(
                             <#field_types>::require(assets)?
                         ),*
-                    ))
+                    )))
                 }
             }
             // Unit structs: struct Bar;
             Fields::Unit => {
                 quote! {
-                    Ok(Self)
+                    Ok(std::iter::once(Self))
                 }
             }
         },
@@ -62,7 +63,7 @@ pub fn derive_require(input: TokenStream) -> TokenStream {
     // Combine everything into the final trait implementation
     let expanded = quote! {
         impl #impl_generics Require for #name #ty_generics #where_clause {
-            fn require(assets: &Assets) -> Result<Self, MeetRequirementError> {
+            fn require_iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, MeetRequirementError> {
                 #require_body
             }
         }
