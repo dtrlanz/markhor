@@ -68,7 +68,7 @@ mod tests {
     mod enumerated {
         use super::*;
 
-        #[derive(Debug, PartialEq, Eq)]
+        #[derive(Debug, Clone, PartialEq, Eq)]
         pub struct Foo {
             pub idx: usize,
             pub bar: Bar,
@@ -86,7 +86,7 @@ mod tests {
             }
         }
 
-        #[derive(Debug, PartialEq, Eq, Require)]
+        #[derive(Debug, Clone, PartialEq, Eq, Require)]
         pub struct Bar;
 
         #[derive(Debug, PartialEq, Eq)]
@@ -191,5 +191,123 @@ mod tests {
         assert_eq!(result.even_foos[0].idx, 0);
         assert_eq!(result.even_foos[1].idx, 2);
         assert_eq!(result.even_foos[2].idx, 4);
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Letter {
+        pub ch: char,
+    }
+
+    impl Require for Letter {
+        fn require_iter(_assets: &Assets) -> Result<impl Iterator<Item = Self>, MeetRequirementError> {
+            // Yields exactly two letters
+            Ok(vec![Letter { ch: 'A' }, Letter { ch: 'B' }].into_iter())
+        }
+    }
+
+    #[test]
+    fn single_each() {
+    #[derive(Debug, Require)]
+        struct SingleEach {
+            // Outer loop: 5 iterations
+            #[require(each)]
+            foo: enumerated::Foo,
+            
+            // Standard field: Fetched freshly on every iteration. 
+            bar: enumerated::Bar, 
+        }
+
+
+        let assets = Assets::new();
+        
+        // Require iterator should yield multiple items
+        let results: Vec<_> = SingleEach::require_iter(&assets)
+            .expect("Failed to build SingleEach")
+            .collect();
+
+        // Foo yields 5 items, so we expect 5 SingleEach instances
+        assert_eq!(results.len(), 5);
+        
+        // Verify the loop executed correctly
+        assert_eq!(results[0].foo.idx, 0);
+        assert_eq!(results[4].foo.idx, 4);
+        
+        // Verify standard fields are present
+        assert_eq!(results[0].bar, enumerated::Bar);
+    }
+
+    #[test]
+    fn cartesian_each() {
+        #[derive(Debug, Require)]
+        struct CartesianEach {
+            // Outer loop: 2 iterations
+            #[require(each)]
+            letter: Letter,
+            
+            // Inner loop: 5 iterations
+            #[require(each)]
+            foo: enumerated::Foo,
+        }
+
+
+        let assets = Assets::new();
+        
+        let results: Vec<_> = CartesianEach::require_iter(&assets)
+            .expect("Failed to build CartesianEach")
+            .collect();
+
+        // 2 Letters * 5 Foos = 10 combinations
+        assert_eq!(results.len(), 10);
+
+        // Because `letter` is defined first, it forms the OUTER loop.
+        // Therefore, we expect all 5 'A's, followed by all 5 'B's.
+        assert_eq!(results[0].letter.ch, 'A');
+        assert_eq!(results[0].foo.idx, 0);
+        
+        assert_eq!(results[4].letter.ch, 'A');
+        assert_eq!(results[4].foo.idx, 4);
+
+        assert_eq!(results[5].letter.ch, 'B');
+        assert_eq!(results[5].foo.idx, 0);
+        
+        assert_eq!(results[9].letter.ch, 'B');
+        assert_eq!(results[9].foo.idx, 4);
+    }
+
+    #[test]
+    fn filtered_each() {
+    #[derive(Debug, Require)]
+        struct FilteredEach {
+            // Filtered loop: Only yields 3 items (idx 0, 2, 4)
+            #[require(each, filter = |f: &enumerated::Foo| f.idx % 2 == 0)]
+            even_foo: enumerated::Foo,
+            
+            // Inner loop: 2 iterations
+            #[require(each)]
+            letter: Letter,
+        }
+
+        let assets = Assets::new();
+        
+        let results: Vec<_> = FilteredEach::require_iter(&assets)
+            .expect("Failed to build FilteredEach")
+            .collect();
+
+        // 3 Even Foos * 2 Letters = 6 combinations
+        assert_eq!(results.len(), 6);
+
+        // Because `even_foo` is defined first, it forms the OUTER loop.
+        // Therefore, we expect idx 0 (with A and B), then idx 2 (with A and B), etc.
+        assert_eq!(results[0].even_foo.idx, 0);
+        assert_eq!(results[0].letter.ch, 'A');
+
+        assert_eq!(results[1].even_foo.idx, 0);
+        assert_eq!(results[1].letter.ch, 'B');
+
+        assert_eq!(results[2].even_foo.idx, 2);
+        assert_eq!(results[2].letter.ch, 'A');
+
+        assert_eq!(results[5].even_foo.idx, 4);
+        assert_eq!(results[5].letter.ch, 'B');
     }
 }

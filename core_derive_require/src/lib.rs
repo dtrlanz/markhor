@@ -1,19 +1,18 @@
 use proc_macro::TokenStream;
-use quote::{quote, ToTokens};
+use quote::quote;
 use syn::{parse_macro_input, Data, DeriveInput, Expr, Fields, GenericArgument, PathArguments, Type};
 
-/// Helper to check if a type is a Vec<T> or Option<T> and extract the T.
 enum TypeWrapper<'a> {
     Vec(&'a Type),
     Option(&'a Type),
     None(&'a Type),
 }
 
-fn extract_wrapper(ty: &Type) -> TypeWrapper {
+fn extract_wrapper(ty: &'_ Type) -> TypeWrapper<'_> {
     if let Type::Path(type_path) = ty {
         if let Some(segment) = type_path.path.segments.last() {
             let ident = segment.ident.to_string();
-            if (ident == "Vec" || ident == "Option") {
+            if ident == "Vec" || ident == "Option" {
                 if let PathArguments::AngleBracketed(args) = &segment.arguments {
                     if let Some(GenericArgument::Type(inner_ty)) = args.args.first() {
                         if ident == "Vec" {
@@ -29,35 +28,35 @@ fn extract_wrapper(ty: &Type) -> TypeWrapper {
     TypeWrapper::None(ty)
 }
 
-/// Helper to parse `#[require(filter = |x| ...)]`
-fn extract_filter_expr(attrs: &[syn::Attribute]) -> Option<Expr> {
+struct FieldConfig {
+    filter: Option<Expr>,
+    each: bool,
+}
+
+fn parse_require_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldConfig> {
+    let mut config = FieldConfig { filter: None, each: false };
     for attr in attrs {
         if attr.path().is_ident("require") {
-            let mut filter_expr = None;
-            // Parse the nested meta items: `filter = ...`
-            let _ = attr.parse_nested_meta(|meta| {
+            attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("filter") {
-                    // Extract the value as an Expression (this handles closures natively!)
-                    let value = meta.value()?;
-                    filter_expr = Some(value.parse::<Expr>()?);
+                    config.filter = Some(meta.value()?.parse()?);
+                    Ok(())
+                } else if meta.path.is_ident("each") {
+                    config.each = true;
                     Ok(())
                 } else {
-                    Err(meta.error("unsupported attribute"))
+                    Err(meta.error("unsupported require attribute"))
                 }
-            });
-            if filter_expr.is_some() {
-                return filter_expr;
-            }
+            })?;
         }
     }
-    None
+    Ok(config)
 }
 
 #[proc_macro_derive(Require, attributes(require))]
 pub fn derive_require(input: TokenStream) -> TokenStream {
     // Parse input tokens into a syntax tree
     let input = parse_macro_input!(input as DeriveInput);
-
     let name = &input.ident;
     
     // Support generics
@@ -65,59 +64,104 @@ pub fn derive_require(input: TokenStream) -> TokenStream {
 
     // Generate the body of the `require` function based on the struct's fields
     let require_body = match input.data {
-        // Structs with named fields: struct Foo { bar: Bar }
         Data::Struct(ref data_struct) => match data_struct.fields {
+            // Structs with named fields: struct Foo { bar: Bar }
             Fields::Named(ref fields) => {
-                let mut field_inits = Vec::new();
                 let mut field_names = Vec::new();
+                let mut non_each_inits = Vec::new();
+                let mut each_loops = Vec::new();
 
                 for field in fields.named.iter() {
                     let field_name = field.ident.as_ref().unwrap();
-                    let filter = extract_filter_expr(&field.attrs);
+                    let attrs = parse_require_attrs(&field.attrs).unwrap_or_else(|e| {
+                        panic!("Failed to parse attributes for field '{}': {}", field_name, e)
+                    });
                     let wrapper = extract_wrapper(&field.ty);
 
-                    let init_tokens = match (wrapper, filter) {
-                        // 1. Bare Type, NO filter
-                        (TypeWrapper::None(inner), None) => quote! {
-                            <#inner>::require(assets)?
-                        },
-                        // 2. Bare Type, WITH filter
-                        (TypeWrapper::None(inner), Some(f)) => quote! {
-                            <#inner>::require_iter(assets)?
-                                .find(#f)
-                                .ok_or_else(|| MeetRequirementError::DependencyNotAvailable(
-                                    std::any::type_name::<#inner>().to_string()
-                                ))?
-                        },
-                        // 3. Option<T>, NO filter (Swallows error)
-                        (TypeWrapper::Option(inner), None) => quote! {
-                            <#inner>::require(assets).ok()
-                        },
-                        // 4. Option<T>, WITH filter (Swallows error, applies filter)
-                        (TypeWrapper::Option(inner), Some(f)) => quote! {
-                            <#inner>::require_iter(assets)
-                                .map(|mut it| it.find(#f))
-                                .unwrap_or(None)
-                        },
-                        // 5. Vec<T>, NO filter (Bubbles error, collects all)
-                        (TypeWrapper::Vec(inner), None) => quote! {
-                            <#inner>::require_iter(assets)?.collect()
-                        },
-                        // 6. Vec<T>, WITH filter (Bubbles error, collects filtered)
-                        (TypeWrapper::Vec(inner), Some(f)) => quote! {
-                            <#inner>::require_iter(assets)?.filter(#f).collect()
-                        },
-                    };
-
                     field_names.push(field_name);
-                    field_inits.push(quote! { let #field_name = #init_tokens; });
+
+                    if attrs.each {
+                        let TypeWrapper::None(inner) = wrapper else {
+                            return syn::Error::new_spanned(
+                                &field.ty, 
+                                "`each` cannot be used with Vec or Option"
+                            ).to_compile_error().into();
+                        };
+
+                        let iter_expr = match attrs.filter {
+                            None => quote! { <#inner>::require_iter(assets)? },
+                            Some(f) => quote! { <#inner>::require_iter(assets)?.filter(#f) },
+                        };
+                        
+                        each_loops.push((field_name, iter_expr));
+                    } else {
+                        // Standard field logic
+                        let init_tokens = match (wrapper, attrs.filter) {
+                            (TypeWrapper::None(inner), None) => quote! { <#inner>::require(assets)? },
+                            (TypeWrapper::None(inner), Some(f)) => quote! {
+                                <#inner>::require_iter(assets)?
+                                    .find(#f)
+                                    .ok_or_else(|| MeetRequirementError::DependencyNotAvailable(
+                                        std::any::type_name::<#inner>().to_string()
+                                    ))?
+                            },
+                            (TypeWrapper::Option(inner), None) => quote! { <#inner>::require(assets).ok() },
+                            (TypeWrapper::Option(inner), Some(f)) => quote! {
+                                <#inner>::require_iter(assets).map(|mut it| it.find(#f)).unwrap_or(None)
+                            },
+                            (TypeWrapper::Vec(inner), None) => quote! { <#inner>::require_iter(assets)?.collect() },
+                            (TypeWrapper::Vec(inner), Some(f)) => quote! { <#inner>::require_iter(assets)?.filter(#f).collect() },
+                        };
+
+                        non_each_inits.push(quote! { let #field_name = #init_tokens; });
+                    }
                 }
 
-                quote! {
-                    #( #field_inits )*
-                    Ok(std::iter::once(Self {
-                        #( #field_names ),*
-                    }))
+                // Determine which fields need to be cloned
+                let mut struct_inits = Vec::new();
+                for field_name in &field_names {
+                    let is_each = each_loops.iter().any(|(n, _)| n == field_name);
+                    let is_last_each = each_loops.last().map(|(n, _)| n) == Some(field_name);
+                    
+                    if is_each && !is_last_each {
+                        // Outer `each` fields must be cloned for the inner loops!
+                        struct_inits.push(quote! { #field_name: #field_name.clone() });
+                    } else {
+                        // Standard fields and the innermost `each` field do not need cloning
+                        struct_inits.push(quote! { #field_name });
+                    }
+                }
+
+                if each_loops.is_empty() {
+                    quote! {
+                        #( #non_each_inits )*
+                        Ok(std::iter::once(Self {
+                            #( #struct_inits ),*
+                        }))
+                    }
+                } else {
+                    let mut inner_block = quote! {
+                        #( #non_each_inits )*
+                        
+                        // We now use the clone-aware initializers
+                        results.push(Self {
+                            #( #struct_inits ),*
+                        });
+                    };
+
+                    for (name, iter_expr) in each_loops.into_iter().rev() {
+                        inner_block = quote! {
+                            for #name in #iter_expr {
+                                #inner_block
+                            }
+                        };
+                    }
+
+                    quote! {
+                        let mut results = std::vec::Vec::new();
+                        #inner_block
+                        Ok(results.into_iter())
+                    }
                 }
             }
             // Tuple structs: struct Foo(Bar, Baz)
