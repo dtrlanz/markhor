@@ -1,7 +1,7 @@
 [package]
-name = "derive_require"
-version = "0.1.0"
-edition = "2021"
+name = "derive_resolve"
+edition = "2024"
+publish = false
 
 [lib]
 proc-macro = true

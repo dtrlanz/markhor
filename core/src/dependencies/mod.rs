@@ -1,6 +1,6 @@
-mod require;
+mod resolve;
 mod session;
 
-pub use require::{Require, MeetRequirementError};
+pub use resolve::{Resolve, ResolveDependencyError};
 pub use session::Session;
 

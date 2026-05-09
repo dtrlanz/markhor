@@ -1,4 +1,4 @@
-use crate::{dependencies::Require, extension::{Extension, InitExtensionError}};
+use crate::{dependencies::Resolve, extension::{Extension, InitExtensionError}};
 
 pub struct Session {
     extensions: Vec<Box<dyn Extension>>,
@@ -15,8 +15,8 @@ impl Session {
         Ok(())
     }
 
-    pub async fn require_extension<E: Extension + Require + 'static>(&mut self) -> Result<(), InitExtensionError> {
-        let extension = E::require(self)?;
+    pub async fn resolve_extension<E: Extension + Resolve + 'static>(&mut self) -> Result<(), InitExtensionError> {
+        let extension = E::resolve(self)?;
         self.add_extension(extension).await
     }
 

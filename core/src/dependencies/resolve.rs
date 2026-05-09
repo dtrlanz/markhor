@@ -3,30 +3,30 @@ use thiserror::Error;
 
 use crate::dependencies::Session;
 
-pub use derive_require::Require;
+pub use derive_resolve::Resolve;
 
-pub trait Require {
-    fn require(session: &Session) -> Result<Self, MeetRequirementError> 
+pub trait Resolve {
+    fn resolve(session: &Session) -> Result<Self, ResolveDependencyError> 
     where 
-        Self: Sized 
+        Self: Sized
     {
-        Self::require_iter(session)?
+        Self::resolve_iter(session)?
             .next()
             .ok_or_else(|| {
                 // Get name of the missing struct
                 let name = type_name::<Self>().to_string();
-                MeetRequirementError::DependencyNotAvailable(name)
+                ResolveDependencyError::DependencyNotAvailable(name)
             })
     }
 
-    fn require_iter(session: &Session) -> Result<impl Iterator<Item = Self>, MeetRequirementError> 
+    fn resolve_iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
     where 
         Self: Sized;
 }
 
 
 #[derive(Debug, Error)]
-pub enum MeetRequirementError {
+pub enum ResolveDependencyError {
     #[error("Missing dependency: {0}")]
     DependencyNotAvailable(String),
 }
@@ -39,27 +39,27 @@ mod tests {
     mod simple {
         use super::*;
 
-        #[derive(Debug, PartialEq, Eq, Require)]
+        #[derive(Debug, PartialEq, Eq, Resolve)]
         pub struct Foo {
             pub bar: Bar,
             pub baz: Baz,
         }
 
-        #[derive(Debug, PartialEq, Eq, Require)]
+        #[derive(Debug, PartialEq, Eq, Resolve)]
         pub struct Bar;
 
-        #[derive(Debug, PartialEq, Eq, Require)]
+        #[derive(Debug, PartialEq, Eq, Resolve)]
         pub struct Baz;
     }    
 
     #[test]
-    fn derive_require() {
+    fn derive_resolve() {
         let session = Session::new();
-        let foo = simple::Foo::require(&session).unwrap();
+        let foo = simple::Foo::resolve(&session).unwrap();
         assert_eq!(foo.bar, simple::Bar);
         assert_eq!(foo.baz, simple::Baz);
 
-        let vec = simple::Foo::require_iter(&session).unwrap().collect::<Vec<_>>();
+        let vec = simple::Foo::resolve_iter(&session).unwrap().collect::<Vec<_>>();
         assert_eq!(vec.len(), 1);
         assert_eq!(vec[0].bar, simple::Bar);
         assert_eq!(vec[0].baz, simple::Baz);
@@ -74,11 +74,11 @@ mod tests {
             pub bar: Bar,
         }
 
-        impl Require for Foo {
-            fn require_iter(session: &Session) -> Result<impl Iterator<Item = Self>, MeetRequirementError> {
+        impl Resolve for Foo {
+            fn resolve_iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
                 let vec = (0..5)
                     .map(|idx| {
-                        let bar = Bar::require(session).unwrap();
+                        let bar = Bar::resolve(session).unwrap();
                         Self { idx, bar }
                     })
                     .collect::<Vec<_>>();
@@ -86,16 +86,16 @@ mod tests {
             }
         }
 
-        #[derive(Debug, Clone, PartialEq, Eq, Require)]
+        #[derive(Debug, Clone, PartialEq, Eq, Resolve)]
         pub struct Bar;
 
         #[derive(Debug, PartialEq, Eq)]
         pub struct Blank;
 
-        impl Require for Blank {
-            fn require_iter(_assets: &Session) -> Result<impl Iterator<Item = Self>, MeetRequirementError> {
+        impl Resolve for Blank {
+            fn resolve_iter(_assets: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
                 Result::<std::iter::Empty<Self>, _>::Err(
-                    MeetRequirementError::DependencyNotAvailable("Blank".to_string())
+                    ResolveDependencyError::DependencyNotAvailable("Blank".to_string())
                 )
             }
         }
@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn vec_and_option_without_filters() {
-        #[derive(Debug, Require)]
+        #[derive(Debug, Resolve)]
         struct TestNoFilter {
             all_foos: Vec<enumerated::Foo>,
             first_foo: Option<enumerated::Foo>,
@@ -111,7 +111,7 @@ mod tests {
         }
 
         let session = Session::new();
-        let result = TestNoFilter::require(&session).expect("Failed to build TestNoFilter");
+        let result = TestNoFilter::resolve(&session).expect("Failed to build TestNoFilter");
 
         // Vec should collect all 5 Foos
         assert_eq!(result.all_foos.len(), 5);
@@ -125,29 +125,29 @@ mod tests {
 
     #[test]
     fn bare_field_with_filter() {
-        #[derive(Debug, Require)]
+        #[derive(Debug, Resolve)]
         struct TestBareFilter {
-            #[require(filter = |f| f.idx == 2)]
+            #[resolve(filter = |f| f.idx == 2)]
             target_foo: enumerated::Foo,
         }
 
-        #[derive(Debug, Require)]
+        #[derive(Debug, Resolve)]
         struct TestBareFilterFail {
-            #[require(filter = |f| f.idx == 99)]
+            #[resolve(filter = |f| f.idx == 99)]
             _missing_foo: enumerated::Foo, // Should error because 99 doesn't exist
         }
 
         let session = Session::new();
         
         // Success case
-        let result = TestBareFilter::require(&session).expect("Failed to build TestBareFilter");
+        let result = TestBareFilter::resolve(&session).expect("Failed to build TestBareFilter");
         assert_eq!(result.target_foo.idx, 2);
 
         // Failure case (predicate matches nothing)
-        let fail_result = TestBareFilterFail::require(&session);
+        let fail_result = TestBareFilterFail::resolve(&session);
         assert!(fail_result.is_err(), "Expected an error because no Foo has idx 99");
         
-        if let Err(MeetRequirementError::DependencyNotAvailable(name)) = fail_result {
+        if let Err(ResolveDependencyError::DependencyNotAvailable(name)) = fail_result {
             assert!(name.contains("Foo"));
         } else {
             panic!("Wrong error type returned");
@@ -156,17 +156,17 @@ mod tests {
 
     #[test]
     fn option_field_with_filter() {
-    #[derive(Debug, Require)]
+    #[derive(Debug, Resolve)]
         struct TestOptionFilter {
-            #[require(filter = |f| f.idx == 3)]
+            #[resolve(filter = |f| f.idx == 3)]
             target_foo: Option<enumerated::Foo>,
             
-            #[require(filter = |f| f.idx == 99)]
+            #[resolve(filter = |f| f.idx == 99)]
             missing_foo: Option<enumerated::Foo>, // Should silently become None
         }
 
         let session = Session::new();
-        let result = TestOptionFilter::require(&session).expect("Failed to build TestOptionFilter");
+        let result = TestOptionFilter::resolve(&session).expect("Failed to build TestOptionFilter");
 
         // Should find the specific target
         assert_eq!(result.target_foo.unwrap().idx, 3);
@@ -177,14 +177,14 @@ mod tests {
 
     #[test]
     fn vec_field_with_filter() {
-        #[derive(Debug, Require)]
+        #[derive(Debug, Resolve)]
         struct TestVecFilter {
-            #[require(filter = |f| f.idx % 2 == 0)]
+            #[resolve(filter = |f| f.idx % 2 == 0)]
             even_foos: Vec<enumerated::Foo>,
         }
 
         let session = Session::new();
-        let result = TestVecFilter::require(&session).expect("Failed to build TestVecFilter");
+        let result = TestVecFilter::resolve(&session).expect("Failed to build TestVecFilter");
 
         // Should only collect Foos with even indices
         assert_eq!(result.even_foos.len(), 3);
@@ -198,8 +198,8 @@ mod tests {
         pub ch: char,
     }
 
-    impl Require for Letter {
-        fn require_iter(_assets: &Session) -> Result<impl Iterator<Item = Self>, MeetRequirementError> {
+    impl Resolve for Letter {
+        fn resolve_iter(_assets: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
             // Yields exactly two letters
             Ok(vec![Letter { ch: 'A' }, Letter { ch: 'B' }].into_iter())
         }
@@ -207,10 +207,10 @@ mod tests {
 
     #[test]
     fn single_each() {
-    #[derive(Debug, Require)]
+    #[derive(Debug, Resolve)]
         struct SingleEach {
             // Outer loop: 5 iterations
-            #[require(each)]
+            #[resolve(each)]
             foo: enumerated::Foo,
             
             // Standard field: Fetched freshly on every iteration. 
@@ -220,8 +220,8 @@ mod tests {
 
         let session = Session::new();
         
-        // Require iterator should yield multiple items
-        let results: Vec<_> = SingleEach::require_iter(&session)
+        // Resolve iterator should yield multiple items
+        let results: Vec<_> = SingleEach::resolve_iter(&session)
             .expect("Failed to build SingleEach")
             .collect();
 
@@ -238,21 +238,21 @@ mod tests {
 
     #[test]
     fn cartesian_each() {
-        #[derive(Debug, Require)]
+        #[derive(Debug, Resolve)]
         struct CartesianEach {
             // Outer loop: 2 iterations
-            #[require(each)]
+            #[resolve(each)]
             letter: Letter,
             
             // Inner loop: 5 iterations
-            #[require(each)]
+            #[resolve(each)]
             foo: enumerated::Foo,
         }
 
 
         let session = Session::new();
         
-        let results: Vec<_> = CartesianEach::require_iter(&session)
+        let results: Vec<_> = CartesianEach::resolve_iter(&session)
             .expect("Failed to build CartesianEach")
             .collect();
 
@@ -276,20 +276,20 @@ mod tests {
 
     #[test]
     fn filtered_each() {
-    #[derive(Debug, Require)]
+    #[derive(Debug, Resolve)]
         struct FilteredEach {
             // Filtered loop: Only yields 3 items (idx 0, 2, 4)
-            #[require(each, filter = |f: &enumerated::Foo| f.idx % 2 == 0)]
+            #[resolve(each, filter = |f: &enumerated::Foo| f.idx % 2 == 0)]
             even_foo: enumerated::Foo,
             
             // Inner loop: 2 iterations
-            #[require(each)]
+            #[resolve(each)]
             letter: Letter,
         }
 
         let session = Session::new();
         
-        let results: Vec<_> = FilteredEach::require_iter(&session)
+        let results: Vec<_> = FilteredEach::resolve_iter(&session)
             .expect("Failed to build FilteredEach")
             .collect();
 

@@ -1,17 +1,17 @@
-use markhor_core::dependencies::{Session, Require, MeetRequirementError};
+use markhor_core::dependencies::{Session, Resolve, ResolveDependencyError};
 
 
 #[test]
-fn require_simple_struct() {
-    #[derive(Debug, PartialEq, Eq, Require)]
+fn resolve_simple_struct() {
+    #[derive(Debug, PartialEq, Eq, Resolve)]
     struct Foo {
         bar: Bar,
     }
 
-    #[derive(Debug, PartialEq, Eq, Require)]
+    #[derive(Debug, PartialEq, Eq, Resolve)]
     struct Bar;
 
     let assets = Session::new();
-    let foo = Foo::require(&assets).unwrap();
+    let foo = Foo::resolve(&assets).unwrap();
     assert_eq!(foo.bar, Bar);
 }

@@ -7,7 +7,7 @@ pub use active_extension::{ActiveExtension, ExtensionConfig};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{chat::{chat::ChatApi, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::MeetRequirementError, embedding::Embedder};
+use crate::{chat::{chat::ChatApi, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::ResolveDependencyError, embedding::Embedder};
 
 pub trait Extension: Send + Sync {
     fn uri(&self) -> &str;
@@ -27,7 +27,7 @@ pub trait Extension: Send + Sync {
 #[derive(Debug, Error)]
 pub enum InitExtensionError {
     #[error("Failed to initialize extension: {0}")]
-    Requirement(#[from] MeetRequirementError),
+    Dependency(#[from] ResolveDependencyError),
 }
 
 #[derive(Debug, Error)]

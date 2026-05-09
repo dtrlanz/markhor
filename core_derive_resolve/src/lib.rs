@@ -33,10 +33,10 @@ struct FieldConfig {
     each: bool,
 }
 
-fn parse_require_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldConfig> {
+fn parse_resolve_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldConfig> {
     let mut config = FieldConfig { filter: None, each: false };
     for attr in attrs {
-        if attr.path().is_ident("require") {
+        if attr.path().is_ident("resolve") {
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("filter") {
                     config.filter = Some(meta.value()?.parse()?);
@@ -45,7 +45,7 @@ fn parse_require_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldConfig> {
                     config.each = true;
                     Ok(())
                 } else {
-                    Err(meta.error("unsupported require attribute"))
+                    Err(meta.error("unsupported resolve attribute"))
                 }
             })?;
         }
@@ -53,8 +53,8 @@ fn parse_require_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldConfig> {
     Ok(config)
 }
 
-#[proc_macro_derive(Require, attributes(require))]
-pub fn derive_require(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(Resolve, attributes(resolve))]
+pub fn derive_resolve(input: TokenStream) -> TokenStream {
     // Parse input tokens into a syntax tree
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
@@ -62,8 +62,8 @@ pub fn derive_require(input: TokenStream) -> TokenStream {
     // Support generics
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    // Generate the body of the `require` function based on the struct's fields
-    let require_body = match input.data {
+    // Generate the body of the `resolve` function based on the struct's fields
+    let resolve_body = match input.data {
         Data::Struct(ref data_struct) => match data_struct.fields {
             // Structs with named fields: struct Foo { bar: Bar }
             Fields::Named(ref fields) => {
@@ -73,7 +73,7 @@ pub fn derive_require(input: TokenStream) -> TokenStream {
 
                 for field in fields.named.iter() {
                     let field_name = field.ident.as_ref().unwrap();
-                    let attrs = parse_require_attrs(&field.attrs).unwrap_or_else(|e| {
+                    let attrs = parse_resolve_attrs(&field.attrs).unwrap_or_else(|e| {
                         panic!("Failed to parse attributes for field '{}': {}", field_name, e)
                     });
                     let wrapper = extract_wrapper(&field.ty);
@@ -89,28 +89,28 @@ pub fn derive_require(input: TokenStream) -> TokenStream {
                         };
 
                         let iter_expr = match attrs.filter {
-                            None => quote! { <#inner>::require_iter(session)? },
-                            Some(f) => quote! { <#inner>::require_iter(session)?.filter(#f) },
+                            None => quote! { <#inner>::resolve_iter(session)? },
+                            Some(f) => quote! { <#inner>::resolve_iter(session)?.filter(#f) },
                         };
                         
                         each_loops.push((field_name, iter_expr));
                     } else {
                         // Standard field logic
                         let init_tokens = match (wrapper, attrs.filter) {
-                            (TypeWrapper::None(inner), None) => quote! { <#inner>::require(session)? },
+                            (TypeWrapper::None(inner), None) => quote! { <#inner>::resolve(session)? },
                             (TypeWrapper::None(inner), Some(f)) => quote! {
-                                <#inner>::require_iter(session)?
+                                <#inner>::resolve_iter(session)?
                                     .find(#f)
-                                    .ok_or_else(|| MeetRequirementError::DependencyNotAvailable(
+                                    .ok_or_else(|| ResolveDependencyError::DependencyNotAvailable(
                                         std::any::type_name::<#inner>().to_string()
                                     ))?
                             },
-                            (TypeWrapper::Option(inner), None) => quote! { <#inner>::require(session).ok() },
+                            (TypeWrapper::Option(inner), None) => quote! { <#inner>::resolve(session).ok() },
                             (TypeWrapper::Option(inner), Some(f)) => quote! {
-                                <#inner>::require_iter(session).map(|mut it| it.find(#f)).unwrap_or(None)
+                                <#inner>::resolve_iter(session).map(|mut it| it.find(#f)).unwrap_or(None)
                             },
-                            (TypeWrapper::Vec(inner), None) => quote! { <#inner>::require_iter(session)?.collect() },
-                            (TypeWrapper::Vec(inner), Some(f)) => quote! { <#inner>::require_iter(session)?.filter(#f).collect() },
+                            (TypeWrapper::Vec(inner), None) => quote! { <#inner>::resolve_iter(session)?.collect() },
+                            (TypeWrapper::Vec(inner), Some(f)) => quote! { <#inner>::resolve_iter(session)?.filter(#f).collect() },
                         };
 
                         non_each_inits.push(quote! { let #field_name = #init_tokens; });
@@ -175,7 +175,7 @@ pub fn derive_require(input: TokenStream) -> TokenStream {
                 // quote! {
                 //     Ok(std::iter::once(Self(
                 //         #(
-                //             <#field_types>::require(session)?
+                //             <#field_types>::resolve(session)?
                 //         ),*
                 //     )))
                 // }
@@ -187,13 +187,13 @@ pub fn derive_require(input: TokenStream) -> TokenStream {
                 }
             }
         },
-        _ => quote! { compile_error!("Require can only be derived for structs"); },
+        _ => quote! { compile_error!("Resolve can only be derived for structs"); },
     };
 
     let expanded = quote! {
-        impl #impl_generics Require for #name #ty_generics #where_clause {
-            fn require_iter(session: &Session) -> Result<impl Iterator<Item = Self>, MeetRequirementError> {
-                #require_body
+        impl #impl_generics Resolve for #name #ty_generics #where_clause {
+            fn resolve_iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
+                #resolve_body
             }
         }
     };
