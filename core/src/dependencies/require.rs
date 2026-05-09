@@ -1,16 +1,16 @@
 use std::any::type_name;
 use thiserror::Error;
 
-use crate::dependencies::Assets;
+use crate::dependencies::Session;
 
 pub use derive_require::Require;
 
 pub trait Require {
-    fn require(assets: &Assets) -> Result<Self, MeetRequirementError> 
+    fn require(session: &Session) -> Result<Self, MeetRequirementError> 
     where 
         Self: Sized 
     {
-        Self::require_iter(assets)?
+        Self::require_iter(session)?
             .next()
             .ok_or_else(|| {
                 // Get name of the missing struct
@@ -19,7 +19,7 @@ pub trait Require {
             })
     }
 
-    fn require_iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, MeetRequirementError> 
+    fn require_iter(session: &Session) -> Result<impl Iterator<Item = Self>, MeetRequirementError> 
     where 
         Self: Sized;
 }
@@ -54,12 +54,12 @@ mod tests {
 
     #[test]
     fn derive_require() {
-        let assets = Assets::new();
-        let foo = simple::Foo::require(&assets).unwrap();
+        let session = Session::new();
+        let foo = simple::Foo::require(&session).unwrap();
         assert_eq!(foo.bar, simple::Bar);
         assert_eq!(foo.baz, simple::Baz);
 
-        let vec = simple::Foo::require_iter(&assets).unwrap().collect::<Vec<_>>();
+        let vec = simple::Foo::require_iter(&session).unwrap().collect::<Vec<_>>();
         assert_eq!(vec.len(), 1);
         assert_eq!(vec[0].bar, simple::Bar);
         assert_eq!(vec[0].baz, simple::Baz);
@@ -75,10 +75,10 @@ mod tests {
         }
 
         impl Require for Foo {
-            fn require_iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, MeetRequirementError> {
+            fn require_iter(session: &Session) -> Result<impl Iterator<Item = Self>, MeetRequirementError> {
                 let vec = (0..5)
                     .map(|idx| {
-                        let bar = Bar::require(assets).unwrap();
+                        let bar = Bar::require(session).unwrap();
                         Self { idx, bar }
                     })
                     .collect::<Vec<_>>();
@@ -93,7 +93,7 @@ mod tests {
         pub struct Blank;
 
         impl Require for Blank {
-            fn require_iter(_assets: &Assets) -> Result<impl Iterator<Item = Self>, MeetRequirementError> {
+            fn require_iter(_assets: &Session) -> Result<impl Iterator<Item = Self>, MeetRequirementError> {
                 Result::<std::iter::Empty<Self>, _>::Err(
                     MeetRequirementError::DependencyNotAvailable("Blank".to_string())
                 )
@@ -110,8 +110,8 @@ mod tests {
             missing_blank: Option<enumerated::Blank>, // Should silently become None
         }
 
-        let assets = Assets::new();
-        let result = TestNoFilter::require(&assets).expect("Failed to build TestNoFilter");
+        let session = Session::new();
+        let result = TestNoFilter::require(&session).expect("Failed to build TestNoFilter");
 
         // Vec should collect all 5 Foos
         assert_eq!(result.all_foos.len(), 5);
@@ -137,14 +137,14 @@ mod tests {
             _missing_foo: enumerated::Foo, // Should error because 99 doesn't exist
         }
 
-        let assets = Assets::new();
+        let session = Session::new();
         
         // Success case
-        let result = TestBareFilter::require(&assets).expect("Failed to build TestBareFilter");
+        let result = TestBareFilter::require(&session).expect("Failed to build TestBareFilter");
         assert_eq!(result.target_foo.idx, 2);
 
         // Failure case (predicate matches nothing)
-        let fail_result = TestBareFilterFail::require(&assets);
+        let fail_result = TestBareFilterFail::require(&session);
         assert!(fail_result.is_err(), "Expected an error because no Foo has idx 99");
         
         if let Err(MeetRequirementError::DependencyNotAvailable(name)) = fail_result {
@@ -165,8 +165,8 @@ mod tests {
             missing_foo: Option<enumerated::Foo>, // Should silently become None
         }
 
-        let assets = Assets::new();
-        let result = TestOptionFilter::require(&assets).expect("Failed to build TestOptionFilter");
+        let session = Session::new();
+        let result = TestOptionFilter::require(&session).expect("Failed to build TestOptionFilter");
 
         // Should find the specific target
         assert_eq!(result.target_foo.unwrap().idx, 3);
@@ -183,8 +183,8 @@ mod tests {
             even_foos: Vec<enumerated::Foo>,
         }
 
-        let assets = Assets::new();
-        let result = TestVecFilter::require(&assets).expect("Failed to build TestVecFilter");
+        let session = Session::new();
+        let result = TestVecFilter::require(&session).expect("Failed to build TestVecFilter");
 
         // Should only collect Foos with even indices
         assert_eq!(result.even_foos.len(), 3);
@@ -199,7 +199,7 @@ mod tests {
     }
 
     impl Require for Letter {
-        fn require_iter(_assets: &Assets) -> Result<impl Iterator<Item = Self>, MeetRequirementError> {
+        fn require_iter(_assets: &Session) -> Result<impl Iterator<Item = Self>, MeetRequirementError> {
             // Yields exactly two letters
             Ok(vec![Letter { ch: 'A' }, Letter { ch: 'B' }].into_iter())
         }
@@ -218,10 +218,10 @@ mod tests {
         }
 
 
-        let assets = Assets::new();
+        let session = Session::new();
         
         // Require iterator should yield multiple items
-        let results: Vec<_> = SingleEach::require_iter(&assets)
+        let results: Vec<_> = SingleEach::require_iter(&session)
             .expect("Failed to build SingleEach")
             .collect();
 
@@ -250,9 +250,9 @@ mod tests {
         }
 
 
-        let assets = Assets::new();
+        let session = Session::new();
         
-        let results: Vec<_> = CartesianEach::require_iter(&assets)
+        let results: Vec<_> = CartesianEach::require_iter(&session)
             .expect("Failed to build CartesianEach")
             .collect();
 
@@ -287,9 +287,9 @@ mod tests {
             letter: Letter,
         }
 
-        let assets = Assets::new();
+        let session = Session::new();
         
-        let results: Vec<_> = FilteredEach::require_iter(&assets)
+        let results: Vec<_> = FilteredEach::require_iter(&session)
             .expect("Failed to build FilteredEach")
             .collect();
 

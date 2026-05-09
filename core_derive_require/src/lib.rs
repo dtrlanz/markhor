@@ -89,28 +89,28 @@ pub fn derive_require(input: TokenStream) -> TokenStream {
                         };
 
                         let iter_expr = match attrs.filter {
-                            None => quote! { <#inner>::require_iter(assets)? },
-                            Some(f) => quote! { <#inner>::require_iter(assets)?.filter(#f) },
+                            None => quote! { <#inner>::require_iter(session)? },
+                            Some(f) => quote! { <#inner>::require_iter(session)?.filter(#f) },
                         };
                         
                         each_loops.push((field_name, iter_expr));
                     } else {
                         // Standard field logic
                         let init_tokens = match (wrapper, attrs.filter) {
-                            (TypeWrapper::None(inner), None) => quote! { <#inner>::require(assets)? },
+                            (TypeWrapper::None(inner), None) => quote! { <#inner>::require(session)? },
                             (TypeWrapper::None(inner), Some(f)) => quote! {
-                                <#inner>::require_iter(assets)?
+                                <#inner>::require_iter(session)?
                                     .find(#f)
                                     .ok_or_else(|| MeetRequirementError::DependencyNotAvailable(
                                         std::any::type_name::<#inner>().to_string()
                                     ))?
                             },
-                            (TypeWrapper::Option(inner), None) => quote! { <#inner>::require(assets).ok() },
+                            (TypeWrapper::Option(inner), None) => quote! { <#inner>::require(session).ok() },
                             (TypeWrapper::Option(inner), Some(f)) => quote! {
-                                <#inner>::require_iter(assets).map(|mut it| it.find(#f)).unwrap_or(None)
+                                <#inner>::require_iter(session).map(|mut it| it.find(#f)).unwrap_or(None)
                             },
-                            (TypeWrapper::Vec(inner), None) => quote! { <#inner>::require_iter(assets)?.collect() },
-                            (TypeWrapper::Vec(inner), Some(f)) => quote! { <#inner>::require_iter(assets)?.filter(#f).collect() },
+                            (TypeWrapper::Vec(inner), None) => quote! { <#inner>::require_iter(session)?.collect() },
+                            (TypeWrapper::Vec(inner), Some(f)) => quote! { <#inner>::require_iter(session)?.filter(#f).collect() },
                         };
 
                         non_each_inits.push(quote! { let #field_name = #init_tokens; });
@@ -175,7 +175,7 @@ pub fn derive_require(input: TokenStream) -> TokenStream {
                 // quote! {
                 //     Ok(std::iter::once(Self(
                 //         #(
-                //             <#field_types>::require(assets)?
+                //             <#field_types>::require(session)?
                 //         ),*
                 //     )))
                 // }
@@ -192,7 +192,7 @@ pub fn derive_require(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         impl #impl_generics Require for #name #ty_generics #where_clause {
-            fn require_iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, MeetRequirementError> {
+            fn require_iter(session: &Session) -> Result<impl Iterator<Item = Self>, MeetRequirementError> {
                 #require_body
             }
         }
