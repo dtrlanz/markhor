@@ -12,6 +12,6 @@ fn resolve_simple_struct() {
     struct Bar;
 
     let assets = Session::new();
-    let foo = Foo::resolve(&assets).unwrap();
+    let foo = Foo::first(&assets).unwrap();
     assert_eq!(foo.bar, Bar);
 }

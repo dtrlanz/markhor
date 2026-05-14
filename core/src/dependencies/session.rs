@@ -16,7 +16,7 @@ impl Session {
     }
 
     pub async fn resolve_extension<E: Extension + Resolve + 'static>(&mut self) -> Result<(), InitExtensionError> {
-        let extension = E::resolve(self)?;
+        let extension = E::first(self)?;
         self.add_extension(extension).await
     }
 

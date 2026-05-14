@@ -1,32 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, Data, DeriveInput, Expr, Fields, GenericArgument, PathArguments, Type};
-
-enum TypeWrapper<'a> {
-    Vec(&'a Type),
-    Option(&'a Type),
-    None(&'a Type),
-}
-
-fn extract_wrapper(ty: &'_ Type) -> TypeWrapper<'_> {
-    if let Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            let ident = segment.ident.to_string();
-            if ident == "Vec" || ident == "Option" {
-                if let PathArguments::AngleBracketed(args) = &segment.arguments {
-                    if let Some(GenericArgument::Type(inner_ty)) = args.args.first() {
-                        if ident == "Vec" {
-                            return TypeWrapper::Vec(inner_ty);
-                        } else {
-                            return TypeWrapper::Option(inner_ty);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    TypeWrapper::None(ty)
-}
+use syn::{parse_macro_input, Data, DeriveInput, Expr, Fields};
 
 struct FieldConfig {
     filter: Option<Expr>,
@@ -62,7 +36,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
     // Support generics
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    // Generate the body of the `resolve` function based on the struct's fields
+    // Generate the body of the `iter_with_adapter` function based on the struct's fields
     let resolve_body = match input.data {
         Data::Struct(ref data_struct) => match data_struct.fields {
             // Structs with named fields: struct Foo { bar: Bar }
@@ -76,41 +50,30 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                     let attrs = parse_resolve_attrs(&field.attrs).unwrap_or_else(|e| {
                         panic!("Failed to parse attributes for field '{}': {}", field_name, e)
                     });
-                    let wrapper = extract_wrapper(&field.ty);
-
+                    
+                    let ty = &field.ty;
                     field_names.push(field_name);
 
                     if attrs.each {
-                        let TypeWrapper::None(inner) = wrapper else {
-                            return syn::Error::new_spanned(
-                                &field.ty, 
-                                "`each` cannot be used with Vec or Option"
-                            ).to_compile_error().into();
-                        };
-
                         let iter_expr = match attrs.filter {
-                            None => quote! { <#inner>::resolve_iter(session)? },
-                            Some(f) => quote! { <#inner>::resolve_iter(session)?.filter(#f) },
+                            None => quote! { <#ty>::iter(session)? },
+                            Some(f) => quote! { 
+                                <#ty>::iter_with_adapter(session, |__it| std::iter::Iterator::filter(__it, #f))? 
+                            },
                         };
                         
                         each_loops.push((field_name, iter_expr));
                     } else {
-                        // Standard field logic
-                        let init_tokens = match (wrapper, attrs.filter) {
-                            (TypeWrapper::None(inner), None) => quote! { <#inner>::resolve(session)? },
-                            (TypeWrapper::None(inner), Some(f)) => quote! {
-                                <#inner>::resolve_iter(session)?
-                                    .find(#f)
+                        // Standard field logic perfectly abstracted by the trait
+                        let init_tokens = match attrs.filter {
+                            None => quote! { <#ty>::first(session)? },
+                            Some(f) => quote! {
+                                <#ty>::iter_with_adapter(session, |__it| std::iter::Iterator::filter(__it, #f))?
+                                    .next()
                                     .ok_or_else(|| ResolveDependencyError::DependencyNotAvailable(
-                                        std::any::type_name::<#inner>().to_string()
+                                        std::any::type_name::<#ty>().to_string()
                                     ))?
                             },
-                            (TypeWrapper::Option(inner), None) => quote! { <#inner>::resolve(session).ok() },
-                            (TypeWrapper::Option(inner), Some(f)) => quote! {
-                                <#inner>::resolve_iter(session).map(|mut it| it.find(#f)).unwrap_or(None)
-                            },
-                            (TypeWrapper::Vec(inner), None) => quote! { <#inner>::resolve_iter(session)?.collect() },
-                            (TypeWrapper::Vec(inner), Some(f)) => quote! { <#inner>::resolve_iter(session)?.filter(#f).collect() },
                         };
 
                         non_each_inits.push(quote! { let #field_name = #init_tokens; });
@@ -121,7 +84,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                 let mut struct_inits = Vec::new();
                 for field_name in &field_names {
                     let is_each = each_loops.iter().any(|(n, _)| n == field_name);
-                    let is_last_each = each_loops.last().map(|(n, _)| n) == Some(field_name);
+                    let is_last_each = each_loops.last().map(|(n, _)| *n) == Some(field_name);
                     
                     if is_each && !is_last_each {
                         // Outer `each` fields must be cloned for the inner loops!
@@ -135,9 +98,13 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                 if each_loops.is_empty() {
                     quote! {
                         #( #non_each_inits )*
-                        Ok(std::iter::once(Self {
+                        let __iter = std::iter::once(Self {
                             #( #struct_inits ),*
-                        }))
+                        });
+                        
+                        // Coerce the iterator to safely pass it to the generic closure trait bounds
+                        let __boxed: std::boxed::Box<dyn std::iter::Iterator<Item = Self::Item> + '__a> = std::boxed::Box::new(__iter);
+                        Ok(adapter(__boxed))
                     }
                 } else {
                     let mut inner_block = quote! {
@@ -160,30 +127,25 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                     quote! {
                         let mut results = std::vec::Vec::new();
                         #inner_block
-                        Ok(results.into_iter())
+                        let __iter = results.into_iter();
+
+                        let __boxed: std::boxed::Box<dyn std::iter::Iterator<Item = Self::Item> + '__a> = std::boxed::Box::new(__iter);
+                        Ok(adapter(__boxed))
                     }
                 }
             }
             // Tuple structs: struct Foo(Bar, Baz)
             Fields::Unnamed(ref _fields) => {
-                // TODO: Implement Fields::Unnamed similarly if tuple structs need attributes
                 quote! {
                     compile_error!("Currently only named structs are supported in this POC.");
                 }
-                // let field_types = fields.unnamed.iter().map(|f| &f.ty);
-                
-                // quote! {
-                //     Ok(std::iter::once(Self(
-                //         #(
-                //             <#field_types>::resolve(session)?
-                //         ),*
-                //     )))
-                // }
             }
             // Unit structs: struct Bar;
             Fields::Unit => {
                 quote! {
-                    Ok(std::iter::once(Self))
+                    let __iter = std::iter::once(Self);
+                    let __boxed: std::boxed::Box<dyn std::iter::Iterator<Item = Self::Item> + '__a> = std::boxed::Box::new(__iter);
+                    Ok(adapter(__boxed))
                 }
             }
         },
@@ -192,7 +154,16 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         impl #impl_generics Resolve for #name #ty_generics #where_clause {
-            fn resolve_iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
+            type Item = Self;
+
+            fn iter_with_adapter<'__a, __I>(
+                session: &'__a Session, 
+                adapter: impl Fn(Box<dyn Iterator<Item = Self::Item> + '__a>) -> __I
+            ) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+            where
+                Self: '__a,
+                __I: Iterator<Item = Self::Item>
+            {
                 #resolve_body
             }
         }

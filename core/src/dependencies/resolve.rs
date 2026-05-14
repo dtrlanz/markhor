@@ -6,11 +6,13 @@ use crate::dependencies::Session;
 pub use derive_resolve::Resolve;
 
 pub trait Resolve {
-    fn resolve(session: &Session) -> Result<Self, ResolveDependencyError> 
+    type Item;
+
+    fn first(session: &Session) -> Result<Self, ResolveDependencyError> 
     where 
         Self: Sized
     {
-        Self::resolve_iter(session)?
+        Self::iter(session)?
             .next()
             .ok_or_else(|| {
                 // Get name of the missing struct
@@ -19,11 +21,55 @@ pub trait Resolve {
             })
     }
 
-    fn resolve_iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
-    where 
-        Self: Sized;
+    fn iter<'a>(session: &'a Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+    where
+        Self: Sized + 'a
+    {
+        Ok(Self::iter_with_adapter(session, |i| i)?)
+    }
+
+    fn iter_with_adapter<'a, I>(session: &'a Session, adapter: impl Fn(Box<dyn Iterator<Item = Self::Item> + 'a>) -> I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+    where
+        I: Iterator<Item = Self::Item>,
+        Self: 'a;
 }
 
+
+impl<T: Resolve> Resolve for Option<T> {
+    type Item = T;
+
+    fn iter_with_adapter<'a, I>(session: &'a Session, adapter: impl Fn(Box<dyn Iterator<Item = Self::Item> + 'a>) -> I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+    where
+        I: Iterator<Item = Self::Item>,
+        T: 'a,
+    {
+        let inner: Box<dyn Iterator<Item = T>> = match T::iter(session) {
+            Ok(iter) => Box::new(iter),
+            Err(ResolveDependencyError::DependencyNotAvailable(_)) => Box::new(std::iter::empty()),
+            // Err(e) => return Err(e),
+        };
+        let opt = adapter(inner).next();
+        Ok(std::iter::once(opt))
+    }
+}
+
+impl<T: Resolve> Resolve for Vec<T> {
+    type Item = T;
+
+    fn iter_with_adapter<'a, I>(session: &'a Session, adapter: impl Fn(Box<dyn Iterator<Item = Self::Item> + 'a>) -> I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+    where
+        I: Iterator<Item = Self::Item>,
+        T: 'a,
+    {
+        let inner: Box<dyn Iterator<Item = T>> = match T::iter(session) {
+            Ok(iter) => Box::new(iter),
+            Err(ResolveDependencyError::DependencyNotAvailable(_)) => Box::new(std::iter::empty()),
+            // Err(e) => return Err(e),
+        };
+        let vec: Vec<_> = adapter(inner).collect();
+        Ok(std::iter::once(vec))
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum ResolveDependencyError {
@@ -55,11 +101,11 @@ mod tests {
     #[test]
     fn derive_resolve() {
         let session = Session::new();
-        let foo = simple::Foo::resolve(&session).unwrap();
+        let foo = simple::Foo::first(&session).unwrap();
         assert_eq!(foo.bar, simple::Bar);
         assert_eq!(foo.baz, simple::Baz);
 
-        let vec = simple::Foo::resolve_iter(&session).unwrap().collect::<Vec<_>>();
+        let vec = simple::Foo::iter(&session).unwrap().collect::<Vec<_>>();
         assert_eq!(vec.len(), 1);
         assert_eq!(vec[0].bar, simple::Bar);
         assert_eq!(vec[0].baz, simple::Baz);
@@ -75,14 +121,20 @@ mod tests {
         }
 
         impl Resolve for Foo {
-            fn resolve_iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
+            type Item = Self;
+
+            fn iter_with_adapter<'a, I>(session: &'a Session, adapter: impl Fn(Box<dyn Iterator<Item = Self::Item> + 'a>) -> I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+            where
+                I: Iterator<Item = Self::Item>
+            {
                 let vec = (0..5)
                     .map(|idx| {
-                        let bar = Bar::resolve(session).unwrap();
+                        let bar = Bar::first(session).unwrap();
                         Self { idx, bar }
                     })
                     .collect::<Vec<_>>();
-                Ok(vec.into_iter())
+                let inner = Box::new(vec.into_iter());
+                Ok(adapter(inner))
             }
         }
 
@@ -93,7 +145,12 @@ mod tests {
         pub struct Blank;
 
         impl Resolve for Blank {
-            fn resolve_iter(_assets: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
+            type Item = Self;
+
+            fn iter_with_adapter<'a, I>(_assets: &Session, _adapter: impl Fn(Box<dyn Iterator<Item = Self::Item> + 'a>) -> I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+            where
+                I: Iterator<Item = Self::Item>
+            {
                 Result::<std::iter::Empty<Self>, _>::Err(
                     ResolveDependencyError::DependencyNotAvailable("Blank".to_string())
                 )
@@ -111,7 +168,7 @@ mod tests {
         }
 
         let session = Session::new();
-        let result = TestNoFilter::resolve(&session).expect("Failed to build TestNoFilter");
+        let result = TestNoFilter::first(&session).expect("Failed to build TestNoFilter");
 
         // Vec should collect all 5 Foos
         assert_eq!(result.all_foos.len(), 5);
@@ -140,11 +197,11 @@ mod tests {
         let session = Session::new();
         
         // Success case
-        let result = TestBareFilter::resolve(&session).expect("Failed to build TestBareFilter");
+        let result = TestBareFilter::first(&session).expect("Failed to build TestBareFilter");
         assert_eq!(result.target_foo.idx, 2);
 
         // Failure case (predicate matches nothing)
-        let fail_result = TestBareFilterFail::resolve(&session);
+        let fail_result = TestBareFilterFail::first(&session);
         assert!(fail_result.is_err(), "Expected an error because no Foo has idx 99");
         
         if let Err(ResolveDependencyError::DependencyNotAvailable(name)) = fail_result {
@@ -166,7 +223,7 @@ mod tests {
         }
 
         let session = Session::new();
-        let result = TestOptionFilter::resolve(&session).expect("Failed to build TestOptionFilter");
+        let result = TestOptionFilter::first(&session).expect("Failed to build TestOptionFilter");
 
         // Should find the specific target
         assert_eq!(result.target_foo.unwrap().idx, 3);
@@ -184,7 +241,7 @@ mod tests {
         }
 
         let session = Session::new();
-        let result = TestVecFilter::resolve(&session).expect("Failed to build TestVecFilter");
+        let result = TestVecFilter::first(&session).expect("Failed to build TestVecFilter");
 
         // Should only collect Foos with even indices
         assert_eq!(result.even_foos.len(), 3);
@@ -199,9 +256,15 @@ mod tests {
     }
 
     impl Resolve for Letter {
-        fn resolve_iter(_assets: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
+        type Item = Self;
+
+        fn iter_with_adapter<'a, I>(_assets: &Session, adapter: impl Fn(Box<dyn Iterator<Item = Self::Item> + 'a>) -> I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+        where
+            I: Iterator<Item = Self::Item>
+        {
             // Yields exactly two letters
-            Ok(vec![Letter { ch: 'A' }, Letter { ch: 'B' }].into_iter())
+            let inner = Box::new(vec![Letter { ch: 'A' }, Letter { ch: 'B' }].into_iter());
+            Ok(adapter(inner))
         }
     }
 
@@ -221,7 +284,7 @@ mod tests {
         let session = Session::new();
         
         // Resolve iterator should yield multiple items
-        let results: Vec<_> = SingleEach::resolve_iter(&session)
+        let results: Vec<_> = SingleEach::iter(&session)
             .expect("Failed to build SingleEach")
             .collect();
 
@@ -252,7 +315,7 @@ mod tests {
 
         let session = Session::new();
         
-        let results: Vec<_> = CartesianEach::resolve_iter(&session)
+        let results: Vec<_> = CartesianEach::iter(&session)
             .expect("Failed to build CartesianEach")
             .collect();
 
@@ -289,7 +352,7 @@ mod tests {
 
         let session = Session::new();
         
-        let results: Vec<_> = FilteredEach::resolve_iter(&session)
+        let results: Vec<_> = FilteredEach::iter(&session)
             .expect("Failed to build FilteredEach")
             .collect();
 
