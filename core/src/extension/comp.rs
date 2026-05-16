@@ -1,8 +1,7 @@
-use serde::{Deserialize, Serialize};
-
-use crate::{chat::{chat::ChatApi, prompter::Prompter}, chunking::Chunker, convert::Converter, embedding::Embedder, extension::Extension, tool::Tool};
+use crate::{chat::{chat::ChatApi, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::{Resolve, ResolveDependencyError, Session}, embedding::Embedder, extension::Extension, tool::Tool};
 
 use std::{any::TypeId, fmt::Display, ops::{Deref, DerefMut}, sync::Arc};
+use serde::{Deserialize, Serialize};
 
 
 /// A boxed extension component along with metadata.
@@ -67,6 +66,75 @@ impl<T: ?Sized + 'static> Comp<T> {
     }
 }
 
+macro_rules! impl_resolve_comp {
+    ($($trait:ident => $method:ident),*  $(,)? ) => {
+        $(
+            impl Resolve for Comp<dyn $trait> {
+                type Item = Self;
+
+                fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
+                    let extensions = session.extensions();
+                    let comps = extensions.iter()
+                        .flat_map(|ext| ext.$method().into_iter().map(|comp| Self::new(Arc::clone(ext), comp)));
+                    Ok(comps)
+                }
+
+                fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+                where
+                    I: Iterator<Item = Self::Item>
+                {
+                    Ok(items)
+                }
+            }
+        )*
+    };
+}
+
+impl_resolve_comp! {
+    Prompter => prompters,
+    Tool => tools,
+}
+
+// The `Extension` trait methods for the remaining component types still have the wrong return 
+// type (returning single objects instead of vectors), so we can't use the above macro for them
+// yet. The following impls are written out manually for testing purposes.
+
+impl Resolve for Comp<dyn Embedder> {
+    type Item = Self;
+
+    fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
+        let extensions = session.extensions();
+        let comps = extensions.iter()
+            .filter_map(|ext| ext.embedding_model().map(|comp| Self::new(Arc::clone(ext), comp)));
+        Ok(comps)
+    }
+
+    fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+    where
+        I: Iterator<Item = Self::Item>
+    {
+        Ok(items)
+    }
+}
+
+impl Resolve for Comp<dyn Chunker> {
+    type Item = Self;
+
+    fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
+        let extensions = session.extensions();
+        let comps = extensions.iter()
+            .filter_map(|ext| ext.chunker().map(|comp| Self::new(Arc::clone(ext), comp)));
+        Ok(comps)
+    }
+
+    fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+    where
+        I: Iterator<Item = Self::Item>
+    {
+        Ok(items)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ComponentType {
     ChatModel,      // anticipating pending change in name & definition
@@ -95,10 +163,11 @@ impl Display for ComponentType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{chunking::test_chunker::FixedSizeChunkerExtension, embedding::test_utils::MockEmbedderExtension};
 
     #[test]
     fn comp() {
-        let extension = crate::chunking::test_chunker::FixedSizeChunkerExtension::new(100);
+        let extension = FixedSizeChunkerExtension::new(10);
         let chunker = extension.chunker().unwrap();
 
         let comp = Comp::new(
@@ -109,5 +178,38 @@ mod tests {
         assert_eq!(comp.component_type(), ComponentType::Chunker);
         assert_eq!(comp.extension().uri(), "markhor://chunker/fixed-size");
         assert_eq!(comp.metadata_id(), "markhorchunkerfixed-size chunker");
+    }
+
+    #[tokio::test]
+    async fn resolve() {
+        let mut session = Session::new();
+        let chunker_ext_5 = FixedSizeChunkerExtension::new(5);
+        let chunker_ext_10 = FixedSizeChunkerExtension::new(10);
+        let embedder_ext = MockEmbedderExtension::new(vec!["the", "cat", "sat", "on", "mat"]);
+        session.add_extension(chunker_ext_5).await.unwrap();
+        session.add_extension(chunker_ext_10).await.unwrap();
+        session.add_extension(embedder_ext).await.unwrap();
+
+        // Test resolving single components
+        let chunker: Comp<dyn Chunker> = Resolve::first(&session).unwrap();
+        assert_eq!(chunker.component_type(), ComponentType::Chunker);
+        assert_eq!(chunker.metadata_id(), "markhorchunkerfixed-size chunker");
+
+        let embedder: Comp<dyn Embedder> = Resolve::first(&session).unwrap();
+        assert_eq!(embedder.component_type(), ComponentType::EmbeddingModel);
+        assert_eq!(embedder.metadata_id(), "markhorembeddermock embedding-model");
+
+        // Test resolving multiple components of the same type
+        let chunkers: Vec<Comp<dyn Chunker>> = Resolve::first(&session).unwrap();
+        assert_eq!(chunkers.len(), 2);
+        assert_eq!(chunkers[0].component_type(), ComponentType::Chunker);
+        assert_eq!(chunkers[1].component_type(), ComponentType::Chunker);
+
+        // Make sure we're getting two different chunkers
+        let chunked = chunkers.iter()
+            .map(|comp| comp.chunk("0123456789").unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(chunked[0].len(), 2); // 2 chunks of size 5
+        assert_eq!(chunked[1].len(), 1); // 1 chunk of size 10
     }
 }

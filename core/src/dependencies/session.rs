@@ -1,7 +1,9 @@
 use crate::{dependencies::Resolve, extension::{Extension, InitExtensionError}};
 
+use std::sync::Arc;
+
 pub struct Session {
-    extensions: Vec<Box<dyn Extension>>,
+    extensions: Vec<Arc<dyn Extension>>,
 }
 
 impl Session {
@@ -11,7 +13,7 @@ impl Session {
 
     pub async fn add_extension<E: Extension + 'static>(&mut self, extension: E) -> Result<(), InitExtensionError> {
         // extension.initialize().await;
-        self.extensions.push(Box::new(extension));
+        self.extensions.push(Arc::new(extension));
         Ok(())
     }
 
@@ -20,7 +22,7 @@ impl Session {
         self.add_extension(extension).await
     }
 
-    pub fn extensions(&self) -> &[Box<dyn Extension>] {
+    pub fn extensions(&self) -> &[Arc<dyn Extension>] {
         &self.extensions
     }
 }
