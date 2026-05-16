@@ -1,13 +1,14 @@
-mod active_extension;
+use crate::{chat::{chat::ChatApi, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::ResolveDependencyError, embedding::Embedder};
 
 use std::{fmt::Display, ops::{Deref, DerefMut}};
-
-pub use active_extension::{ActiveExtension, ExtensionConfig};
-
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{chat::{chat::ChatApi, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::ResolveDependencyError, embedding::Embedder};
+mod active_extension;
+pub use active_extension::{ActiveExtension, ExtensionConfig};
+
+mod comp;
+pub use comp::Comp;
 
 pub trait Extension: Send + Sync {
     fn uri(&self) -> &str;
