@@ -21,52 +21,73 @@ pub trait Resolve {
             })
     }
 
-    fn iter<'a>(session: &'a Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
-    where
-        Self: Sized + 'a
-    {
-        Ok(Self::iter_with_adapter(session, |i| i)?)
-    }
+    fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>;
 
-    fn iter_with_adapter<'a, I>(session: &'a Session, adapter: impl Fn(Box<dyn Iterator<Item = Self::Item> + 'a>) -> I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+    fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
     where
-        I: Iterator<Item = Self::Item>,
-        Self: 'a;
+        I: Iterator<Item = Self::Item>;
 }
-
 
 impl<T: Resolve> Resolve for Option<T> {
     type Item = T;
 
-    fn iter_with_adapter<'a, I>(session: &'a Session, adapter: impl Fn(Box<dyn Iterator<Item = Self::Item> + 'a>) -> I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+    fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+    {
+        let items = T::iter(session)?;
+        Self::iter_from_items(items)
+    }
+
+    fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
     where
         I: Iterator<Item = Self::Item>,
-        T: 'a,
     {
-        let inner: Box<dyn Iterator<Item = T>> = match T::iter(session) {
-            Ok(iter) => Box::new(iter),
-            Err(ResolveDependencyError::DependencyNotAvailable(_)) => Box::new(std::iter::empty()),
-            // Err(e) => return Err(e),
-        };
-        let opt = adapter(inner).next();
-        Ok(std::iter::once(opt))
+        let iter = OnceOrMore::new(items);
+        Ok(iter)
+    }
+}
+
+/// Iterator that yields at least one item.
+/// 
+/// Helper struct used by `impl<T: Resolve> Resolve for Option<T>`.
+/// Yields items of type `Option<T>`, always yielding  `Some` at least once.
+/// 
+/// - If the original iterator is empty: `Some(None)`, `None`, `None`, ...
+/// - If the original iterator has items: `Some(Some(item1))`, `Some(Some(item2))`, ..., `None`, `None`, ...
+struct OnceOrMore<T, I: Iterator<Item = T>>(Option<Option<T>>, I);
+
+impl<T, I: Iterator<Item = T>> OnceOrMore<T, I> {
+    fn new(mut items: I) -> Self {
+        let first = items.next();
+        Self(Some(first), items)
+    }
+}
+
+impl<T, I: Iterator<Item = T>> Iterator for OnceOrMore<T, I> {
+    type Item = Option<T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(item) = self.0.take() {
+            Some(item)
+        } else {
+            self.1.next().map(Some)
+        }
     }
 }
 
 impl<T: Resolve> Resolve for Vec<T> {
     type Item = T;
 
-    fn iter_with_adapter<'a, I>(session: &'a Session, adapter: impl Fn(Box<dyn Iterator<Item = Self::Item> + 'a>) -> I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+    fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+    {
+        let items = T::iter(session)?;
+        Self::iter_from_items(items)
+    }
+
+    fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
     where
         I: Iterator<Item = Self::Item>,
-        T: 'a,
     {
-        let inner: Box<dyn Iterator<Item = T>> = match T::iter(session) {
-            Ok(iter) => Box::new(iter),
-            Err(ResolveDependencyError::DependencyNotAvailable(_)) => Box::new(std::iter::empty()),
-            // Err(e) => return Err(e),
-        };
-        let vec: Vec<_> = adapter(inner).collect();
+        let vec = items.collect();
         Ok(std::iter::once(vec))
     }
 }
@@ -80,7 +101,9 @@ pub enum ResolveDependencyError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::fmt::Debug;
+
+use super::*;
 
     mod simple {
         use super::*;
@@ -111,6 +134,18 @@ mod tests {
         assert_eq!(vec[0].baz, simple::Baz);
     }
 
+    #[test]
+    fn once_or_more_iterator() {
+        let mut empty_iter = OnceOrMore::new(std::iter::empty::<i32>());
+        assert_eq!(empty_iter.next(), Some(None));
+        assert_eq!(empty_iter.next(), None);
+
+        let mut some_iter = OnceOrMore::new(vec![1, 2].into_iter());
+        assert_eq!(some_iter.next(), Some(Some(1)));
+        assert_eq!(some_iter.next(), Some(Some(2)));
+        assert_eq!(some_iter.next(), None);
+    }
+
     mod enumerated {
         use super::*;
 
@@ -123,18 +158,20 @@ mod tests {
         impl Resolve for Foo {
             type Item = Self;
 
-            fn iter_with_adapter<'a, I>(session: &'a Session, adapter: impl Fn(Box<dyn Iterator<Item = Self::Item> + 'a>) -> I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+            fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+            {
+                let items = (0..5).map(|idx| {
+                    let bar = Bar::first(session).unwrap();
+                    Self { idx, bar }
+                });
+                Self::iter_from_items(items)
+            }
+
+            fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
             where
                 I: Iterator<Item = Self::Item>
             {
-                let vec = (0..5)
-                    .map(|idx| {
-                        let bar = Bar::first(session).unwrap();
-                        Self { idx, bar }
-                    })
-                    .collect::<Vec<_>>();
-                let inner = Box::new(vec.into_iter());
-                Ok(adapter(inner))
+                Ok(items)
             }
         }
 
@@ -147,13 +184,16 @@ mod tests {
         impl Resolve for Blank {
             type Item = Self;
 
-            fn iter_with_adapter<'a, I>(_assets: &Session, _adapter: impl Fn(Box<dyn Iterator<Item = Self::Item> + 'a>) -> I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+            fn iter(_assets: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+            {
+                Self::iter_from_items(std::iter::empty())
+            }
+
+            fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
             where
                 I: Iterator<Item = Self::Item>
             {
-                Result::<std::iter::Empty<Self>, _>::Err(
-                    ResolveDependencyError::DependencyNotAvailable("Blank".to_string())
-                )
+                Ok(items)
             }
         }
     }
@@ -258,13 +298,21 @@ mod tests {
     impl Resolve for Letter {
         type Item = Self;
 
-        fn iter_with_adapter<'a, I>(_assets: &Session, adapter: impl Fn(Box<dyn Iterator<Item = Self::Item> + 'a>) -> I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+        fn iter(_assets: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+        {
+            // Yields exactly two letters
+            let letters = vec![
+                Self { ch: 'A' },
+                Self { ch: 'B' },
+            ];
+            Self::iter_from_items(letters.into_iter())
+        }
+
+        fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
         where
             I: Iterator<Item = Self::Item>
         {
-            // Yields exactly two letters
-            let inner = Box::new(vec![Letter { ch: 'A' }, Letter { ch: 'B' }].into_iter());
-            Ok(adapter(inner))
+            Ok(items)
         }
     }
 
@@ -373,4 +421,11 @@ mod tests {
         assert_eq!(results[5].even_foo.idx, 4);
         assert_eq!(results[5].letter.ch, 'B');
     }
+
+    // #[derive(Debug, Resolve)]
+    // struct Pair<T: Debug + Resolve> {
+    //     first: T,
+    //     // second: U,
+    // }
+
 }

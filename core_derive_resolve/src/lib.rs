@@ -36,7 +36,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
     // Support generics
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    // Generate the body of the `iter_with_adapter` function based on the struct's fields
+    // Generate the body of the `iter` function based on the struct's fields
     let resolve_body = match input.data {
         Data::Struct(ref data_struct) => match data_struct.fields {
             // Structs with named fields: struct Foo { bar: Bar }
@@ -56,9 +56,14 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
 
                     if attrs.each {
                         let iter_expr = match attrs.filter {
-                            None => quote! { <#ty>::iter(session)? },
+                            None => quote! { <#ty as Resolve>::iter(session)? },
                             Some(f) => quote! { 
-                                <#ty>::iter_with_adapter(session, |__it| std::iter::Iterator::filter(__it, #f))? 
+                                {
+                                    // Extract the inner iter, apply the filter, and recombine through iter_from_items
+                                    let __base_iter = <<#ty as Resolve>::Item as Resolve>::iter(session)?;
+                                    let __filtered = std::iter::Iterator::filter(__base_iter, #f);
+                                    <#ty as Resolve>::iter_from_items(__filtered)?
+                                }
                             },
                         };
                         
@@ -66,13 +71,18 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                     } else {
                         // Standard field logic perfectly abstracted by the trait
                         let init_tokens = match attrs.filter {
-                            None => quote! { <#ty>::first(session)? },
+                            None => quote! { <#ty as Resolve>::first(session)? },
                             Some(f) => quote! {
-                                <#ty>::iter_with_adapter(session, |__it| std::iter::Iterator::filter(__it, #f))?
-                                    .next()
-                                    .ok_or_else(|| ResolveDependencyError::DependencyNotAvailable(
-                                        std::any::type_name::<#ty>().to_string()
-                                    ))?
+                                {
+                                    let __base_iter = <<#ty as Resolve>::Item as Resolve>::iter(session)?;
+                                    let __filtered = std::iter::Iterator::filter(__base_iter, #f);
+                                    let mut __field_iter = <#ty as Resolve>::iter_from_items(__filtered)?;
+                                    
+                                    std::iter::Iterator::next(&mut __field_iter)
+                                        .ok_or_else(|| ResolveDependencyError::DependencyNotAvailable(
+                                            std::any::type_name::<#ty>().to_string()
+                                        ))?
+                                }
                             },
                         };
 
@@ -98,13 +108,11 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                 if each_loops.is_empty() {
                     quote! {
                         #( #non_each_inits )*
-                        let __iter = std::iter::once(Self {
+                        let __items = std::iter::once(Self {
                             #( #struct_inits ),*
                         });
                         
-                        // Coerce the iterator to safely pass it to the generic closure trait bounds
-                        let __boxed: std::boxed::Box<dyn std::iter::Iterator<Item = Self::Item> + '__a> = std::boxed::Box::new(__iter);
-                        Ok(adapter(__boxed))
+                        Self::iter_from_items(__items)
                     }
                 } else {
                     let mut inner_block = quote! {
@@ -127,10 +135,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                     quote! {
                         let mut results = std::vec::Vec::new();
                         #inner_block
-                        let __iter = results.into_iter();
-
-                        let __boxed: std::boxed::Box<dyn std::iter::Iterator<Item = Self::Item> + '__a> = std::boxed::Box::new(__iter);
-                        Ok(adapter(__boxed))
+                        Self::iter_from_items(results.into_iter())
                     }
                 }
             }
@@ -143,9 +148,8 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
             // Unit structs: struct Bar;
             Fields::Unit => {
                 quote! {
-                    let __iter = std::iter::once(Self);
-                    let __boxed: std::boxed::Box<dyn std::iter::Iterator<Item = Self::Item> + '__a> = std::boxed::Box::new(__iter);
-                    Ok(adapter(__boxed))
+                    let __items = std::iter::once(Self);
+                    Self::iter_from_items(__items)
                 }
             }
         },
@@ -156,15 +160,15 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
         impl #impl_generics Resolve for #name #ty_generics #where_clause {
             type Item = Self;
 
-            fn iter_with_adapter<'__a, __I>(
-                session: &'__a Session, 
-                adapter: impl Fn(Box<dyn Iterator<Item = Self::Item> + '__a>) -> __I
-            ) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
-            where
-                Self: '__a,
-                __I: Iterator<Item = Self::Item>
-            {
+            fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
                 #resolve_body
+            }
+
+            fn iter_from_items<__I>(items: __I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+            where
+                __I: Iterator<Item = Self::Item>,
+            {
+                Ok(items)
             }
         }
     };
