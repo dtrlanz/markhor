@@ -290,6 +290,53 @@ use super::*;
         assert_eq!(result.even_foos[2].idx, 4);
     }
 
+    #[test]
+    fn vec_field_with_map() {
+        use enumerated::Foo;
+
+        // --- Map within the same type ---
+
+        #[derive(Debug, Resolve)]
+        struct TestVecMap0 {
+            #[resolve(map = |f: Foo| Foo { idx: f.idx * 2, bar: f.bar })]
+            doubled_foos: Vec<Foo>,
+        }
+
+        let session = Session::new();
+        let result = TestVecMap0::first(&session).expect("Failed to build TestVecMap0");
+
+        // Indices should be doubled
+        assert_eq!(result.doubled_foos.len(), 5);
+        assert_eq!(result.doubled_foos[0].idx, 0);
+        assert_eq!(result.doubled_foos[1].idx, 2);
+        assert_eq!(result.doubled_foos[2].idx, 4);
+        assert_eq!(result.doubled_foos[3].idx, 6);
+        assert_eq!(result.doubled_foos[4].idx, 8);
+
+        // --- Map one type to another ---
+
+        #[derive(Debug, Resolve)]
+        struct Baz {
+            foo: Foo,
+        }
+
+        #[derive(Debug, Resolve)]
+        struct TestVecMap1 {
+            #[resolve(map = |f: Foo| Baz { foo: f })]
+            bazes: Vec<Baz>,
+        }
+
+        let result = TestVecMap1::first(&session).expect("Failed to build TestVecMap1");
+
+        // Foos should be wrapped in Baz structs
+        assert_eq!(result.bazes.len(), 5);
+        assert_eq!(result.bazes[0].foo.idx, 0);
+        assert_eq!(result.bazes[1].foo.idx, 1);
+        assert_eq!(result.bazes[2].foo.idx, 2);
+        assert_eq!(result.bazes[3].foo.idx, 3);
+        assert_eq!(result.bazes[4].foo.idx, 4);
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Letter {
         pub ch: char,
@@ -421,11 +468,4 @@ use super::*;
         assert_eq!(results[5].even_foo.idx, 4);
         assert_eq!(results[5].letter.ch, 'B');
     }
-
-    // #[derive(Debug, Resolve)]
-    // struct Pair<T: Debug + Resolve> {
-    //     first: T,
-    //     // second: U,
-    // }
-
 }

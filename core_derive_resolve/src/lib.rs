@@ -1,19 +1,40 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, Data, DeriveInput, Expr, Fields};
+use syn::{parse_macro_input, Data, DeriveInput, Expr, Fields, Type};
 
 struct FieldConfig {
     filter: Option<Expr>,
+    map: Option<(Expr, Type)>, // (The map closure, Extracted source type)
     each: bool,
 }
 
+/// Helper function to extract the explicitly annotated argument type from a closure.
+/// For example, `|x: Bar| ...` will return the AST representation of `Bar`.
+fn extract_source_type_from_closure(expr: &Expr) -> syn::Result<Type> {
+    if let Expr::Closure(closure) = expr {
+        if let Some(syn::Pat::Type(pat_type)) = closure.inputs.first() {
+            return Ok(*pat_type.ty.clone());
+        }
+    }
+    Err(syn::Error::new_spanned(
+        expr, 
+        "The `map` attribute requires a closure with an explicitly typed argument. \n\
+        Example: `#[resolve(map = |x: SourceType| ...)]`"
+    ))
+}
+
 fn parse_resolve_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldConfig> {
-    let mut config = FieldConfig { filter: None, each: false };
+    let mut config = FieldConfig { filter: None, map: None, each: false };
     for attr in attrs {
         if attr.path().is_ident("resolve") {
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("filter") {
                     config.filter = Some(meta.value()?.parse()?);
+                    Ok(())
+                } else if meta.path.is_ident("map") {
+                    let expr: Expr = meta.value()?.parse()?;
+                    let src_ty = extract_source_type_from_closure(&expr)?;
+                    config.map = Some((expr, src_ty));
                     Ok(())
                 } else if meta.path.is_ident("each") {
                     config.each = true;
@@ -38,8 +59,8 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
 
     // Generate the body of the `iter` function based on the struct's fields
     let resolve_body = match input.data {
+        // Structs with named fields: struct Foo { bar: Bar }
         Data::Struct(ref data_struct) => match data_struct.fields {
-            // Structs with named fields: struct Foo { bar: Bar }
             Fields::Named(ref fields) => {
                 let mut field_names = Vec::new();
                 let mut non_each_inits = Vec::new();
@@ -54,36 +75,60 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                     let ty = &field.ty;
                     field_names.push(field_name);
 
+                    // 1. Determine base iterator call and any map transformations
+                    let (base_iter_call, map_step) = match &attrs.map {
+                        Some((map_expr, src_ty)) => {
+                            (
+                                quote! { <#src_ty as Resolve>::iter(session)? }, 
+                                quote! { let __iter = std::iter::Iterator::map(__iter, #map_expr); }
+                            )
+                        }
+                        None => {
+                            (
+                                quote! { <<#ty as Resolve>::Item as Resolve>::iter(session)? }, 
+                                quote! {}
+                            )
+                        }
+                    };
+
+                    // 2. Determine filter transformations (Applies BEFORE map if both are present)
+                    let filter_step = match &attrs.filter {
+                        Some(f) => quote! { let __iter = std::iter::Iterator::filter(__iter, #f); },
+                        None => quote! {},
+                    };
+
+                    let needs_custom_iter = attrs.map.is_some() || attrs.filter.is_some();
+
+                    // 3. Construct the resolved iterator expression
+                    let iter_expr = if needs_custom_iter {
+                        quote! {
+                            {
+                                let __iter = #base_iter_call;
+                                #filter_step
+                                #map_step
+                                <#ty as Resolve>::iter_from_items(__iter)?
+                            }
+                        }
+                    } else {
+                        quote! { <#ty as Resolve>::iter(session)? }
+                    };
+
                     if attrs.each {
-                        let iter_expr = match attrs.filter {
-                            None => quote! { <#ty as Resolve>::iter(session)? },
-                            Some(f) => quote! { 
-                                {
-                                    // Extract the inner iter, apply the filter, and recombine through iter_from_items
-                                    let __base_iter = <<#ty as Resolve>::Item as Resolve>::iter(session)?;
-                                    let __filtered = std::iter::Iterator::filter(__base_iter, #f);
-                                    <#ty as Resolve>::iter_from_items(__filtered)?
-                                }
-                            },
-                        };
-                        
                         each_loops.push((field_name, iter_expr));
                     } else {
-                        // Standard field logic perfectly abstracted by the trait
-                        let init_tokens = match attrs.filter {
-                            None => quote! { <#ty as Resolve>::first(session)? },
-                            Some(f) => quote! {
+                        // Standard field logic
+                        let init_tokens = if needs_custom_iter {
+                            quote! {
                                 {
-                                    let __base_iter = <<#ty as Resolve>::Item as Resolve>::iter(session)?;
-                                    let __filtered = std::iter::Iterator::filter(__base_iter, #f);
-                                    let mut __field_iter = <#ty as Resolve>::iter_from_items(__filtered)?;
-                                    
+                                    let mut __field_iter = #iter_expr;
                                     std::iter::Iterator::next(&mut __field_iter)
                                         .ok_or_else(|| ResolveDependencyError::DependencyNotAvailable(
                                             std::any::type_name::<#ty>().to_string()
                                         ))?
                                 }
-                            },
+                            }
+                        } else {
+                            quote! { <#ty as Resolve>::first(session)? }
                         };
 
                         non_each_inits.push(quote! { let #field_name = #init_tokens; });
@@ -105,6 +150,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                     }
                 }
 
+                // Build the final struct configuration
                 if each_loops.is_empty() {
                     quote! {
                         #( #non_each_inits )*
@@ -117,8 +163,6 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                 } else {
                     let mut inner_block = quote! {
                         #( #non_each_inits )*
-                        
-                        // We now use the clone-aware initializers
                         results.push(Self {
                             #( #struct_inits ),*
                         });
