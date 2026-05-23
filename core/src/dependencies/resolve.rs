@@ -1,4 +1,4 @@
-use std::any::type_name;
+use std::{any::type_name, hash::Hash};
 use thiserror::Error;
 
 use crate::dependencies::Session;
@@ -89,6 +89,28 @@ impl<T: Resolve> Resolve for Vec<T> {
     {
         let vec = items.collect();
         Ok(std::iter::once(vec))
+    }
+}
+
+impl<K, V> Resolve for std::collections::HashMap<K, V>
+where
+    K: Eq + Hash,
+    (K, V): Resolve,
+{
+    type Item = (K, V);
+
+    fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+    {
+        let items = <(K, V)>::iter(session)?;
+        Self::iter_from_items(items)
+    }
+
+    fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+    where
+        I: Iterator<Item = Self::Item>
+    {
+        let map = items.collect();
+        Ok(std::iter::once(map))
     }
 }
 
@@ -335,6 +357,26 @@ use super::*;
         assert_eq!(result.bazes[2].foo.idx, 2);
         assert_eq!(result.bazes[3].foo.idx, 3);
         assert_eq!(result.bazes[4].foo.idx, 4);
+    }
+
+    #[test]
+    fn hash_map_field_with_map() {
+        use enumerated::Foo;
+
+        #[derive(Debug, Resolve)]
+        struct TestMapMap {
+            #[resolve(map = |f: Foo| (f.idx, f))]
+            foo_map: std::collections::HashMap<usize, Foo>,
+        }
+
+        let session = Session::new();
+        let result = TestMapMap::first(&session).expect("Failed to build TestMapMap");
+
+        // Should produce a HashMap mapping indices to Foos
+        assert_eq!(result.foo_map.len(), 5);
+        for idx in 0..5 {
+            assert_eq!(result.foo_map[&idx].idx, idx);
+        }
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
