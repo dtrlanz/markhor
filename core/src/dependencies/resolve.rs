@@ -6,8 +6,6 @@ use crate::dependencies::Session;
 pub use derive_resolve::Resolve;
 
 pub trait Resolve {
-    type Item;
-
     fn first(session: &Session) -> Result<Self, ResolveDependencyError> 
     where 
         Self: Sized
@@ -22,6 +20,10 @@ pub trait Resolve {
     }
 
     fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>;
+}
+
+pub trait ResolveFrom {
+    type Item;
 
     fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
     where
@@ -29,13 +31,15 @@ pub trait Resolve {
 }
 
 impl<T: Resolve> Resolve for Option<T> {
-    type Item = T;
-
     fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
     {
         let items = T::iter(session)?;
         Self::iter_from_items(items)
     }
+}
+
+impl<T> ResolveFrom for Option<T> {
+    type Item = T;
 
     fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
     where
@@ -75,13 +79,15 @@ impl<T, I: Iterator<Item = T>> Iterator for OnceOrMore<T, I> {
 }
 
 impl<T: Resolve> Resolve for Vec<T> {
-    type Item = T;
-
     fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
     {
         let items = T::iter(session)?;
         Self::iter_from_items(items)
     }
+}
+
+impl<T> ResolveFrom for Vec<T> {
+    type Item = T;
 
     fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
     where
@@ -92,18 +98,11 @@ impl<T: Resolve> Resolve for Vec<T> {
     }
 }
 
-impl<K, V> Resolve for std::collections::HashMap<K, V>
+impl<K, V> ResolveFrom for std::collections::HashMap<K, V>
 where
     K: Eq + Hash,
-    (K, V): Resolve,
 {
     type Item = (K, V);
-
-    fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
-    {
-        let items = <(K, V)>::iter(session)?;
-        Self::iter_from_items(items)
-    }
 
     fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
     where
@@ -178,8 +177,6 @@ use super::*;
         }
 
         impl Resolve for Foo {
-            type Item = Self;
-
             fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
             {
                 let items = (0..5).map(|idx| {
@@ -188,6 +185,10 @@ use super::*;
                 });
                 Self::iter_from_items(items)
             }
+        }
+
+        impl ResolveFrom for Foo {
+            type Item = Self;
 
             fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
             where
@@ -204,18 +205,9 @@ use super::*;
         pub struct Blank;
 
         impl Resolve for Blank {
-            type Item = Self;
-
             fn iter(_assets: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
             {
-                Self::iter_from_items(std::iter::empty())
-            }
-
-            fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
-            where
-                I: Iterator<Item = Self::Item>
-            {
-                Ok(items)
+                Ok(std::iter::empty())
             }
         }
     }
@@ -385,8 +377,6 @@ use super::*;
     }
 
     impl Resolve for Letter {
-        type Item = Self;
-
         fn iter(_assets: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
         {
             // Yields exactly two letters
@@ -396,7 +386,10 @@ use super::*;
             ];
             Self::iter_from_items(letters.into_iter())
         }
+    }
 
+    impl ResolveFrom for Letter {
+        type Item = Self;
         fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
         where
             I: Iterator<Item = Self::Item>

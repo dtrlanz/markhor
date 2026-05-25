@@ -85,7 +85,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                         }
                         None => {
                             (
-                                quote! { <<#ty as Resolve>::Item as Resolve>::iter(session)? }, 
+                                quote! { <<#ty as ResolveFrom>::Item as Resolve>::iter(session)? }, 
                                 quote! {}
                             )
                         }
@@ -106,7 +106,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                                 let __iter = #base_iter_call;
                                 #filter_step
                                 #map_step
-                                <#ty as Resolve>::iter_from_items(__iter)?
+                                <#ty as ResolveFrom>::iter_from_items(__iter)?
                             }
                         }
                     } else {
@@ -158,7 +158,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                             #( #struct_inits ),*
                         });
                         
-                        Self::iter_from_items(__items)
+                        Ok(__items)
                     }
                 } else {
                     let mut inner_block = quote! {
@@ -179,7 +179,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                     quote! {
                         let mut results = std::vec::Vec::new();
                         #inner_block
-                        Self::iter_from_items(results.into_iter())
+                        Ok(results.into_iter())
                     }
                 }
             }
@@ -193,7 +193,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
             Fields::Unit => {
                 quote! {
                     let __items = std::iter::once(Self);
-                    Self::iter_from_items(__items)
+                    Ok(__items)
                 }
             }
         },
@@ -202,18 +202,18 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         impl #impl_generics Resolve for #name #ty_generics #where_clause {
-            type Item = Self;
+            // type Item = Self;
 
             fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
                 #resolve_body
             }
 
-            fn iter_from_items<__I>(items: __I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
-            where
-                __I: Iterator<Item = Self::Item>,
-            {
-                Ok(items)
-            }
+            // fn iter_from_items<__I>(items: __I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+            // where
+            //     __I: Iterator<Item = Self::Item>,
+            // {
+            //     Ok(items)
+            // }
         }
     };
 
