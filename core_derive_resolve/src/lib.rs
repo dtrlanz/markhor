@@ -65,6 +65,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                 let mut field_names = Vec::new();
                 let mut non_each_inits = Vec::new();
                 let mut each_loops = Vec::new();
+                let mut normal_fields = Vec::new();
 
                 for field in fields.named.iter() {
                     let field_name = field.ident.as_ref().unwrap();
@@ -91,7 +92,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                         }
                     };
 
-                    // 2. Determine filter transformations (Applies BEFORE map if both are present)
+                    // 2. Determine filter transformations
                     let filter_step = match &attrs.filter {
                         Some(f) => quote! { let __iter = std::iter::Iterator::filter(__iter, #f); },
                         None => quote! {},
@@ -132,26 +133,16 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                         };
 
                         non_each_inits.push(quote! { let #field_name = #init_tokens; });
+                        normal_fields.push(field_name);
                     }
                 }
 
-                // Determine which fields need to be cloned
-                let mut struct_inits = Vec::new();
-                for field_name in &field_names {
-                    let is_each = each_loops.iter().any(|(n, _)| n == field_name);
-                    let is_last_each = each_loops.last().map(|(n, _)| *n) == Some(field_name);
-                    
-                    if is_each && !is_last_each {
-                        // Outer `each` fields must be cloned for the inner loops!
-                        struct_inits.push(quote! { #field_name: #field_name.clone() });
-                    } else {
-                        // Standard fields and the innermost `each` field do not need cloning
+                if each_loops.is_empty() {
+                    let mut struct_inits = Vec::new();
+                    for field_name in &field_names {
                         struct_inits.push(quote! { #field_name });
                     }
-                }
-
-                // Build the final struct configuration
-                if each_loops.is_empty() {
+                    
                     quote! {
                         #( #non_each_inits )*
                         let __items = std::iter::once(Self {
@@ -161,35 +152,92 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                         Ok(__items)
                     }
                 } else {
-                    let mut inner_block = quote! {
-                        #( #non_each_inits )*
-                        results.push(Self {
-                            #( #struct_inits ),*
-                        });
-                    };
-
-                    for (name, iter_expr) in each_loops.into_iter().rev() {
-                        inner_block = quote! {
-                            for #name in #iter_expr {
-                                #inner_block
-                            }
-                        };
+                    let mut each_inits = Vec::new();
+                    let mut each_fields = Vec::new();
+                    
+                    // Setup the initial bindings (evaluating outer iterator once, caching inner loops)
+                    for (i, (name, iter_expr)) in each_loops.iter().enumerate() {
+                        each_fields.push(*name);
+                        if i == 0 {
+                            each_inits.push(quote! { let #name = #iter_expr; });
+                        } else {
+                            each_inits.push(quote! { let #name = std::iter::Iterator::collect::<std::vec::Vec<_>>(#iter_expr); });
+                        }
                     }
-
+                    
+                    let n = each_fields.len() - 1;
+                    let innermost_field = each_fields[n];
+                    
+                    // Clone all fields inside instantiation except the innermost each field
+                    let mut struct_inits = Vec::new();
+                    for field_name in &field_names {
+                        if *field_name == innermost_field {
+                            struct_inits.push(quote! { #field_name });
+                        } else {
+                            struct_inits.push(quote! { #field_name: #field_name.clone() });
+                        }
+                    }
+                    
+                    let mut current_expr = quote! {
+                        Self { #( #struct_inits ),* }
+                    };
+                    
+                    // Fold iterators backwards from innermost to outermost
+                    for i in (0..=n).rev() {
+                        let field_i = each_fields[i];
+                        
+                        let iter_i = if i == 0 {
+                            quote! { #field_i }
+                        } else {
+                            quote! { std::iter::IntoIterator::into_iter(#field_i.clone()) }
+                        };
+                        
+                        if i == n {
+                            // Innermost each loop is just a map
+                            current_expr = quote! {
+                                std::iter::Iterator::map(#iter_i, move |#field_i| {
+                                    #current_expr
+                                })
+                            };
+                        } else {
+                            // Outer each loops use flat_map and prepare clones for the FnMut bounds of deeper iterators
+                            let mut clones = Vec::new();
+                            for f in &normal_fields {
+                                clones.push(quote! { let #f = #f.clone(); });
+                            }
+                            // Variables from preceding loops (already expanded)
+                            for j in 0..=i {
+                                let f = each_fields[j];
+                                clones.push(quote! { let #f = #f.clone(); });
+                            }
+                            // Vectors for deeper loops
+                            if i + 2 <= n {
+                                for j in (i + 2)..=n {
+                                    let f = each_fields[j];
+                                    clones.push(quote! { let #f = #f.clone(); });
+                                }
+                            }
+                            
+                            current_expr = quote! {
+                                std::iter::Iterator::flat_map(#iter_i, move |#field_i| {
+                                    #( #clones )*
+                                    #current_expr
+                                })
+                            };
+                        }
+                    }
+                    
                     quote! {
-                        let mut results = std::vec::Vec::new();
-                        #inner_block
-                        Ok(results.into_iter())
+                        #( #non_each_inits )*
+                        #( #each_inits )*
+                        Ok(#current_expr)
                     }
                 }
             }
             // Tuple structs: struct Foo(Bar, Baz)
             Fields::Unnamed(ref _fields) => {
-                quote! {
-                    compile_error!("Currently only named structs are supported in this POC.");
-                }
+                quote! { compile_error!("Currently only named structs are supported in this POC."); }
             }
-            // Unit structs: struct Bar;
             Fields::Unit => {
                 quote! {
                     let __items = std::iter::once(Self);
