@@ -70,7 +70,7 @@ macro_rules! impl_resolve_comp {
     ($($trait:ident => $method:ident),*  $(,)? ) => {
         $(
             impl Resolve for Comp<dyn $trait> {
-                // type Item = Self;
+                type Item = Self;
 
                 fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
                     let extensions = session.extensions();
@@ -79,12 +79,12 @@ macro_rules! impl_resolve_comp {
                     Ok(comps)
                 }
 
-                // fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
-                // where
-                //     I: Iterator<Item = Self::Item>
-                // {
-                //     Ok(items)
-                // }
+                fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+                where
+                    I: Iterator<Item = Self::Item>
+                {
+                    Ok(items)
+                }
             }
         )*
     };
@@ -100,7 +100,7 @@ impl_resolve_comp! {
 // yet. The following impls are written out manually for testing purposes.
 
 impl Resolve for Comp<dyn Embedder> {
-    // type Item = Self;
+    type Item = Self;
 
     fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
         let extensions = session.extensions();
@@ -109,16 +109,16 @@ impl Resolve for Comp<dyn Embedder> {
         Ok(comps)
     }
 
-    // fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
-    // where
-    //     I: Iterator<Item = Self::Item>
-    // {
-    //     Ok(items)
-    // }
+    fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+    where
+        I: Iterator<Item = Self::Item>
+    {
+        Ok(items)
+    }
 }
 
 impl Resolve for Comp<dyn Chunker> {
-    // type Item = Self;
+    type Item = Self;
 
     fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
         let extensions = session.extensions();
@@ -127,12 +127,12 @@ impl Resolve for Comp<dyn Chunker> {
         Ok(comps)
     }
 
-    // fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
-    // where
-    //     I: Iterator<Item = Self::Item>
-    // {
-    //     Ok(items)
-    // }
+    fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+    where
+        I: Iterator<Item = Self::Item>
+    {
+        Ok(items)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]

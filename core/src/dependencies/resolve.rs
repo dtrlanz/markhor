@@ -1,11 +1,14 @@
 use std::{any::type_name, hash::Hash};
 use thiserror::Error;
+use tracing::warn;
 
 use crate::dependencies::Session;
 
 pub use derive_resolve::Resolve;
 
 pub trait Resolve {
+    type Item;
+
     fn first(session: &Session) -> Result<Self, ResolveDependencyError> 
     where 
         Self: Sized
@@ -20,10 +23,6 @@ pub trait Resolve {
     }
 
     fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>;
-}
-
-pub trait ResolveFrom {
-    type Item;
 
     fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
     where
@@ -31,15 +30,13 @@ pub trait ResolveFrom {
 }
 
 impl<T: Resolve> Resolve for Option<T> {
+    type Item = T;
+
     fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
     {
         let items = T::iter(session)?;
         Self::iter_from_items(items)
     }
-}
-
-impl<T> ResolveFrom for Option<T> {
-    type Item = T;
 
     fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
     where
@@ -79,15 +76,13 @@ impl<T, I: Iterator<Item = T>> Iterator for OnceOrMore<T, I> {
 }
 
 impl<T: Resolve> Resolve for Vec<T> {
+    type Item = T;
+
     fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
     {
         let items = T::iter(session)?;
         Self::iter_from_items(items)
     }
-}
-
-impl<T> ResolveFrom for Vec<T> {
-    type Item = T;
 
     fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
     where
@@ -98,11 +93,21 @@ impl<T> ResolveFrom for Vec<T> {
     }
 }
 
-impl<K, V> ResolveFrom for std::collections::HashMap<K, V>
+impl<K, V> Resolve for std::collections::HashMap<K, V>
 where
     K: Eq + Hash,
 {
     type Item = (K, V);
+
+    fn iter(_session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+    {
+        // TODO: It would probably be better to introduce a specific error variant to be returned
+        // in such cases. Or we could panic.
+        // Regardless, the solution is not ideal. It would be much more Rustaceous to get a 
+        // compiler error.
+        warn!("Keys cannot be resolved, so HashMap will be empty. Use a mapping function to generate key-value tuples.");
+        Self::iter_from_items(std::iter::empty())
+    }
 
     fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
     where
@@ -177,6 +182,8 @@ use super::*;
         }
 
         impl Resolve for Foo {
+            type Item = Self;
+
             fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
             {
                 let items = (0..5).map(|idx| {
@@ -185,10 +192,6 @@ use super::*;
                 });
                 Self::iter_from_items(items)
             }
-        }
-
-        impl ResolveFrom for Foo {
-            type Item = Self;
 
             fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
             where
@@ -205,9 +208,18 @@ use super::*;
         pub struct Blank;
 
         impl Resolve for Blank {
+            type Item = Self;
+
             fn iter(_assets: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
             {
                 Ok(std::iter::empty())
+            }
+
+            fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+            where
+                I: Iterator<Item = Self::Item>
+            {
+                Ok(items)
             }
         }
     }
@@ -377,6 +389,8 @@ use super::*;
     }
 
     impl Resolve for Letter {
+        type Item = Self;
+
         fn iter(_assets: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
         {
             // Yields exactly two letters
@@ -386,10 +400,7 @@ use super::*;
             ];
             Self::iter_from_items(letters.into_iter())
         }
-    }
 
-    impl ResolveFrom for Letter {
-        type Item = Self;
         fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
         where
             I: Iterator<Item = Self::Item>
