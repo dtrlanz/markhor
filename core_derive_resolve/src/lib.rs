@@ -3,10 +3,33 @@ use quote::quote;
 use syn::{parse_macro_input, Data, DeriveInput, Expr, Fields, Type};
 
 struct FieldConfig {
-    filter: Option<Expr>,
-    map: Option<(Expr, Type)>, // (The map closure, Extracted source type)
+    // Each
     each: bool,
+    
+    // Filtering
+    filter: Option<Expr>,
+    filter_map: Option<(Expr, Type)>, // Acts as both Filtering and Mapping
+
+    // Mapping
+    map: Option<(Expr, Type)>,
+    key: Option<Expr>,
+
+    // Sorting
     sort_by: Option<Expr>,
+    sort_by_key: Option<Expr>,
+    sort_by_field: Option<Expr>,
+}
+
+impl FieldConfig {
+    fn needs_custom_iter(&self) -> bool {
+        self.filter.is_some()
+            || self.filter_map.is_some()
+            || self.map.is_some()
+            || self.key.is_some()
+            || self.sort_by.is_some()
+            || self.sort_by_key.is_some()
+            || self.sort_by_field.is_some()
+    }
 }
 
 /// Helper function to extract the explicitly annotated argument type from a closure.
@@ -19,36 +42,104 @@ fn extract_source_type_from_closure(expr: &Expr) -> syn::Result<Type> {
     }
     Err(syn::Error::new_spanned(
         expr, 
-        "The `map` attribute requires a closure with an explicitly typed argument. \n\
+        "This attribute requires a closure with an explicitly typed argument. \n\
         Example: `#[resolve(map = |x: SourceType| ...)]`"
     ))
 }
 
-fn parse_resolve_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldConfig> {
-    let mut config = FieldConfig { filter: None, map: None, each: false, sort_by: None };
-    for attr in attrs {
+fn parse_resolve_attrs(field: &syn::Field) -> syn::Result<FieldConfig> {
+    let mut config = FieldConfig { 
+        each: false, 
+        filter: None, 
+        filter_map: None, 
+        map: None, 
+        key: None,
+        sort_by: None,
+        sort_by_key: None,
+        sort_by_field: None,
+    };
+
+    let mut filtering_spans = Vec::new();
+    let mut mapping_spans = Vec::new();
+    let mut sorting_spans = Vec::new();
+
+    for attr in &field.attrs {
         if attr.path().is_ident("resolve") {
             attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("filter") {
+                // Each
+                if meta.path.is_ident("each") {
+                    config.each = true;
+                    Ok(())
+                } 
+                // Filtering & Mapping
+                else if meta.path.is_ident("filter") {
                     config.filter = Some(meta.value()?.parse()?);
+                    filtering_spans.push("filter");
+                    Ok(())
+                } else if meta.path.is_ident("filter_map") {
+                    let expr: Expr = meta.value()?.parse()?;
+                    let src_ty = extract_source_type_from_closure(&expr)?;
+                    config.filter_map = Some((expr, src_ty));
+                    filtering_spans.push("filter_map");
+                    mapping_spans.push("filter_map"); // Conflicts with map & key too
                     Ok(())
                 } else if meta.path.is_ident("map") {
                     let expr: Expr = meta.value()?.parse()?;
                     let src_ty = extract_source_type_from_closure(&expr)?;
                     config.map = Some((expr, src_ty));
+                    mapping_spans.push("map");
                     Ok(())
-                } else if meta.path.is_ident("each") {
-                    config.each = true;
+                } else if meta.path.is_ident("key") {
+                    config.key = Some(meta.value()?.parse()?);
+                    mapping_spans.push("key");
                     Ok(())
-                } else if meta.path.is_ident("sort_by") {
+                } 
+                // Sorting
+                else if meta.path.is_ident("sort_by") {
                     config.sort_by = Some(meta.value()?.parse()?);
+                    sorting_spans.push("sort_by");
                     Ok(())
-                } else {
+                } else if meta.path.is_ident("sort_by_key") {
+                    config.sort_by_key = Some(meta.value()?.parse()?);
+                    sorting_spans.push("sort_by_key");
+                    Ok(())
+                } else if meta.path.is_ident("sort_by_field") {
+                    config.sort_by_field = Some(meta.value()?.parse()?);
+                    sorting_spans.push("sort_by_field");
+                    Ok(())
+                } 
+                else {
                     Err(meta.error("unsupported resolve attribute"))
                 }
             })?;
         }
     }
+
+    // Mutually Exclusive Validations
+    if filtering_spans.len() > 1 {
+        return Err(syn::Error::new_spanned(field, format!("Filtering attributes ({}) are mutually exclusive.", filtering_spans.join(", "))));
+    }
+    if mapping_spans.len() > 1 {
+        return Err(syn::Error::new_spanned(field, format!("Mapping attributes ({}) are mutually exclusive.", mapping_spans.join(", "))));
+    }
+    if sorting_spans.len() > 1 {
+        return Err(syn::Error::new_spanned(field, format!("Sorting attributes ({}) are mutually exclusive.", sorting_spans.join(", "))));
+    }
+
+    // Not Yet Implemented Checks
+    if config.filter_map.is_some() {
+        return Err(syn::Error::new_spanned(field, "The `filter_map` attribute is not yet implemented."));
+    }
+    if config.key.is_some() {
+        return Err(syn::Error::new_spanned(field, "The `key` attribute is not yet implemented."));
+    }
+    if config.sort_by_key.is_some() {
+        return Err(syn::Error::new_spanned(field, "The `sort_by_key` attribute is not yet implemented."));
+    }
+    if config.sort_by_field.is_some() {
+        return Err(syn::Error::new_spanned(field, "The `sort_by_field` attribute is not yet implemented."));
+    }
+
     Ok(config)
 }
 
@@ -73,48 +164,62 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
 
                 for field in fields.named.iter() {
                     let field_name = field.ident.as_ref().unwrap();
-                    let attrs = parse_resolve_attrs(&field.attrs).unwrap_or_else(|e| {
-                        panic!("Failed to parse attributes for field '{}': {}", field_name, e)
-                    });
+                    let attrs = match parse_resolve_attrs(field) {
+                        Ok(a) => a,
+                        Err(e) => return e.to_compile_error().into(),
+                    };
                     
                     let ty = &field.ty;
                     field_names.push(field_name);
 
                     // 1. Determine base iterator call and any map transformations
-                    let (base_iter_call, map_step) = match &attrs.map {
-                        Some((map_expr, src_ty)) => {
-                            (
-                                quote! { <#src_ty as Resolve>::iter(session)? }, 
-                                quote! { let __iter = std::iter::Iterator::map(__iter, #map_expr); }
-                            )
-                        }
-                        None => {
-                            (
-                                quote! { <<#ty as Resolve>::Item as Resolve>::iter(session)? }, 
-                                quote! {}
-                            )
-                        }
+                    let (base_iter_call, map_step) = if let Some((map_expr, src_ty)) = &attrs.map {
+                        (
+                            quote! { <#src_ty as Resolve>::iter(session)? }, 
+                            quote! { let __iter = std::iter::Iterator::map(__iter, #map_expr); }
+                        )
+                    } else if let Some((_filter_map_expr, _src_ty)) = &attrs.filter_map {
+                        // TODO: Implement filter_map
+                        (quote! {}, quote! {})
+                    } else if let Some(_key_expr) = &attrs.key {
+                        // TODO: Implement key mapping
+                        (quote! {}, quote! {})
+                    } else {
+                        (
+                            quote! { <<#ty as Resolve>::Item as Resolve>::iter(session)? }, 
+                            quote! {}
+                        )
                     };
 
                     // 2. Determine filter transformations
-                    let filter_step = match &attrs.filter {
-                        Some(f) => quote! { let __iter = std::iter::Iterator::filter(__iter, #f); },
-                        None => quote! {},
+                    let filter_step = if let Some(f) = &attrs.filter {
+                        quote! { let __iter = std::iter::Iterator::filter(__iter, #f); }
+                    } else if let Some((_filter_map_expr, _src_ty)) = &attrs.filter_map {
+                        // TODO: Implement filter_map (Filtering portion)
+                        quote! {}
+                    } else {
+                        quote! {}
                     };
 
-                    // 3. Determine eager sorting
-                    let sort_step = match &attrs.sort_by {
-                        Some(f) => quote! {
+                    // 3. Determine eager sorting transformations
+                    let sort_step = if let Some(f) = &attrs.sort_by {
+                        quote! {
                             let mut __vec = std::iter::Iterator::collect::<std::vec::Vec<_>>(__iter);
                             __vec.sort_by(#f);
                             let __iter = std::iter::IntoIterator::into_iter(__vec);
-                        },
-                        None => quote! {},
+                        }
+                    } else if let Some(_f) = &attrs.sort_by_key {
+                        // TODO: Implement sort_by_key
+                        quote! {}
+                    } else if let Some(_f) = &attrs.sort_by_field {
+                        // TODO: Implement sort_by_field
+                        quote! {}
+                    } else {
+                        quote! {}
                     };
 
-                    let needs_custom_iter = attrs.map.is_some() || attrs.filter.is_some() || attrs.sort_by.is_some();
-
                     // 4. Construct the resolved iterator expression
+                    let needs_custom_iter = attrs.needs_custom_iter();
                     let iter_expr = if needs_custom_iter {
                         quote! {
                             {
