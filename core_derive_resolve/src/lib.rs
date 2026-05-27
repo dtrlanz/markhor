@@ -6,6 +6,7 @@ struct FieldConfig {
     filter: Option<Expr>,
     map: Option<(Expr, Type)>, // (The map closure, Extracted source type)
     each: bool,
+    sort_by: Option<Expr>,
 }
 
 /// Helper function to extract the explicitly annotated argument type from a closure.
@@ -24,7 +25,7 @@ fn extract_source_type_from_closure(expr: &Expr) -> syn::Result<Type> {
 }
 
 fn parse_resolve_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldConfig> {
-    let mut config = FieldConfig { filter: None, map: None, each: false };
+    let mut config = FieldConfig { filter: None, map: None, each: false, sort_by: None };
     for attr in attrs {
         if attr.path().is_ident("resolve") {
             attr.parse_nested_meta(|meta| {
@@ -38,6 +39,9 @@ fn parse_resolve_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldConfig> {
                     Ok(())
                 } else if meta.path.is_ident("each") {
                     config.each = true;
+                    Ok(())
+                } else if meta.path.is_ident("sort_by") {
+                    config.sort_by = Some(meta.value()?.parse()?);
                     Ok(())
                 } else {
                     Err(meta.error("unsupported resolve attribute"))
@@ -98,15 +102,26 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                         None => quote! {},
                     };
 
-                    let needs_custom_iter = attrs.map.is_some() || attrs.filter.is_some();
+                    // 3. Determine eager sorting
+                    let sort_step = match &attrs.sort_by {
+                        Some(f) => quote! {
+                            let mut __vec = std::iter::Iterator::collect::<std::vec::Vec<_>>(__iter);
+                            __vec.sort_by(#f);
+                            let __iter = std::iter::IntoIterator::into_iter(__vec);
+                        },
+                        None => quote! {},
+                    };
 
-                    // 3. Construct the resolved iterator expression
+                    let needs_custom_iter = attrs.map.is_some() || attrs.filter.is_some() || attrs.sort_by.is_some();
+
+                    // 4. Construct the resolved iterator expression
                     let iter_expr = if needs_custom_iter {
                         quote! {
                             {
                                 let __iter = #base_iter_call;
                                 #filter_step
                                 #map_step
+                                #sort_step
                                 <#ty as Resolve>::iter_from_items(__iter)?
                             }
                         }

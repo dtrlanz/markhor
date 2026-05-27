@@ -383,6 +383,26 @@ use super::*;
         }
     }
 
+    #[test]
+    fn sort_by() {
+        use enumerated::Foo;
+
+        #[derive(Debug, Resolve)]
+        struct TestSortBy {
+            // default is ascending order; reverse it
+            #[resolve(sort_by = |a, b| b.idx.cmp(&a.idx))]
+            sorted_foos: Vec<Foo>,
+        }
+
+        let session = Session::new();
+        let result = TestSortBy::first(&session).expect("Failed to build TestSortBy");
+
+        // Indices should be sorted in descending order
+        assert_eq!(result.sorted_foos.len(), 5);
+        let indices = result.sorted_foos.iter().map(|f| f.idx).collect::<Vec<_>>();
+        assert_eq!(indices, vec![4, 3, 2, 1, 0]);
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Letter {
         pub ch: char,
