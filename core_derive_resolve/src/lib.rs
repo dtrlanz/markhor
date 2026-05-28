@@ -130,9 +130,6 @@ fn parse_resolve_attrs(field: &syn::Field) -> syn::Result<FieldConfig> {
     if config.filter_map.is_some() {
         return Err(syn::Error::new_spanned(field, "The `filter_map` attribute is not yet implemented."));
     }
-    if config.key.is_some() {
-        return Err(syn::Error::new_spanned(field, "The `key` attribute is not yet implemented."));
-    }
     if config.sort_by_key.is_some() {
         return Err(syn::Error::new_spanned(field, "The `sort_by_key` attribute is not yet implemented."));
     }
@@ -181,9 +178,36 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                     } else if let Some((_filter_map_expr, _src_ty)) = &attrs.filter_map {
                         // TODO: Implement filter_map
                         (quote! {}, quote! {})
-                    } else if let Some(_key_expr) = &attrs.key {
-                        // TODO: Implement key mapping
-                        (quote! {}, quote! {})
+                    } else if let Some(key_expr) = &attrs.key {
+                        (
+                            quote! {
+                                {
+                                    // Local scoped trait to effortlessly peel the inner 'Value' type out of the target 'HashMap'
+                                    trait __ResolveKeyTupleExtractor { type Value; }
+                                    impl<__K, __V> __ResolveKeyTupleExtractor for (__K, __V) { type Value = __V; }
+                                    < <<#ty as Resolve>::Item as __ResolveKeyTupleExtractor>::Value as Resolve >::iter(session)?
+                                }
+                            },
+                            quote! { 
+                                let __iter = {
+                                    // Helper function bridges the inference gap by locking the closure's inputs tightly to the iterator's outputs
+                                    fn __apply_key_mapper<__I, __V, __K, __F>(
+                                        __iter: __I,
+                                        mut __key_fn: __F,
+                                    ) -> impl std::iter::Iterator<Item = (__K, __V)>
+                                    where
+                                        __I: std::iter::Iterator<Item = __V>,
+                                        __F: std::ops::FnMut(&__V) -> __K,
+                                    {
+                                        std::iter::Iterator::map(__iter, move |__item| {
+                                            let __k = __key_fn(&__item);
+                                            (__k, __item)
+                                        })
+                                    }
+                                    __apply_key_mapper(__iter, #key_expr)
+                                };
+                            }
+                        )
                     } else {
                         (
                             quote! { <<#ty as Resolve>::Item as Resolve>::iter(session)? }, 

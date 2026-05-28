@@ -384,6 +384,43 @@ use super::*;
     }
 
     #[test]
+    fn hash_map_field_with_key() {
+        use enumerated::Foo;
+        
+        #[derive(Debug, Resolve)]
+        struct TestMapMap0 {
+            // with explicit type annotation
+            #[resolve(key = |f: &Foo| f.idx)]
+            foo_map: std::collections::HashMap<usize, Foo>,
+        }
+
+        let session = Session::new();
+        let result = TestMapMap0::first(&session).expect("Failed to build TestMapMap");
+
+        // Should produce a HashMap mapping indices to Foos
+        assert_eq!(result.foo_map.len(), 5);
+        for idx in 0..5 {
+            assert_eq!(result.foo_map[&idx].idx, idx);
+        }
+
+        #[derive(Debug, Resolve)]
+        struct TestMapMap1 {
+            // without type annotation
+            #[resolve(key = |f| f.idx)]
+            foo_map: std::collections::HashMap<usize, Foo>,
+        }
+
+        let session = Session::new();
+        let result = TestMapMap1::first(&session).expect("Failed to build TestMapMap");
+
+        // Same assertions as above
+        assert_eq!(result.foo_map.len(), 5);
+        for idx in 0..5 {
+            assert_eq!(result.foo_map[&idx].idx, idx);
+        }
+    }
+
+    #[test]
     fn sort_by() {
         use enumerated::Foo;
 
