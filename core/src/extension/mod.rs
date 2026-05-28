@@ -1,6 +1,7 @@
 use crate::{chat::{chat::ChatModel, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::ResolveDependencyError, embedding::Embedder};
 
 use std::{fmt::Display, ops::{Deref, DerefMut}};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -10,12 +11,12 @@ pub use active_extension::{ActiveExtension, ExtensionConfig};
 mod comp;
 pub use comp::Comp;
 
+#[async_trait]
 pub trait Extension: Send + Sync {
     fn uri(&self) -> &str;
     fn name(&self) -> &str;
     fn description(&self) -> &str;
-    // TODO:
-    // async fn initialize(&mut self) -> Result<(), InitExtensionError> { Ok(()) }
+    async fn initialize(&mut self) -> Result<(), InitExtensionError> { Ok(()) }
 
     fn chat_models(&self) -> Vec<Box<dyn ChatModel>> { vec![] }
     fn embedding_models(&self) -> Vec<Box<dyn Embedder>> { vec![] }

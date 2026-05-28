@@ -11,8 +11,8 @@ impl Session {
         Self { extensions: vec![] }
     }
 
-    pub async fn add_extension<E: Extension + 'static>(&mut self, extension: E) -> Result<(), InitExtensionError> {
-        // extension.initialize().await;
+    pub async fn add_extension<E: Extension + 'static>(&mut self, mut extension: E) -> Result<(), InitExtensionError> {
+        extension.initialize().await?;
         self.extensions.push(Arc::new(extension));
         Ok(())
     }
