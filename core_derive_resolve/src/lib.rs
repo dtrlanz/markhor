@@ -151,23 +151,49 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
 
     // Generate the body of the `iter` function based on the struct's fields
     let resolve_body = match input.data {
-        // Structs with named fields: struct Foo { bar: Bar }
-        Data::Struct(ref data_struct) => match data_struct.fields {
-            Fields::Named(ref fields) => {
-                let mut field_names = Vec::new();
+        Data::Struct(ref data_struct) => match &data_struct.fields {
+            Fields::Unit => {
+                quote! {
+                    let __items = std::iter::once(Self);
+                    Ok(__items)
+                }
+            }
+            fields => {
+                // Unify logic for classic and tuple structs
+                let (fields_iter, is_named) = match fields {
+                    Fields::Named(f) => (&f.named, true),
+                    Fields::Unnamed(f) => (&f.unnamed, false),
+                    Fields::Unit => unreachable!(),
+                };
+
+                let mut field_vars = Vec::new();
+                let mut field_init_prefixes = Vec::new();
+                
                 let mut non_each_inits = Vec::new();
                 let mut each_loops = Vec::new();
                 let mut normal_fields = Vec::new();
 
-                for field in fields.named.iter() {
-                    let field_name = field.ident.as_ref().unwrap();
+                for (i, field) in fields_iter.iter().enumerate() {
+                    // Generate variable identifiers (`ident` for named, `__field_0` for tuples)
+                    let var_ident = match &field.ident {
+                        Some(ident) => ident.clone(),
+                        None => quote::format_ident!("__field_{}", i),
+                    };
+
+                    // Generate struct init syntax (`ident:` for named, empty for tuples)
+                    let init_prefix = match &field.ident {
+                        Some(ident) => quote! { #ident: },
+                        None => quote! {},
+                    };
+
                     let attrs = match parse_resolve_attrs(field) {
                         Ok(a) => a,
                         Err(e) => return e.to_compile_error().into(),
                     };
                     
                     let ty = &field.ty;
-                    field_names.push(field_name);
+                    field_vars.push(var_ident.clone());
+                    field_init_prefixes.push(init_prefix);
 
                     // 1. Determine base iterator call and any map transformations
                     let (base_iter_call, map_step) = if let Some((map_expr, src_ty)) = &attrs.map {
@@ -182,7 +208,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                         (
                             quote! {
                                 {
-                                    // Local scoped trait to effortlessly peel the inner 'Value' type out of the target 'HashMap'
+                                    // Local scoped trait to peel the inner 'Value' type out of the target KV type
                                     trait __ResolveKeyTupleExtractor { type Value; }
                                     impl<__K, __V> __ResolveKeyTupleExtractor for (__K, __V) { type Value = __V; }
                                     < <<#ty as Resolve>::Item as __ResolveKeyTupleExtractor>::Value as Resolve >::iter(session)?
@@ -259,7 +285,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                     };
 
                     if attrs.each {
-                        each_loops.push((field_name, iter_expr));
+                        each_loops.push((var_ident.clone(), iter_expr));
                     } else {
                         // Standard field logic
                         let init_tokens = if needs_custom_iter {
@@ -276,23 +302,27 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                             quote! { <#ty as Resolve>::first(session)? }
                         };
 
-                        non_each_inits.push(quote! { let #field_name = #init_tokens; });
-                        normal_fields.push(field_name);
+                        non_each_inits.push(quote! { let #var_ident = #init_tokens; });
+                        normal_fields.push(var_ident);
                     }
                 }
 
+                // Final Struct construction logic
                 if each_loops.is_empty() {
                     let mut struct_inits = Vec::new();
-                    for field_name in &field_names {
-                        struct_inits.push(quote! { #field_name });
+                    for (var_ident, init_prefix) in field_vars.iter().zip(&field_init_prefixes) {
+                        struct_inits.push(quote! { #init_prefix #var_ident });
                     }
                     
+                    let construct_expr = if is_named {
+                        quote! { Self { #( #struct_inits ),* } }
+                    } else {
+                        quote! { Self ( #( #struct_inits ),* ) }
+                    };
+
                     quote! {
                         #( #non_each_inits )*
-                        let __items = std::iter::once(Self {
-                            #( #struct_inits ),*
-                        });
-                        
+                        let __items = std::iter::once(#construct_expr);
                         Ok(__items)
                     }
                 } else {
@@ -301,7 +331,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                     
                     // Setup the initial bindings (evaluating outer iterator once, caching inner loops)
                     for (i, (name, iter_expr)) in each_loops.iter().enumerate() {
-                        each_fields.push(*name);
+                        each_fields.push(name.clone());
                         if i == 0 {
                             each_inits.push(quote! { let #name = #iter_expr; });
                         } else {
@@ -310,25 +340,27 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                     }
                     
                     let n = each_fields.len() - 1;
-                    let innermost_field = each_fields[n];
+                    let innermost_field = &each_fields[n];
                     
                     // Clone all fields inside instantiation except the innermost each field
                     let mut struct_inits = Vec::new();
-                    for field_name in &field_names {
-                        if *field_name == innermost_field {
-                            struct_inits.push(quote! { #field_name });
+                    for (var_ident, init_prefix) in field_vars.iter().zip(&field_init_prefixes) {
+                        if var_ident == innermost_field {
+                            struct_inits.push(quote! { #init_prefix #var_ident });
                         } else {
-                            struct_inits.push(quote! { #field_name: #field_name.clone() });
+                            struct_inits.push(quote! { #init_prefix #var_ident.clone() });
                         }
                     }
                     
-                    let mut current_expr = quote! {
-                        Self { #( #struct_inits ),* }
+                    let mut current_expr = if is_named {
+                        quote! { Self { #( #struct_inits ),* } }
+                    } else {
+                        quote! { Self ( #( #struct_inits ),* ) }
                     };
                     
                     // Fold iterators backwards from innermost to outermost
                     for i in (0..=n).rev() {
-                        let field_i = each_fields[i];
+                        let field_i = &each_fields[i];
                         
                         let iter_i = if i == 0 {
                             quote! { #field_i }
@@ -351,13 +383,13 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                             }
                             // Variables from preceding loops (already expanded)
                             for j in 0..=i {
-                                let f = each_fields[j];
+                                let f = &each_fields[j];
                                 clones.push(quote! { let #f = #f.clone(); });
                             }
                             // Vectors for deeper loops
                             if i + 2 <= n {
                                 for j in (i + 2)..=n {
-                                    let f = each_fields[j];
+                                    let f = &each_fields[j];
                                     clones.push(quote! { let #f = #f.clone(); });
                                 }
                             }
@@ -376,16 +408,6 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                         #( #each_inits )*
                         Ok(#current_expr)
                     }
-                }
-            }
-            // Tuple structs: struct Foo(Bar, Baz)
-            Fields::Unnamed(ref _fields) => {
-                quote! { compile_error!("Currently only named structs are supported in this POC."); }
-            }
-            Fields::Unit => {
-                quote! {
-                    let __items = std::iter::once(Self);
-                    Ok(__items)
                 }
             }
         },

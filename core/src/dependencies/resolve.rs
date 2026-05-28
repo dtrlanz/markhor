@@ -141,6 +141,9 @@ use super::*;
         }
 
         #[derive(Debug, PartialEq, Eq, Resolve)]
+        pub struct FooTuple(pub Bar, pub Baz);
+
+        #[derive(Debug, PartialEq, Eq, Resolve)]
         pub struct Bar;
 
         #[derive(Debug, PartialEq, Eq, Resolve)]
@@ -150,6 +153,9 @@ use super::*;
     #[test]
     fn derive_resolve() {
         let session = Session::new();
+
+        // --- Classic struct ---
+
         let foo = simple::Foo::first(&session).unwrap();
         assert_eq!(foo.bar, simple::Bar);
         assert_eq!(foo.baz, simple::Baz);
@@ -158,6 +164,17 @@ use super::*;
         assert_eq!(vec.len(), 1);
         assert_eq!(vec[0].bar, simple::Bar);
         assert_eq!(vec[0].baz, simple::Baz);
+
+        // --- Tuple struct ---
+        
+        let foo_tuple = simple::FooTuple::first(&session).unwrap();
+        assert_eq!(foo_tuple.0, simple::Bar);
+        assert_eq!(foo_tuple.1, simple::Baz);
+
+        let vec = simple::FooTuple::iter(&session).unwrap().collect::<Vec<_>>();
+        assert_eq!(vec.len(), 1);
+        assert_eq!(vec[0].0, simple::Bar);
+        assert_eq!(vec[0].1, simple::Baz);
     }
 
     #[test]
@@ -226,15 +243,17 @@ use super::*;
 
     #[test]
     fn vec_and_option_without_filters() {
+        // --- Classic struct ---
+
         #[derive(Debug, Resolve)]
-        struct TestNoFilter {
+        struct TestNoFilter0 {
             all_foos: Vec<enumerated::Foo>,
             first_foo: Option<enumerated::Foo>,
             missing_blank: Option<enumerated::Blank>, // Should silently become None
         }
 
         let session = Session::new();
-        let result = TestNoFilter::first(&session).expect("Failed to build TestNoFilter");
+        let result = TestNoFilter0::first(&session).expect("Failed to build TestNoFilter0");
 
         // Vec should collect all 5 Foos
         assert_eq!(result.all_foos.len(), 5);
@@ -244,6 +263,23 @@ use super::*;
         
         // Option<Blank> should swallow the Blank error and return None
         assert!(result.missing_blank.is_none());
+
+        // --- Tuple struct ---
+
+        #[derive(Debug, Resolve)]
+        struct TestNoFilter1 (
+            Vec<enumerated::Foo>,
+            Option<enumerated::Foo>,
+            Option<enumerated::Blank>,
+        );
+        
+        let result = TestNoFilter1::first(&session).expect("Failed to build TestNoFilter1");
+
+        // Same assertions as above
+        assert_eq!(result.0.len(), 5);
+        assert_eq!(result.0[0].idx, 0);
+        assert_eq!(result.1.unwrap().idx, 0);
+        assert!(result.2.is_none());
     }
 
     #[test]
@@ -386,6 +422,8 @@ use super::*;
     #[test]
     fn hash_map_field_with_key() {
         use enumerated::Foo;
+
+        // --- Classic structs ---
         
         #[derive(Debug, Resolve)]
         struct TestMapMap0 {
@@ -395,7 +433,7 @@ use super::*;
         }
 
         let session = Session::new();
-        let result = TestMapMap0::first(&session).expect("Failed to build TestMapMap");
+        let result = TestMapMap0::first(&session).expect("Failed to build TestMapMap0");
 
         // Should produce a HashMap mapping indices to Foos
         assert_eq!(result.foo_map.len(), 5);
@@ -411,12 +449,28 @@ use super::*;
         }
 
         let session = Session::new();
-        let result = TestMapMap1::first(&session).expect("Failed to build TestMapMap");
+        let result = TestMapMap1::first(&session).expect("Failed to build TestMapMap1");
 
         // Same assertions as above
         assert_eq!(result.foo_map.len(), 5);
         for idx in 0..5 {
             assert_eq!(result.foo_map[&idx].idx, idx);
+        }
+
+        // --- Tuple struct ---
+
+        #[derive(Debug, Resolve)]
+        struct TestMapMap2 (
+            #[resolve(key = |f| f.idx)]
+            std::collections::HashMap<usize, Foo>,
+        );
+
+        let result = TestMapMap2::first(&session).expect("Failed to build TestMapMap2");
+
+        // Same assertions as above
+        assert_eq!(result.0.len(), 5);
+        for idx in 0..5 {
+            assert_eq!(result.0[&idx].idx, idx);
         }
     }
 
