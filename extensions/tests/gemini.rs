@@ -1,5 +1,5 @@
 use markhor_core::chat::chat::{
-    ChatApi, ChatOptions, ContentPart, FinishReason,
+    ChatModel, ChatOptions, ContentPart, FinishReason,
     Message, ToolChoice, ToolDefinition, ToolParameterSchema, ToolResult,
 };
 use markhor_core::embedding::{Embedder, EmbeddingUseCase, EmbeddingError};

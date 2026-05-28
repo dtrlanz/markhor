@@ -4,7 +4,7 @@ use std::sync::Arc;
 use base64::Engine;
 use markhor_core::chat::ChatError;
 use markhor_core::chat::chat::{
-    ChatApi, ChatOptions, ChatResponse, ChatStream, ContentPart, FinishReason,
+    ChatModel, ChatOptions, ChatResponse, ChatStream, ContentPart, FinishReason,
     Message, ModelInfo, ToolCallRequest, ToolChoice, ToolParameterSchema,
     UsageInfo,
 };
@@ -484,6 +484,8 @@ struct GeminiModelInfo {
 const DEFAULT_GEMINI_API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 const DEFAULT_GEMINI_CHAT_MODEL: &str = "gemini-2.0-flash-lite";
 
+// TODO: Clean up distinction between chat client (& Gemini extension) vs individual chat models
+
 #[derive(Debug, Clone)]
 pub struct GeminiChatClient {
     shared_client: Arc<SharedGeminiClient>,
@@ -659,12 +661,9 @@ impl GeminiChatClient {
 
         (tools, tool_config)
     }
-}
 
-#[async_trait]
-impl ChatApi for GeminiChatClient {
     #[instrument(skip(self), fields(client = self.shared_client.config().base_url.as_str()))]
-    async fn list_models(&self) -> Result<Vec<ModelInfo>, ChatError> {
+    pub async fn list_models(&self) -> Result<Vec<ModelInfo>, ChatError> {
         // Inner function or block to handle internal GeminiError easily
         async {
             // 1. Build URL using shared client
@@ -738,9 +737,14 @@ impl ChatApi for GeminiChatClient {
         }
         .await // Execute the inner async block
         .map_err(Into::into) // Convert GeminiError into ChatError at the boundary
+    }    
+}
+
+#[async_trait]
+impl ChatModel for GeminiChatClient {
+    fn model_name(&self) -> &str {
+        &self.default_model_id
     }
-
-
 
     #[instrument(skip(self, messages, options), fields(model = options.model_id.as_deref().unwrap_or(&self.default_model_id)))]
     async fn generate(

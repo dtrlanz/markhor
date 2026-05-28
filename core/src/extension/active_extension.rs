@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{chat::{chat::ChatApi, prompter::Prompter}, chunking::Chunker, convert::Converter, embedding::Embedder};
+use crate::{chat::{chat::ChatModel, prompter::Prompter}, chunking::Chunker, convert::Converter, embedding::Embedder};
 
 use super::{Extension, F11y, FunctionalityType};
 
@@ -44,7 +44,7 @@ impl ActiveExtension {
         self.extension().description()
     }
 
-    pub fn chat_providers(&self) -> impl Iterator<Item = F11y<dyn ChatApi>> {
+    pub fn chat_providers(&self) -> impl Iterator<Item = F11y<dyn ChatModel>> {
         self.extension().chat_models().into_iter().map(|model| F11y {
             trait_object: model,
             functionality_type: FunctionalityType::ChatProvider,

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use markhor_core::{chat::chat::ChatApi, embedding::Embedder, extension::Extension};
+use markhor_core::{chat::chat::ChatModel, embedding::Embedder, extension::Extension};
 
 mod chat;
 mod embed;
@@ -53,7 +53,7 @@ impl Extension for GeminiClientExtension {
         "Provides a chat client for the Gemini API."
     }
 
-    fn chat_models(&self) -> Vec<Box<dyn ChatApi>> {
+    fn chat_models(&self) -> Vec<Box<dyn ChatModel>> {
         let chat = GeminiChatClient::new_with_shared_client(
             self.shared_client.clone(), 
             None

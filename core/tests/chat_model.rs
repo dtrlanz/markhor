@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::{atomic::{AtomicUsize, Ordering}, Arc}};
 
 use async_trait::async_trait;
-use markhor_core::{chat::{chat::{ChatApi, ChatOptions, ChatResponse, ChatStream, ContentPart, Message, ModelInfo}, ChatError}, extension::Extension};
+use markhor_core::{chat::{chat::{ChatModel, ChatOptions, ChatResponse, ChatStream, ContentPart, Message, ModelInfo}, ChatError}, extension::Extension};
 
 
 const SONNET_18: [&str; 14] = [
@@ -32,14 +32,9 @@ impl ShakespeareChatModel {
 }
 
 #[async_trait]
-impl ChatApi for ShakespeareChatModel {
-    async fn list_models(&self) -> Result<Vec<ModelInfo>, ChatError> {
-        Ok(vec![ModelInfo {
-            id: "shakespeare".to_string(),
-            description: Some("Chat with Shakespeare".to_string()),
-            context_window: None,
-            max_output_tokens: None,
-        }])
+impl ChatModel for ShakespeareChatModel {
+    fn model_name(&self) -> &str {
+        "shakespeare"
     }
 
     async fn generate(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatResponse, ChatError> {
@@ -80,7 +75,7 @@ impl Extension for ShakespeareChatExtension {
     fn description(&self) -> &str {
         "Chat with Shakespeare"
     }
-    fn chat_models(&self) -> Vec<Box<dyn ChatApi>> {
+    fn chat_models(&self) -> Vec<Box<dyn ChatModel>> {
         vec![Box::new(ShakespeareChatModel::new())]
     }
 }
@@ -92,8 +87,8 @@ async fn shakespeare_chat_model() {
         Message::user("Tell me a sonnet"),
         Message::assistant("Sure, here is one:"),
     ];
-    let response = ChatApi::generate(&model,&messages, &Default::default()).await.unwrap();
+    let response = ChatModel::generate(&model,&messages, &Default::default()).await.unwrap();
     assert_eq!(response.content.join(""), "Shall I compare thee to a summer’s day?");
-    let response = ChatApi::generate(&model, &messages, &Default::default()).await.unwrap();
+    let response = ChatModel::generate(&model, &messages, &Default::default()).await.unwrap();
     assert_eq!(response.content.join(""), "Thou art more lovely and more temperate.");
 }

@@ -1,4 +1,4 @@
-use crate::{chat::{chat::ChatApi, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::ResolveDependencyError, embedding::Embedder};
+use crate::{chat::{chat::ChatModel, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::ResolveDependencyError, embedding::Embedder};
 
 use std::{fmt::Display, ops::{Deref, DerefMut}};
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ pub trait Extension: Send + Sync {
     // TODO:
     // async fn initialize(&mut self) -> Result<(), InitExtensionError> { Ok(()) }
 
-    fn chat_models(&self) -> Vec<Box<dyn ChatApi>> { vec![] }
+    fn chat_models(&self) -> Vec<Box<dyn ChatModel>> { vec![] }
     fn embedding_models(&self) -> Vec<Box<dyn Embedder>> { vec![] }
     fn chunkers(&self) -> Vec<Box<dyn Chunker>> { vec![] }
     fn converters(&self) -> Vec<Box<dyn Converter>> { vec![] }

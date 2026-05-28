@@ -270,9 +270,10 @@ pub type ChatStream = Pin<Box<dyn Stream<Item = Result<StreamChunk, ChatError>> 
 
 
 #[async_trait]
-pub trait ChatApi: Send + Sync {
-    /// Returns a list of models available through this API provider.
-    async fn list_models(&self) -> Result<Vec<ModelInfo>, ChatError>;
+pub trait ChatModel: Send + Sync {
+    /// Returns this chat model's name.
+    /// (e.g., "gpt-5.5", "gemma4:e4b", etc.)
+    fn model_name(&self) -> &str;
 
     /// Generates a chat response, potentially including text and/or tool call requests.
     ///

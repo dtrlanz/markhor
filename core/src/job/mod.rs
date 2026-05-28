@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
-use crate::{chat::{chat::ChatApi, prompter::Prompter, ChatError}, chunking::Chunker, convert::{ConversionError, Converter}, embedding::{Embedder, EmbeddingError}, extension::{ActiveExtension, Extension, F11y, UseExtensionError}, library::{AccessLibraryError, Document, Folder, Scope}};
+use crate::{chat::{chat::ChatModel, prompter::Prompter, ChatError}, chunking::Chunker, convert::{ConversionError, Converter}, embedding::{Embedder, EmbeddingError}, extension::{ActiveExtension, Extension, F11y, UseExtensionError}, library::{AccessLibraryError, Document, Folder, Scope}};
 use mime::Mime;
 use thiserror::Error;
 use tokio::{io::AsyncRead, sync::mpsc::{error::SendError, UnboundedReceiver, UnboundedSender}, task::JoinHandle};
@@ -275,7 +275,7 @@ impl Assets {
         Err(ConversionError::UnsupportedMimeType(output_type))
     }
 
-    pub async fn chat_model(&self, model: Option<String>) -> Result<F11y<dyn ChatApi>, ChatError> {
+    pub async fn chat_model(&self, model: Option<String>) -> Result<F11y<dyn ChatModel>, ChatError> {
         tracing::debug!("Getting chat model");
         // Iterate through extensions and find the specified model
         for ext in self.extensions.iter() {
@@ -284,13 +284,14 @@ impl Assets {
                 tracing::debug!("Found chat model in extension {}", ext.name());
                 if let Some(requested_model) = &model {
                     tracing::debug!("Looking for model {}", requested_model);
-                    // TODO reconsider error variant
-                    for model in chat_client.list_models().await.map_err(|e| ChatError::Provider(Box::new(e)))? {
-                        if *model.id == *requested_model {
-                            tracing::debug!("Found model {}", requested_model);
-                            return Ok(chat_client);
-                        }
-                    }
+                    // Outdated - commenting out for now
+                    // // TODO reconsider error variant
+                    // for model in chat_client.list_models().await.map_err(|e| ChatError::Provider(Box::new(e)))? {
+                    //     if *model.id == *requested_model {
+                    //         tracing::debug!("Found model {}", requested_model);
+                    //         return Ok(chat_client);
+                    //     }
+                    // }
                 } else {
                     tracing::debug!("No model specified, returning default model");
                     return Ok(chat_client);

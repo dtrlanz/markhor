@@ -1,4 +1,4 @@
-use crate::{chat::{chat::ChatApi, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::{Resolve, ResolveDependencyError, Session}, embedding::Embedder, extension::Extension, tool::Tool};
+use crate::{chat::{chat::ChatModel, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::{Resolve, ResolveDependencyError, Session}, embedding::Embedder, extension::Extension, tool::Tool};
 
 use std::{any::TypeId, fmt::Display, ops::{Deref, DerefMut}, sync::Arc};
 use serde::{Deserialize, Serialize};
@@ -41,7 +41,7 @@ impl<T: ?Sized + 'static> Comp<T> {
     pub fn component_type(&self) -> ComponentType {
         let t_id = TypeId::of::<T>();
         match TypeId::of::<T>() {
-            x if x == const { TypeId::of::<dyn ChatApi>() } => ComponentType::ChatModel,
+            x if x == const { TypeId::of::<dyn ChatModel>() } => ComponentType::ChatModel,
             x if x == const { TypeId::of::<dyn Embedder>() } => ComponentType::EmbeddingModel,
             x if x == const { TypeId::of::<dyn Chunker>() } => ComponentType::Chunker,
             x if x == const { TypeId::of::<dyn Converter>() } => ComponentType::Converter,
@@ -91,7 +91,7 @@ macro_rules! impl_resolve_comp {
 }
 
 impl_resolve_comp! {
-    ChatApi => chat_models,
+    ChatModel => chat_models,
     Embedder => embedding_models,
     Chunker => chunkers,
     Converter => converters,
