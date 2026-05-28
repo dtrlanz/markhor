@@ -140,6 +140,64 @@ fn parse_resolve_attrs(field: &syn::Field) -> syn::Result<FieldConfig> {
     Ok(config)
 }
 
+/// Derives the `Resolve` trait for a struct.
+///
+/// This macro automatically implements dependency resolution for named structs, 
+/// tuple structs, and unit structs. By default, it eagerly resolves exactly 
+/// one instance of each field using `<FieldType as Resolve>::first(session)`.
+///
+/// You can customize how fields are resolved, filtered, mapped, and sorted 
+/// using the `#[resolve(...)]` attribute.
+///
+/// # Attribute Groups
+/// 
+/// Attributes are categorized into groups. You may combine attributes from 
+/// *different* groups on a single field, but combining multiple attributes 
+/// from the *same* group will result in a compile error.
+///
+/// ## 1. Iteration (`each`)
+/// Normally, a field evaluates to a single instance. Marking a field with 
+/// `#[resolve(each)]` transforms it into a loop, yielding every available 
+/// instance of that dependency.
+/// 
+/// - **Cartesian Products:** If multiple fields are marked with `each`, the 
+///   macro generates a lazy Cartesian product.
+/// - **Loop Order:** The order of fields in the struct defines the loop nesting. 
+///   The first `each` field forms the outermost loop, and the last `each` field 
+///   forms the innermost loop.
+///
+/// ## 2. Filtering
+/// Filters the iterator before yielding items.
+/// - `filter = |item| ...`: Takes a closure returning a `bool`. Only items 
+///   returning `true` are kept.
+//X - `filter_map = |item: SourceType| ...` (Not yet implemented)
+///
+/// ## 3. Mapping
+/// Transforms the dependency type into a different type.
+/// - `map = |item: SourceType| ...`: Maps the resolved item to a new value.
+///   **Note:** Due to Rust's closure type inference limitations inside macros, 
+///   you must explicitly annotate the closure's input type.
+/// - `key = |item| ...`: A shorthand for mapping an item into a `(Key, Value)` 
+///   tuple (useful for `HashMap`). The closure takes a reference (`&item`) and 
+///   returns the key.
+///
+/// ## 4. Sorting
+/// Sorts the items before they are yielded. **Note:** Sorting forces eager 
+/// evaluation (collecting all items into a `Vec` internally).
+/// - `sort_by = |a, b| ...`: Takes a closure returning `std::cmp::Ordering`.
+//X - `sort_by_key = |item| ...` (Not yet implemented)
+//X - `sort_by_field = field_name` (Not yet implemented)
+///
+/// # Evaluation Order
+/// If multiple attributes are applied to the same field, they are evaluated in 
+/// this order:
+/// 1. `filter` (operates on the original dependency type)
+/// 2. `map` / `key` (transforms the type)
+/// 3. `sort_by` (operates on the *mapped* output type)
+///
+/// # Examples
+/// 
+/// TODO: add nice examples
 #[proc_macro_derive(Resolve, attributes(resolve))]
 pub fn derive_resolve(input: TokenStream) -> TokenStream {
     // Parse input tokens into a syntax tree
