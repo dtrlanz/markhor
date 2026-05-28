@@ -29,6 +29,23 @@ pub trait Resolve {
         I: Iterator<Item = Self::Item>;
 }
 
+impl<T> Resolve for std::marker::PhantomData<T> {
+    type Item = Self;
+
+    fn iter(_session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+    {
+        Ok(std::iter::once(std::marker::PhantomData))
+    }
+
+    fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+    where
+        I: Iterator<Item = Self::Item>
+    {
+        let iter = items.map(|_| std::marker::PhantomData);
+        Ok(iter)
+    }
+}
+
 impl<T: Resolve> Resolve for Option<T> {
     type Item = T;
 
@@ -148,7 +165,7 @@ use super::*;
 
         #[derive(Debug, PartialEq, Eq, Resolve)]
         pub struct Baz;
-    }    
+    }
 
     #[test]
     fn derive_resolve() {
