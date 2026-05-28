@@ -17,10 +17,10 @@ pub trait Extension: Send + Sync {
     // TODO:
     // async fn initialize(&mut self) -> Result<(), InitExtensionError> { Ok(()) }
 
-    fn chat_model(&self) -> Option<Box<dyn ChatApi>> { None }
-    fn embedding_model(&self) -> Option<Box<dyn Embedder>> { None }
-    fn chunker(&self) -> Option<Box<dyn Chunker>> { None }
-    fn converter(&self) -> Option<Box<dyn Converter>> { None }
+    fn chat_models(&self) -> Vec<Box<dyn ChatApi>> { vec![] }
+    fn embedding_models(&self) -> Vec<Box<dyn Embedder>> { vec![] }
+    fn chunkers(&self) -> Vec<Box<dyn Chunker>> { vec![] }
+    fn converters(&self) -> Vec<Box<dyn Converter>> { vec![] }
     fn prompters(&self) -> Vec<Box<dyn Prompter>> { vec![] }
     fn tools(&self) -> Vec<Box<dyn crate::tool::Tool>> { vec![] }
 }

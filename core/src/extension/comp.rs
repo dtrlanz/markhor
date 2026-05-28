@@ -91,48 +91,12 @@ macro_rules! impl_resolve_comp {
 }
 
 impl_resolve_comp! {
+    ChatApi => chat_models,
+    Embedder => embedding_models,
+    Chunker => chunkers,
+    Converter => converters,
     Prompter => prompters,
     Tool => tools,
-}
-
-// The `Extension` trait methods for the remaining component types still have the wrong return 
-// type (returning single objects instead of vectors), so we can't use the above macro for them
-// yet. The following impls are written out manually for testing purposes.
-
-impl Resolve for Comp<dyn Embedder> {
-    type Item = Self;
-
-    fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
-        let extensions = session.extensions();
-        let comps = extensions.iter()
-            .filter_map(|ext| ext.embedding_model().map(|comp| Self::new(Arc::clone(ext), comp)));
-        Ok(comps)
-    }
-
-    fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
-    where
-        I: Iterator<Item = Self::Item>
-    {
-        Ok(items)
-    }
-}
-
-impl Resolve for Comp<dyn Chunker> {
-    type Item = Self;
-
-    fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
-        let extensions = session.extensions();
-        let comps = extensions.iter()
-            .filter_map(|ext| ext.chunker().map(|comp| Self::new(Arc::clone(ext), comp)));
-        Ok(comps)
-    }
-
-    fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
-    where
-        I: Iterator<Item = Self::Item>
-    {
-        Ok(items)
-    }
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,7 +132,7 @@ mod tests {
     #[test]
     fn comp() {
         let extension = FixedSizeChunkerExtension::new(10);
-        let chunker = extension.chunker().unwrap();
+        let chunker = extension.chunkers().into_iter().next().unwrap();
 
         let comp = Comp::new(
             Arc::new(extension),

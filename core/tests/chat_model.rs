@@ -80,8 +80,8 @@ impl Extension for ShakespeareChatExtension {
     fn description(&self) -> &str {
         "Chat with Shakespeare"
     }
-    fn chat_model(&self) -> Option<Box<dyn ChatApi>> {
-        Some(Box::new(ShakespeareChatModel::new()))
+    fn chat_models(&self) -> Vec<Box<dyn ChatApi>> {
+        vec![Box::new(ShakespeareChatModel::new())]
     }
 }
 

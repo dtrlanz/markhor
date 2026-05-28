@@ -20,7 +20,7 @@ impl Extension for Chunkers {
         "TODO chunker uri"
     }
 
-    fn chunker(&self) -> Option<Box<dyn markhor_core::chunking::Chunker>> {
+    fn chunkers(&self) -> Vec<Box<dyn markhor_core::chunking::Chunker>> {
         // match markdown::chunker::MarkdownChunker::new(Default::default()) {
         //     Ok(chunker) => Some(std::sync::Arc::new(chunker)),
         //     Err(e) => {
@@ -30,6 +30,6 @@ impl Extension for Chunkers {
         // }
 
         let chunker = PlainTextChunker::new(2000, 200).unwrap();
-        Some(Box::new(chunker))
+        vec![Box::new(chunker)]
     }
 }

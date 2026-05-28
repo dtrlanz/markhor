@@ -171,8 +171,8 @@ pub(crate) mod test_utils {
             "A simple embedder that creates normalized term frequency vectors based on a fixed vocabulary."
         }
 
-        fn embedding_model(&self) -> Option<Box<dyn Embedder>> {
-            Some(Box::new(MockEmbedder::new(self.vocabulary.clone())))
+        fn embedding_models(&self) -> Vec<Box<dyn Embedder>> {
+            vec![Box::new(MockEmbedder::new(self.vocabulary.clone()))]
         }
     }
 }

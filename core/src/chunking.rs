@@ -190,8 +190,8 @@ pub(crate) mod test_chunker {
             "A simple chunker that splits text into fixed-size byte ranges, ignoring semantic structure."
         }
 
-        fn chunker(&self) -> Option<Box<dyn Chunker>> {
-            Some(Box::new(FixedSizeChunker::new(self.chunk_size)))
+        fn chunkers(&self) -> Vec<Box<dyn Chunker>> {
+            vec![Box::new(FixedSizeChunker::new(self.chunk_size))]
         }
     }
 }

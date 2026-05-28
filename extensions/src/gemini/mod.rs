@@ -53,21 +53,21 @@ impl Extension for GeminiClientExtension {
         "Provides a chat client for the Gemini API."
     }
 
-    fn chat_model(&self) -> Option<Box<dyn ChatApi>> {
+    fn chat_models(&self) -> Vec<Box<dyn ChatApi>> {
         let chat = GeminiChatClient::new_with_shared_client(
             self.shared_client.clone(), 
             None
-        ).ok()?;
-        Some(Box::new(chat))
+        ).unwrap();     // `new_with_shared_client` is infallible, so unwrap is safe here
+        vec![Box::new(chat)]
     }
 
-    fn embedding_model(&self) -> Option<Box<dyn Embedder>> {
+    fn embedding_models(&self) -> Vec<Box<dyn Embedder>> {
         let embedder = GeminiEmbedder::new_with_shared_client(
             self.shared_client.clone(), 
             "text-embedding-004".into(),
             None,
-        ).ok()?;
-        Some(Box::new(embedder))
+        ).unwrap();     // `new_with_shared_client` is infallible, so unwrap is safe here
+        vec![Box::new(embedder)]
     }
 }
 

@@ -45,7 +45,7 @@ impl ActiveExtension {
     }
 
     pub fn chat_providers(&self) -> impl Iterator<Item = F11y<dyn ChatApi>> {
-        self.extension().chat_model().into_iter().map(|model| F11y {
+        self.extension().chat_models().into_iter().map(|model| F11y {
             trait_object: model,
             functionality_type: FunctionalityType::ChatProvider,
             extension: self.clone(),
@@ -53,7 +53,7 @@ impl ActiveExtension {
     }
 
     pub fn embedders(&self) -> impl Iterator<Item = F11y<dyn Embedder>> {
-        self.extension().embedding_model().into_iter().map(|model| F11y {
+        self.extension().embedding_models().into_iter().map(|model| F11y {
             trait_object: model,
             functionality_type: FunctionalityType::Embedder,
             extension: self.clone(),
@@ -61,7 +61,7 @@ impl ActiveExtension {
     }
 
     pub fn chunkers(&self) -> impl Iterator<Item = F11y<dyn Chunker>> {
-        self.extension().chunker().into_iter().map(|model| F11y {
+        self.extension().chunkers().into_iter().map(|model| F11y {
             trait_object: model,
             functionality_type: FunctionalityType::Chunker,
             extension: self.clone(),
@@ -69,7 +69,7 @@ impl ActiveExtension {
     }
 
     pub fn converters(&self) -> impl Iterator<Item = F11y<dyn Converter>> {
-        self.extension().converter().into_iter().map(|model| F11y {
+        self.extension().converters().into_iter().map(|model| F11y {
             trait_object: model,
             functionality_type: FunctionalityType::Converter,
             extension: self.clone(),
