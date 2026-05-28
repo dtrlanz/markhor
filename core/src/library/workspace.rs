@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::{Path, PathBuf}, sync::{Arc, Mutex}};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
-use crate::{embedding::Embedder, extension::F11y, library::{AccessLibraryError, Document, Folder, WORKSPACE_CONFIG_DIR, WORKSPACE_METADATA_FILENAME}, vector_store::VectorStore};
+use crate::{embedding::EmbeddingModel, extension::F11y, library::{AccessLibraryError, Document, Folder, WORKSPACE_CONFIG_DIR, WORKSPACE_METADATA_FILENAME}, vector_store::VectorStore};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
@@ -101,7 +101,7 @@ impl Workspace {
         self.root().document(name).await
     }
 
-    pub fn vector_store(&self, embedder: &F11y<dyn Embedder>) -> VectorStore {
+    pub fn vector_store(&self, embedder: &F11y<dyn EmbeddingModel>) -> VectorStore {
         let mut embeddings = self.inner.embeddings.lock().unwrap();
         let id = embedder.metadata_id();
         Clone::clone(embeddings.entry(id).or_insert_with(|| VectorStore::new()))

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use markhor_core::{chat::chat::ChatModel, embedding::Embedder, extension::Extension};
+use markhor_core::{chat::chat::ChatModel, embedding::EmbeddingModel, extension::Extension};
 
 mod chat;
 mod embed;
@@ -61,7 +61,7 @@ impl Extension for GeminiClientExtension {
         vec![Box::new(chat)]
     }
 
-    fn embedding_models(&self) -> Vec<Box<dyn Embedder>> {
+    fn embedding_models(&self) -> Vec<Box<dyn EmbeddingModel>> {
         let embedder = GeminiEmbedder::new_with_shared_client(
             self.shared_client.clone(), 
             "text-embedding-004".into(),

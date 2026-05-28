@@ -1,4 +1,4 @@
-use crate::{chat::{chat::ChatModel, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::{Resolve, ResolveDependencyError, Session}, embedding::Embedder, extension::Extension, tool::Tool};
+use crate::{chat::{chat::ChatModel, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::{Resolve, ResolveDependencyError, Session}, embedding::EmbeddingModel, extension::Extension, tool::Tool};
 
 use std::{any::TypeId, fmt::Display, ops::{Deref, DerefMut}, sync::Arc};
 use serde::{Deserialize, Serialize};
@@ -42,7 +42,7 @@ impl<T: ?Sized + 'static> Comp<T> {
         let t_id = TypeId::of::<T>();
         match TypeId::of::<T>() {
             x if x == const { TypeId::of::<dyn ChatModel>() } => ComponentType::ChatModel,
-            x if x == const { TypeId::of::<dyn Embedder>() } => ComponentType::EmbeddingModel,
+            x if x == const { TypeId::of::<dyn EmbeddingModel>() } => ComponentType::EmbeddingModel,
             x if x == const { TypeId::of::<dyn Chunker>() } => ComponentType::Chunker,
             x if x == const { TypeId::of::<dyn Converter>() } => ComponentType::Converter,
             x if x == const { TypeId::of::<dyn Prompter>() } => ComponentType::Prompter,
@@ -92,7 +92,7 @@ macro_rules! impl_resolve_comp {
 
 impl_resolve_comp! {
     ChatModel => chat_models,
-    Embedder => embedding_models,
+    EmbeddingModel => embedding_models,
     Chunker => chunkers,
     Converter => converters,
     Prompter => prompters,
@@ -101,8 +101,8 @@ impl_resolve_comp! {
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ComponentType {
-    ChatModel,      // anticipating pending change in name & definition
-    EmbeddingModel, // "
+    ChatModel,
+    EmbeddingModel,
     Chunker,
     Converter,
     Prompter,
@@ -159,7 +159,7 @@ mod tests {
         assert_eq!(chunker.component_type(), ComponentType::Chunker);
         assert_eq!(chunker.metadata_id(), "markhorchunkerfixed-size chunker");
 
-        let embedder: Comp<dyn Embedder> = Resolve::first(&session).unwrap();
+        let embedder: Comp<dyn EmbeddingModel> = Resolve::first(&session).unwrap();
         assert_eq!(embedder.component_type(), ComponentType::EmbeddingModel);
         assert_eq!(embedder.metadata_id(), "markhorembeddermock embedding-model");
 

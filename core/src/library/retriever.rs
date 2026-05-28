@@ -4,7 +4,7 @@ use thiserror::Error;
 use tracing::{instrument, debug, trace};
 use uuid::Uuid;
 
-use crate::{chunking::{Chunker, ChunkerError}, embedding::{Embedder, Embedding, EmbeddingError}, extension::F11y, library::{AccessLibraryError, ChunkIdx, Document, Scope, HashValue, Workspace}, vector_store::{DocVersionId, VectorView}};
+use crate::{chunking::{Chunker, ChunkerError}, embedding::{EmbeddingModel, Embedding, EmbeddingError}, extension::F11y, library::{AccessLibraryError, ChunkIdx, Document, Scope, HashValue, Workspace}, vector_store::{DocVersionId, VectorView}};
 
 
 
@@ -14,13 +14,13 @@ pub struct Retriever {
     scope: Scope,
     docs: HashMap<Uuid, IncludedDoc>,
     chunker: F11y<dyn Chunker>,
-    embedder: F11y<dyn Embedder>,
+    embedder: F11y<dyn EmbeddingModel>,
     embeddings: VectorView,
 }
 
 impl Retriever {
     #[instrument(skip(chunker, embedder))]
-    pub async fn new(workspace: Workspace, scope: Scope, chunker: F11y<dyn Chunker>, embedder: F11y<dyn Embedder>) -> Result<Self, InitRetrieverError> {
+    pub async fn new(workspace: Workspace, scope: Scope, chunker: F11y<dyn Chunker>, embedder: F11y<dyn EmbeddingModel>) -> Result<Self, InitRetrieverError> {
         debug!("Initializing retriever for scope {:?}", scope);
         let vector_store = workspace.vector_store(&embedder);
         let utils = Arc::new((chunker, embedder));
@@ -92,7 +92,7 @@ impl Retriever {
     }
 
     #[instrument(skip_all, fields(doc_path = %doc.path().display()), level = "debug", err)]
-    async fn send_doc_vectors(mut doc: Document, utils: Arc<(F11y<dyn Chunker>, F11y<dyn Embedder>)>, sender: tokio::sync::mpsc::Sender<(DocVersionId, Vec<(ChunkIdx, HashValue, Embedding)>)>) -> Result<(), InitRetrieverError> {
+    async fn send_doc_vectors(mut doc: Document, utils: Arc<(F11y<dyn Chunker>, F11y<dyn EmbeddingModel>)>, sender: tokio::sync::mpsc::Sender<(DocVersionId, Vec<(ChunkIdx, HashValue, Embedding)>)>) -> Result<(), InitRetrieverError> {
         let doc_path = doc.path().display().to_string();
         debug!("Processing doc {} for embedding generation", doc_path);
         let chunker = &utils.0;

@@ -1,4 +1,4 @@
-use crate::{chat::{chat::ChatModel, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::ResolveDependencyError, embedding::Embedder};
+use crate::{chat::{chat::ChatModel, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::ResolveDependencyError, embedding::EmbeddingModel};
 
 use std::{fmt::Display, ops::{Deref, DerefMut}};
 use async_trait::async_trait;
@@ -19,7 +19,7 @@ pub trait Extension: Send + Sync {
     async fn initialize(&mut self) -> Result<(), InitExtensionError> { Ok(()) }
 
     fn chat_models(&self) -> Vec<Box<dyn ChatModel>> { vec![] }
-    fn embedding_models(&self) -> Vec<Box<dyn Embedder>> { vec![] }
+    fn embedding_models(&self) -> Vec<Box<dyn EmbeddingModel>> { vec![] }
     fn chunkers(&self) -> Vec<Box<dyn Chunker>> { vec![] }
     fn converters(&self) -> Vec<Box<dyn Converter>> { vec![] }
     fn prompters(&self) -> Vec<Box<dyn Prompter>> { vec![] }

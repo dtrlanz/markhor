@@ -2,7 +2,7 @@ use markhor_core::chat::chat::{
     ChatModel, ChatOptions, ContentPart, FinishReason,
     Message, ToolChoice, ToolDefinition, ToolParameterSchema, ToolResult,
 };
-use markhor_core::embedding::{Embedder, EmbeddingUseCase, EmbeddingError};
+use markhor_core::embedding::{EmbeddingModel, EmbeddingUseCase, EmbeddingError};
 use serde_json::json;
 use tracing::error;
 

@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
-use crate::{chat::{chat::ChatModel, prompter::Prompter, ChatError}, chunking::Chunker, convert::{ConversionError, Converter}, embedding::{Embedder, EmbeddingError}, extension::{ActiveExtension, Extension, F11y, UseExtensionError}, library::{AccessLibraryError, Document, Folder, Scope}};
+use crate::{chat::{chat::ChatModel, prompter::Prompter, ChatError}, chunking::Chunker, convert::{ConversionError, Converter}, embedding::{EmbeddingModel, EmbeddingError}, extension::{ActiveExtension, Extension, F11y, UseExtensionError}, library::{AccessLibraryError, Document, Folder, Scope}};
 use mime::Mime;
 use thiserror::Error;
 use tokio::{io::AsyncRead, sync::mpsc::{error::SendError, UnboundedReceiver, UnboundedSender}, task::JoinHandle};
@@ -302,7 +302,7 @@ impl Assets {
         Err(ChatError::Provider("No chat model found".into()))
     }
 
-    pub fn embedders(&self) -> Vec<F11y<dyn Embedder>> {
+    pub fn embedders(&self) -> Vec<F11y<dyn EmbeddingModel>> {
         tracing::debug!("Getting embedders");
         let mut embedders = Vec::new();
         for ext in self.extensions.iter() {

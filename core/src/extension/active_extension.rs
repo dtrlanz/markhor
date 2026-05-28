@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{chat::{chat::ChatModel, prompter::Prompter}, chunking::Chunker, convert::Converter, embedding::Embedder};
+use crate::{chat::{chat::ChatModel, prompter::Prompter}, chunking::Chunker, convert::Converter, embedding::EmbeddingModel};
 
 use super::{Extension, F11y, FunctionalityType};
 
@@ -52,7 +52,7 @@ impl ActiveExtension {
         })
     }
 
-    pub fn embedders(&self) -> impl Iterator<Item = F11y<dyn Embedder>> {
+    pub fn embedders(&self) -> impl Iterator<Item = F11y<dyn EmbeddingModel>> {
         self.extension().embedding_models().into_iter().map(|model| F11y {
             trait_object: model,
             functionality_type: FunctionalityType::Embedder,
