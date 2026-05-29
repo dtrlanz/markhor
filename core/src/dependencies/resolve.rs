@@ -152,18 +152,22 @@ use super::*;
         use super::*;
 
         #[derive(Debug, PartialEq, Eq, Resolve)]
+        #[resolve(crate = "crate")]
         pub struct Foo {
             pub bar: Bar,
             pub baz: Baz,
         }
 
         #[derive(Debug, PartialEq, Eq, Resolve)]
+        #[resolve(crate = "crate")]
         pub struct FooTuple(pub Bar, pub Baz);
 
         #[derive(Debug, PartialEq, Eq, Resolve)]
+        #[resolve(crate = "crate")]
         pub struct Bar;
 
         #[derive(Debug, PartialEq, Eq, Resolve)]
+        #[resolve(crate = "crate")]
         pub struct Baz;
     }
 
@@ -236,6 +240,7 @@ use super::*;
         }
 
         #[derive(Debug, Clone, PartialEq, Eq, Resolve)]
+        #[resolve(crate = "crate")]
         pub struct Bar;
 
         #[derive(Debug, PartialEq, Eq)]
@@ -263,6 +268,7 @@ use super::*;
         // --- Classic struct ---
 
         #[derive(Debug, Resolve)]
+        #[resolve(crate = "crate")]
         struct TestNoFilter0 {
             all_foos: Vec<enumerated::Foo>,
             first_foo: Option<enumerated::Foo>,
@@ -284,6 +290,7 @@ use super::*;
         // --- Tuple struct ---
 
         #[derive(Debug, Resolve)]
+        #[resolve(crate = "crate")]
         struct TestNoFilter1 (
             Vec<enumerated::Foo>,
             Option<enumerated::Foo>,
@@ -302,12 +309,14 @@ use super::*;
     #[test]
     fn bare_field_with_filter() {
         #[derive(Debug, Resolve)]
+        #[resolve(crate = "crate")]
         struct TestBareFilter {
             #[resolve(filter = |f| f.idx == 2)]
             target_foo: enumerated::Foo,
         }
 
         #[derive(Debug, Resolve)]
+        #[resolve(crate = "crate")]
         struct TestBareFilterFail {
             #[resolve(filter = |f| f.idx == 99)]
             _missing_foo: enumerated::Foo, // Should error because 99 doesn't exist
@@ -332,7 +341,8 @@ use super::*;
 
     #[test]
     fn option_field_with_filter() {
-    #[derive(Debug, Resolve)]
+        #[derive(Debug, Resolve)]
+        #[resolve(crate = "crate")]
         struct TestOptionFilter {
             #[resolve(filter = |f| f.idx == 3)]
             target_foo: Option<enumerated::Foo>,
@@ -354,6 +364,7 @@ use super::*;
     #[test]
     fn vec_field_with_filter() {
         #[derive(Debug, Resolve)]
+        #[resolve(crate = "crate")]
         struct TestVecFilter {
             #[resolve(filter = |f| f.idx % 2 == 0)]
             even_foos: Vec<enumerated::Foo>,
@@ -376,6 +387,7 @@ use super::*;
         // --- Map within the same type ---
 
         #[derive(Debug, Resolve)]
+        #[resolve(crate = "crate")]
         struct TestVecMap0 {
             #[resolve(map = |f: Foo| Foo { idx: f.idx * 2, bar: f.bar })]
             doubled_foos: Vec<Foo>,
@@ -395,11 +407,13 @@ use super::*;
         // --- Map one type to another ---
 
         #[derive(Debug, Resolve)]
+        #[resolve(crate = "crate")]
         struct Baz {
             foo: Foo,
         }
 
         #[derive(Debug, Resolve)]
+        #[resolve(crate = "crate")]
         struct TestVecMap1 {
             #[resolve(map = |f: Foo| Baz { foo: f })]
             bazes: Vec<Baz>,
@@ -421,6 +435,7 @@ use super::*;
         use enumerated::Foo;
 
         #[derive(Debug, Resolve)]
+        #[resolve(crate = "crate")]
         struct TestMapMap {
             #[resolve(map = |f: Foo| (f.idx, f))]
             foo_map: std::collections::HashMap<usize, Foo>,
@@ -443,6 +458,7 @@ use super::*;
         // --- Classic structs ---
         
         #[derive(Debug, Resolve)]
+        #[resolve(crate = "crate")]
         struct TestMapMap0 {
             // with explicit type annotation
             #[resolve(key = |f: &Foo| f.idx)]
@@ -459,6 +475,7 @@ use super::*;
         }
 
         #[derive(Debug, Resolve)]
+        #[resolve(crate = "crate")]
         struct TestMapMap1 {
             // without type annotation
             #[resolve(key = |f| f.idx)]
@@ -477,6 +494,7 @@ use super::*;
         // --- Tuple struct ---
 
         #[derive(Debug, Resolve)]
+        #[resolve(crate = "crate")]
         struct TestMapMap2 (
             #[resolve(key = |f| f.idx)]
             std::collections::HashMap<usize, Foo>,
@@ -496,6 +514,7 @@ use super::*;
         use enumerated::Foo;
 
         #[derive(Debug, Resolve)]
+        #[resolve(crate = "crate")]
         struct TestSortBy {
             // default is ascending order; reverse it
             #[resolve(sort_by = |a, b| b.idx.cmp(&a.idx))]
@@ -539,7 +558,8 @@ use super::*;
 
     #[test]
     fn single_each() {
-    #[derive(Debug, Resolve)]
+        #[derive(Debug, Resolve)]
+        #[resolve(crate = "crate")]
         struct SingleEach {
             // Outer loop: 5 iterations
             #[resolve(each)]
@@ -571,6 +591,7 @@ use super::*;
     #[test]
     fn cartesian_each() {
         #[derive(Debug, Resolve)]
+        #[resolve(crate = "crate")]
         struct CartesianEach {
             // Outer loop: 2 iterations
             #[resolve(each)]
@@ -608,7 +629,8 @@ use super::*;
 
     #[test]
     fn filtered_each() {
-    #[derive(Debug, Resolve)]
+        #[derive(Debug, Resolve)]
+        #[resolve(crate = "crate")]
         struct FilteredEach {
             // Filtered loop: Only yields 3 items (idx 0, 2, 4)
             #[resolve(each, filter = |f: &enumerated::Foo| f.idx % 2 == 0)]

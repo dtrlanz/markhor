@@ -47,6 +47,25 @@ fn extract_source_type_from_closure(expr: &Expr) -> syn::Result<Type> {
     ))
 }
 
+/// Helper to parse the top-level `#[resolve(crate = "...")]` helper attribute on structs.
+fn parse_struct_crate_path(attrs: &[syn::Attribute]) -> syn::Result<Option<syn::Path>> {
+    let mut crate_path = None;
+    for attr in attrs {
+        if attr.path().is_ident("resolve") {
+            attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("crate") {
+                    let path_str: syn::LitStr = meta.value()?.parse()?;
+                    crate_path = Some(path_str.parse()?);
+                    Ok(())
+                } else {
+                    Err(meta.error("unsupported struct-level resolve attribute"))
+                }
+            })?;
+        }
+    }
+    Ok(crate_path)
+}
+
 fn parse_resolve_attrs(field: &syn::Field) -> syn::Result<FieldConfig> {
     let mut config = FieldConfig { 
         each: false, 
@@ -140,6 +159,23 @@ fn parse_resolve_attrs(field: &syn::Field) -> syn::Result<FieldConfig> {
     Ok(config)
 }
 
+/// Scans the struct's generics to find a namespace prefix (e.g. `___`) that is
+/// guaranteed not to collide with any user-defined generic names.
+fn find_hygiene_prefix(generics: &syn::Generics) -> String {
+    let mut prefix = "___".to_string();
+    while generics.params.iter().any(|param| {
+        let ident_str = match param {
+            syn::GenericParam::Type(t) => t.ident.to_string(),
+            syn::GenericParam::Lifetime(l) => l.lifetime.ident.to_string(),
+            syn::GenericParam::Const(c) => c.ident.to_string(),
+        };
+        ident_str.starts_with(&prefix)
+    }) {
+        prefix.push('_');
+    }
+    prefix
+}
+
 /// Derives the `Resolve` trait for a struct.
 ///
 /// This macro automatically implements dependency resolution for named structs, 
@@ -204,6 +240,21 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
     
+    // Resolve Strategy 2 Crate Path (Defaults to `::markhor_core`)
+    let crate_path = match parse_struct_crate_path(&input.attrs) {
+        Ok(Some(path)) => path,
+        Ok(None) => syn::parse_quote! { ::markhor_core },
+        Err(e) => return e.to_compile_error().into(),
+    };
+
+    // Generate collision-free generic type names for internal helper functions
+    let prefix = find_hygiene_prefix(&input.generics);
+    let g_i = quote::format_ident!("{}I", prefix);
+    let g_v = quote::format_ident!("{}V", prefix);
+    let g_k = quote::format_ident!("{}K", prefix);
+    let g_f = quote::format_ident!("{}F", prefix);
+    let g_dst = quote::format_ident!("{}Dst", prefix);
+
     // Support generics
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
@@ -212,12 +263,12 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
         Data::Struct(ref data_struct) => match &data_struct.fields {
             Fields::Unit => {
                 quote! {
-                    let __items = std::iter::once(Self);
-                    Ok(__items)
+                    let __items = ::std::iter::once(Self);
+                    ::std::result::Result::Ok(__items)
                 }
             }
             fields => {
-                // Unify logic for classic and tuple structs
+                // Unified logic for classic and tuple structs
                 let (fields_iter, is_named) = match fields {
                     Fields::Named(f) => (&f.named, true),
                     Fields::Unnamed(f) => (&f.unnamed, false),
@@ -256,8 +307,8 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                     // 1. Determine base iterator call and any map transformations
                     let (base_iter_call, map_step) = if let Some((map_expr, src_ty)) = &attrs.map {
                         (
-                            quote! { <#src_ty as Resolve>::iter(session)? }, 
-                            quote! { let __iter = std::iter::Iterator::map(__iter, #map_expr); }
+                            quote! { <#src_ty as #crate_path::dependencies::Resolve>::iter(__session)? }, 
+                            quote! { let __iter = ::std::iter::Iterator::map(__iter, #map_expr); }
                         )
                     } else if let Some((_filter_map_expr, _src_ty)) = &attrs.filter_map {
                         // TODO: Implement filter_map
@@ -269,21 +320,21 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                                     // Local scoped trait to peel the inner 'Value' type out of the target KV type
                                     trait __ResolveKeyTupleExtractor { type Value; }
                                     impl<__K, __V> __ResolveKeyTupleExtractor for (__K, __V) { type Value = __V; }
-                                    < <<#ty as Resolve>::Item as __ResolveKeyTupleExtractor>::Value as Resolve >::iter(session)?
+                                    < <<#ty as #crate_path::dependencies::Resolve>::Item as __ResolveKeyTupleExtractor>::Value as #crate_path::dependencies::Resolve >::iter(__session)?
                                 }
                             },
                             quote! { 
                                 let __iter = {
                                     // Helper function bridges the inference gap by locking the closure's inputs tightly to the iterator's outputs
-                                    fn __apply_key_mapper<__I, __V, __K, __F>(
-                                        __iter: __I,
-                                        mut __key_fn: __F,
-                                    ) -> impl std::iter::Iterator<Item = (__K, __V)>
+                                    fn __apply_key_mapper<#g_i, #g_v, #g_k, #g_f>(
+                                        __iter: #g_i,
+                                        mut __key_fn: #g_f,
+                                    ) -> impl ::std::iter::Iterator<Item = (#g_k, #g_v)>
                                     where
-                                        __I: std::iter::Iterator<Item = __V>,
-                                        __F: std::ops::FnMut(&__V) -> __K,
+                                        #g_i: ::std::iter::Iterator<Item = #g_v>,
+                                        #g_f: ::std::ops::FnMut(&#g_v) -> #g_k,
                                     {
-                                        std::iter::Iterator::map(__iter, move |__item| {
+                                        ::std::iter::Iterator::map(__iter, move |__item| {
                                             let __k = __key_fn(&__item);
                                             (__k, __item)
                                         })
@@ -294,16 +345,16 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                         )
                     } else {
                         (
-                            quote! { <<#ty as Resolve>::Item as Resolve>::iter(session)? }, 
+                            quote! { <<#ty as #crate_path::dependencies::Resolve>::Item as #crate_path::dependencies::Resolve>::iter(__session)? }, 
                             quote! {}
                         )
                     };
 
                     // 2. Determine filter transformations
                     let filter_step = if let Some(f) = &attrs.filter {
-                        quote! { let __iter = std::iter::Iterator::filter(__iter, #f); }
+                        quote! { let __iter = ::std::iter::Iterator::filter(__iter, #f); }
                     } else if let Some((_filter_map_expr, _src_ty)) = &attrs.filter_map {
-                        // TODO: Implement filter_map (Filtering portion)
+                        // TODO: Implement filter_map
                         quote! {}
                     } else {
                         quote! {}
@@ -312,9 +363,9 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                     // 3. Determine eager sorting transformations
                     let sort_step = if let Some(f) = &attrs.sort_by {
                         quote! {
-                            let mut __vec = std::iter::Iterator::collect::<std::vec::Vec<_>>(__iter);
+                            let mut __vec = ::std::iter::Iterator::collect::<::std::vec::Vec<_>>(__iter);
                             __vec.sort_by(#f);
-                            let __iter = std::iter::IntoIterator::into_iter(__vec);
+                            let __iter = ::std::iter::IntoIterator::into_iter(__vec);
                         }
                     } else if let Some(_f) = &attrs.sort_by_key {
                         // TODO: Implement sort_by_key
@@ -335,11 +386,11 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                                 #filter_step
                                 #map_step
                                 #sort_step
-                                <#ty as Resolve>::iter_from_items(__iter)?
+                                <#ty as #crate_path::dependencies::Resolve>::iter_from_items(__iter)?
                             }
                         }
                     } else {
-                        quote! { <#ty as Resolve>::iter(session)? }
+                        quote! { <#ty as #crate_path::dependencies::Resolve>::iter(__session)? }
                     };
 
                     if attrs.each {
@@ -350,14 +401,14 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                             quote! {
                                 {
                                     let mut __field_iter = #iter_expr;
-                                    std::iter::Iterator::next(&mut __field_iter)
-                                        .ok_or_else(|| ResolveDependencyError::DependencyNotAvailable(
-                                            std::any::type_name::<#ty>().to_string()
+                                    ::std::iter::Iterator::next(&mut __field_iter)
+                                        .ok_or_else(|| #crate_path::dependencies::ResolveDependencyError::DependencyNotAvailable(
+                                            ::std::any::type_name::<#ty>().to_string()
                                         ))?
                                 }
                             }
                         } else {
-                            quote! { <#ty as Resolve>::first(session)? }
+                            quote! { <#ty as #crate_path::dependencies::Resolve>::first(__session)? }
                         };
 
                         non_each_inits.push(quote! { let #var_ident = #init_tokens; });
@@ -380,8 +431,8 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
 
                     quote! {
                         #( #non_each_inits )*
-                        let __items = std::iter::once(#construct_expr);
-                        Ok(__items)
+                        let __items = ::std::iter::once(#construct_expr);
+                        ::std::result::Result::Ok(__items)
                     }
                 } else {
                     let mut each_inits = Vec::new();
@@ -393,7 +444,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                         if i == 0 {
                             each_inits.push(quote! { let #name = #iter_expr; });
                         } else {
-                            each_inits.push(quote! { let #name = std::iter::Iterator::collect::<std::vec::Vec<_>>(#iter_expr); });
+                            each_inits.push(quote! { let #name = ::std::iter::Iterator::collect::<::std::vec::Vec<_>>(#iter_expr); });
                         }
                     }
                     
@@ -423,13 +474,13 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                         let iter_i = if i == 0 {
                             quote! { #field_i }
                         } else {
-                            quote! { std::iter::IntoIterator::into_iter(#field_i.clone()) }
+                            quote! { ::std::iter::IntoIterator::into_iter(#field_i.clone()) }
                         };
                         
                         if i == n {
                             // Innermost each loop is just a map
                             current_expr = quote! {
-                                std::iter::Iterator::map(#iter_i, move |#field_i| {
+                                ::std::iter::Iterator::map(#iter_i, move |#field_i| {
                                     #current_expr
                                 })
                             };
@@ -453,7 +504,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                             }
                             
                             current_expr = quote! {
-                                std::iter::Iterator::flat_map(#iter_i, move |#field_i| {
+                                ::std::iter::Iterator::flat_map(#iter_i, move |#field_i| {
                                     #( #clones )*
                                     #current_expr
                                 })
@@ -464,7 +515,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                     quote! {
                         #( #non_each_inits )*
                         #( #each_inits )*
-                        Ok(#current_expr)
+                        ::std::result::Result::Ok(#current_expr)
                     }
                 }
             }
@@ -473,18 +524,19 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
     };
 
     let expanded = quote! {
-        impl #impl_generics Resolve for #name #ty_generics #where_clause {
+        impl #impl_generics #crate_path::dependencies::Resolve for #name #ty_generics #where_clause {
             type Item = Self;
 
-            fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
+            // Parameter named `__session` to avoid collisions with struct fields named `session`
+            fn iter(__session: &#crate_path::dependencies::Session) -> ::std::result::Result<impl ::std::iter::Iterator<Item = Self>, #crate_path::dependencies::ResolveDependencyError> {
                 #resolve_body
             }
 
-            fn iter_from_items<__I>(items: __I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+            fn iter_from_items<#g_i>(items: #g_i) -> ::std::result::Result<impl ::std::iter::Iterator<Item = Self>, #crate_path::dependencies::ResolveDependencyError>
             where
-                __I: Iterator<Item = Self::Item>,
+                #g_i: ::std::iter::Iterator<Item = Self::Item>,
             {
-                Ok(items)
+                ::std::result::Result::Ok(items)
             }
         }
     };
