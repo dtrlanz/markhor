@@ -42,19 +42,13 @@ mod hygiene_tests {
         }
     }
 
-    impl Dummy {
-        pub fn new() -> Self { Self { value: 42 } }
-    }
-
-    // // Default manual impl just in case the derive fails on it
-    // impl Resolve for Option<Dummy> { /* ... omitted for brevity ... */ }
-
     // =========================================================================
     // 1. FUNCTION ARGUMENT SHADOWING
     // =========================================================================
     mod argument_shadowing {
         use super::*;
 
+        #[allow(dead_code)]
         #[derive(Debug, Resolve)]
         pub struct ShadowSession {
             // Does this shadow the `session: &Session` argument for the next field?
@@ -65,6 +59,7 @@ mod hygiene_tests {
             pub next_field: Dummy,
         }
 
+        #[allow(dead_code)]
         #[derive(Debug, Resolve)]
         pub struct ShadowSessionEach {
             // Same as above, but creates `let session = ...` as an iterator or Vec!
@@ -82,6 +77,7 @@ mod hygiene_tests {
         use super::*;
 
         // We try to use field names that match the macro's internal `let __x` bindings.
+        #[allow(dead_code)]
         #[derive(Debug, Resolve)]
         pub struct InternalShadowing {
             pub __iter: Dummy,
@@ -100,6 +96,7 @@ mod hygiene_tests {
         }
 
         // What if we use `map` and our argument name matches a macro internal?
+        #[allow(dead_code)]
         #[derive(Debug, Resolve)]
         pub struct MapArgumentCollision {
             #[resolve(map = |__item: Dummy| Dummy { value: __item.value + 1 })]
@@ -116,6 +113,7 @@ mod hygiene_tests {
 
         // The macro generates helper functions with generics like `__I`, `__K`, `__V`, `__F`.
         // What if the struct ITSELF uses those generic names?
+        #[allow(dead_code)]
         #[derive(Debug, Resolve)]
         pub struct GenericShadowing<__I, __K, __V, __F> {
             pub dummy: Dummy,
@@ -146,6 +144,7 @@ mod hygiene_tests {
             }
         }
 
+        #[allow(dead_code)]
         #[derive(Debug, Resolve)]
         pub struct PreludeHijacked {
             // Will fail if macro uses `Ok(...)` instead of `::std::result::Result::Ok(...)`
@@ -161,10 +160,14 @@ mod hygiene_tests {
         use super::*;
 
         // Hijack the names of the traits the macro relies on being in scope or uses relative paths for.
+        #[allow(dead_code)]
         trait Iterator {}
+        #[allow(dead_code)]
         trait IntoIterator {}
+        #[allow(dead_code)]
         trait FnMut {}
 
+        #[allow(dead_code)]
         #[derive(Debug, Resolve)]
         pub struct TraitHijacked {
             #[resolve(map = |d: Dummy| d)]
@@ -179,6 +182,7 @@ mod hygiene_tests {
         use super::*;
         use std::collections::HashMap;
 
+        #[allow(dead_code)]
         #[derive(Debug, Resolve)]
         pub struct DoubleKey {
             // The macro creates `trait __ResolveKeyTupleExtractor { ... }`.
@@ -195,10 +199,12 @@ mod hygiene_tests {
     // 7. MISSING SCOPE (EXTERN CRATE HYGIENE)
     // =========================================================================
     mod missing_error_type {
+        #[allow(unused_imports)]
         use super::Session;
         use super::Resolve;
         // Notice we explicitly DO NOT import `ResolveDependencyError` here!
         
+        #[allow(dead_code)]
         #[derive(Debug, Resolve)]
         pub struct MissingErrorImport {
             // If the macro generates `ResolveDependencyError::DependencyNotAvailable`
@@ -213,10 +219,13 @@ mod hygiene_tests {
     mod renamed_imports {
         // We explicitly DO NOT use `super::*` so the original names aren't in scope.
         use super::Resolve as RenamedResolve;
+        #[allow(unused_imports)]
         use super::Session as RenamedSession;
+        #[allow(unused_imports)]
         use super::ResolveDependencyError as RenamedError;
         use super::Dummy;
 
+        #[allow(dead_code)]
         #[derive(Debug, RenamedResolve)]
         pub struct RenamedMacroUsage {
             // Will fail because macro generates `impl Resolve for RenamedMacroUsage`
