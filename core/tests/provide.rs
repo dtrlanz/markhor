@@ -1,14 +1,14 @@
-use markhor_core::dependencies::{Session, Resolve, ResolveDependencyError};
+use markhor_core::dependencies::{Session, Provide, ResolveDependencyError};
 
 
 #[test]
-fn resolve_simple_struct() {
-    #[derive(Debug, PartialEq, Eq, Resolve)]
+fn provide_simple_struct() {
+    #[derive(Debug, PartialEq, Eq, Provide)]
     struct Foo {
         bar: Bar,
     }
 
-    #[derive(Debug, PartialEq, Eq, Resolve)]
+    #[derive(Debug, PartialEq, Eq, Provide)]
     struct Bar;
 
     let assets = Session::new();
@@ -27,7 +27,7 @@ mod hygiene_tests {
         pub value: usize,
     }
 
-    impl Resolve for Dummy {
+    impl Provide for Dummy {
         type Item = Dummy;
 
         fn iter(_session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
@@ -49,21 +49,21 @@ mod hygiene_tests {
         use super::*;
 
         #[allow(dead_code)]
-        #[derive(Debug, Resolve)]
+        #[derive(Debug, Provide)]
         pub struct ShadowSession {
             // Does this shadow the `session: &Session` argument for the next field?
             pub session: Dummy,
             
-            // If `session` was shadowed above, `<Dummy as Resolve>::iter(session)?` 
+            // If `session` was shadowed above, `<Dummy as Provide>::iter(session)?` 
             // will try to pass `Dummy` instead of `&Session`!
             pub next_field: Dummy,
         }
 
         #[allow(dead_code)]
-        #[derive(Debug, Resolve)]
+        #[derive(Debug, Provide)]
         pub struct ShadowSessionEach {
             // Same as above, but creates `let session = ...` as an iterator or Vec!
-            #[resolve(each)]
+            #[provide(each)]
             pub session: Dummy,
             
             pub next_field: Dummy,
@@ -78,7 +78,7 @@ mod hygiene_tests {
 
         // We try to use field names that match the macro's internal `let __x` bindings.
         #[allow(dead_code)]
-        #[derive(Debug, Resolve)]
+        #[derive(Debug, Provide)]
         pub struct InternalShadowing {
             pub __iter: Dummy,
             pub __items: Dummy,
@@ -97,9 +97,9 @@ mod hygiene_tests {
 
         // What if we use `map` and our argument name matches a macro internal?
         #[allow(dead_code)]
-        #[derive(Debug, Resolve)]
+        #[derive(Debug, Provide)]
         pub struct MapArgumentCollision {
-            #[resolve(map = |__item: Dummy| Dummy { value: __item.value + 1 })]
+            #[provide(map = |__item: Dummy| Dummy { value: __item.value + 1 })]
             pub dummy: Dummy,
         }
     }
@@ -114,7 +114,7 @@ mod hygiene_tests {
         // The macro generates helper functions with generics like `__I`, `__K`, `__V`, `__F`.
         // What if the struct ITSELF uses those generic names?
         #[allow(dead_code)]
-        #[derive(Debug, Resolve)]
+        #[derive(Debug, Provide)]
         pub struct GenericShadowing<__I, __K, __V, __F> {
             pub dummy: Dummy,
             pub _marker: PhantomData<(__I, __K, __V, __F)>,
@@ -145,7 +145,7 @@ mod hygiene_tests {
         }
 
         #[allow(dead_code)]
-        #[derive(Debug, Resolve)]
+        #[derive(Debug, Provide)]
         pub struct PreludeHijacked {
             // Will fail if macro uses `Ok(...)` instead of `::std::result::Result::Ok(...)`
             // Will fail if macro uses `std::iter::...` instead of `::std::iter::...`
@@ -168,9 +168,9 @@ mod hygiene_tests {
         trait FnMut {}
 
         #[allow(dead_code)]
-        #[derive(Debug, Resolve)]
+        #[derive(Debug, Provide)]
         pub struct TraitHijacked {
-            #[resolve(map = |d: Dummy| d)]
+            #[provide(map = |d: Dummy| d)]
             pub dummy: Dummy,
         }
     }
@@ -183,14 +183,14 @@ mod hygiene_tests {
         use std::collections::HashMap;
 
         #[allow(dead_code)]
-        #[derive(Debug, Resolve)]
+        #[derive(Debug, Provide)]
         pub struct DoubleKey {
             // The macro creates `trait __ResolveKeyTupleExtractor { ... }`.
             // If it creates it twice in the same scope, this will fail!
-            #[resolve(key = |d| d.value)]
+            #[provide(key = |d| d.value)]
             pub dummy_map_1: HashMap<usize, Dummy>,
             
-            #[resolve(key = |d| d.value)]
+            #[provide(key = |d| d.value)]
             pub dummy_map_2: HashMap<usize, Dummy>,
         }
     }
@@ -201,11 +201,11 @@ mod hygiene_tests {
     mod missing_error_type {
         #[allow(unused_imports)]
         use super::Session;
-        use super::Resolve;
+        use super::Provide;
         // Notice we explicitly DO NOT import `ResolveDependencyError` here!
         
         #[allow(dead_code)]
-        #[derive(Debug, Resolve)]
+        #[derive(Debug, Provide)]
         pub struct MissingErrorImport {
             // If the macro generates `ResolveDependencyError::DependencyNotAvailable`
             // without a `crate::` or `super::` prefix, this will fail to compile.
@@ -218,7 +218,7 @@ mod hygiene_tests {
     // =========================================================================
     mod renamed_imports {
         // We explicitly DO NOT use `super::*` so the original names aren't in scope.
-        use super::Resolve as RenamedResolve;
+        use super::Provide as RenamedProvide;
         #[allow(unused_imports)]
         use super::Session as RenamedSession;
         #[allow(unused_imports)]
@@ -226,16 +226,16 @@ mod hygiene_tests {
         use super::Dummy;
 
         #[allow(dead_code)]
-        #[derive(Debug, RenamedResolve)]
+        #[derive(Debug, RenamedProvide)]
         pub struct RenamedMacroUsage {
-            // Will fail because macro generates `impl Resolve for RenamedMacroUsage`
+            // Will fail because macro generates `impl Provide for RenamedMacroUsage`
             // instead of using the path the trait was actually imported under (or an absolute path).
             
             // Will fail because macro generates `fn iter(session: &Session)`
             // but `Session` is not in scope!
             
-            // Will fail because macro calls `<Dummy as Resolve>::iter(session)`
-            // but `Resolve` is not in scope!
+            // Will fail because macro calls `<Dummy as Provide>::iter(session)`
+            // but `Provide` is not in scope!
             pub dummy: Dummy,
         }
     }

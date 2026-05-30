@@ -1,5 +1,5 @@
 [package]
-name = "derive_resolve"
+name = "derive_provide"
 edition = "2024"
 publish = false
 

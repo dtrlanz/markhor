@@ -43,22 +43,22 @@ fn extract_source_type_from_closure(expr: &Expr) -> syn::Result<Type> {
     Err(syn::Error::new_spanned(
         expr, 
         "This attribute requires a closure with an explicitly typed argument. \n\
-        Example: `#[resolve(map = |x: SourceType| ...)]`"
+        Example: `#[provide(map = |x: SourceType| ...)]`"
     ))
 }
 
-/// Helper to parse the top-level `#[resolve(crate = "...")]` helper attribute on structs.
+/// Helper to parse the top-level `#[provide(crate = "...")]` helper attribute on structs.
 fn parse_struct_crate_path(attrs: &[syn::Attribute]) -> syn::Result<Option<syn::Path>> {
     let mut crate_path = None;
     for attr in attrs {
-        if attr.path().is_ident("resolve") {
+        if attr.path().is_ident("provide") {
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("crate") {
                     let path_str: syn::LitStr = meta.value()?.parse()?;
                     crate_path = Some(path_str.parse()?);
                     Ok(())
                 } else {
-                    Err(meta.error("unsupported struct-level resolve attribute"))
+                    Err(meta.error("unsupported struct-level provide attribute"))
                 }
             })?;
         }
@@ -66,7 +66,7 @@ fn parse_struct_crate_path(attrs: &[syn::Attribute]) -> syn::Result<Option<syn::
     Ok(crate_path)
 }
 
-fn parse_resolve_attrs(field: &syn::Field) -> syn::Result<FieldConfig> {
+fn parse_provide_attrs(field: &syn::Field) -> syn::Result<FieldConfig> {
     let mut config = FieldConfig { 
         each: false, 
         filter: None, 
@@ -83,7 +83,7 @@ fn parse_resolve_attrs(field: &syn::Field) -> syn::Result<FieldConfig> {
     let mut sorting_spans = Vec::new();
 
     for attr in &field.attrs {
-        if attr.path().is_ident("resolve") {
+        if attr.path().is_ident("provide") {
             attr.parse_nested_meta(|meta| {
                 // Each
                 if meta.path.is_ident("each") {
@@ -128,7 +128,7 @@ fn parse_resolve_attrs(field: &syn::Field) -> syn::Result<FieldConfig> {
                     Ok(())
                 } 
                 else {
-                    Err(meta.error("unsupported resolve attribute"))
+                    Err(meta.error("unsupported provide attribute"))
                 }
             })?;
         }
@@ -176,14 +176,14 @@ fn find_hygiene_prefix(generics: &syn::Generics) -> String {
     prefix
 }
 
-/// Derives the `Resolve` trait for a struct.
+/// Derives the `Provide` trait for a struct.
 ///
 /// This macro automatically implements dependency resolution for named structs, 
-/// tuple structs, and unit structs. By default, it eagerly resolves exactly 
-/// one instance of each field using `<FieldType as Resolve>::first(session)`.
+/// tuple structs, and unit structs. By default, it eagerly provides exactly 
+/// one instance of each field using `<FieldType as Provide>::first(session)`.
 ///
-/// You can customize how fields are resolved, filtered, mapped, and sorted 
-/// using the `#[resolve(...)]` attribute.
+/// You can customize how fields are iterated, filtered, mapped, and sorted 
+/// using the `#[provide(...)]` attribute.
 ///
 /// # Attribute Groups
 /// 
@@ -193,7 +193,7 @@ fn find_hygiene_prefix(generics: &syn::Generics) -> String {
 ///
 /// ## 1. Iteration (`each`)
 /// Normally, a field evaluates to a single instance. Marking a field with 
-/// `#[resolve(each)]` transforms it into a loop, yielding every available 
+/// `#[provide(each)]` transforms it into a loop, yielding every available 
 /// instance of that dependency.
 /// 
 /// - **Cartesian Products:** If multiple fields are marked with `each`, the 
@@ -210,7 +210,7 @@ fn find_hygiene_prefix(generics: &syn::Generics) -> String {
 ///
 /// ## 3. Mapping
 /// Transforms the dependency type into a different type.
-/// - `map = |item: SourceType| ...`: Maps the resolved item to a new value.
+/// - `map = |item: SourceType| ...`: Maps the provided item to a new value.
 ///   **Note:** Due to Rust's closure type inference limitations inside macros, 
 ///   you must explicitly annotate the closure's input type.
 /// - `key = |item| ...`: A shorthand for mapping an item into a `(Key, Value)` 
@@ -234,13 +234,13 @@ fn find_hygiene_prefix(generics: &syn::Generics) -> String {
 /// # Examples
 /// 
 /// TODO: add nice examples
-#[proc_macro_derive(Resolve, attributes(resolve))]
-pub fn derive_resolve(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(Provide, attributes(provide))]
+pub fn derive_provide(input: TokenStream) -> TokenStream {
     // Parse input tokens into a syntax tree
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
     
-    // Resolve Strategy 2 Crate Path (Defaults to `::markhor_core`)
+    // `Provide` crate path (Defaults to `::markhor_core`)
     let crate_path = match parse_struct_crate_path(&input.attrs) {
         Ok(Some(path)) => path,
         Ok(None) => syn::parse_quote! { ::markhor_core },
@@ -259,7 +259,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     // Generate the body of the `iter` function based on the struct's fields
-    let resolve_body = match input.data {
+    let provide_body = match input.data {
         Data::Struct(ref data_struct) => match &data_struct.fields {
             Fields::Unit => {
                 quote! {
@@ -295,7 +295,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                         None => quote! {},
                     };
 
-                    let attrs = match parse_resolve_attrs(field) {
+                    let attrs = match parse_provide_attrs(field) {
                         Ok(a) => a,
                         Err(e) => return e.to_compile_error().into(),
                     };
@@ -307,7 +307,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                     // 1. Determine base iterator call and any map transformations
                     let (base_iter_call, map_step) = if let Some((map_expr, src_ty)) = &attrs.map {
                         (
-                            quote! { <#src_ty as #crate_path::dependencies::Resolve>::iter(__session)? }, 
+                            quote! { <#src_ty as #crate_path::dependencies::Provide>::iter(__session)? }, 
                             quote! { let __iter = ::std::iter::Iterator::map(__iter, #map_expr); }
                         )
                     } else if let Some((_filter_map_expr, _src_ty)) = &attrs.filter_map {
@@ -318,9 +318,9 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                             quote! {
                                 {
                                     // Local scoped trait to peel the inner 'Value' type out of the target KV type
-                                    trait __ResolveKeyTupleExtractor { type Value; }
-                                    impl<__K, __V> __ResolveKeyTupleExtractor for (__K, __V) { type Value = __V; }
-                                    < <<#ty as #crate_path::dependencies::Resolve>::Item as __ResolveKeyTupleExtractor>::Value as #crate_path::dependencies::Resolve >::iter(__session)?
+                                    trait __ProvideKeyTupleExtractor { type Value; }
+                                    impl<__K, __V> __ProvideKeyTupleExtractor for (__K, __V) { type Value = __V; }
+                                    < <<#ty as #crate_path::dependencies::Provide>::Item as __ProvideKeyTupleExtractor>::Value as #crate_path::dependencies::Provide >::iter(__session)?
                                 }
                             },
                             quote! { 
@@ -345,7 +345,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                         )
                     } else {
                         (
-                            quote! { <<#ty as #crate_path::dependencies::Resolve>::Item as #crate_path::dependencies::Resolve>::iter(__session)? }, 
+                            quote! { <<#ty as #crate_path::dependencies::Provide>::Item as #crate_path::dependencies::Provide>::iter(__session)? }, 
                             quote! {}
                         )
                     };
@@ -377,7 +377,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                         quote! {}
                     };
 
-                    // 4. Construct the resolved iterator expression
+                    // 4. Construct the iterator expression
                     let needs_custom_iter = attrs.needs_custom_iter();
                     let iter_expr = if needs_custom_iter {
                         quote! {
@@ -386,11 +386,11 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                                 #filter_step
                                 #map_step
                                 #sort_step
-                                <#ty as #crate_path::dependencies::Resolve>::iter_from_items(__iter)?
+                                <#ty as #crate_path::dependencies::Provide>::iter_from_items(__iter)?
                             }
                         }
                     } else {
-                        quote! { <#ty as #crate_path::dependencies::Resolve>::iter(__session)? }
+                        quote! { <#ty as #crate_path::dependencies::Provide>::iter(__session)? }
                     };
 
                     if attrs.each {
@@ -408,7 +408,7 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                                 }
                             }
                         } else {
-                            quote! { <#ty as #crate_path::dependencies::Resolve>::first(__session)? }
+                            quote! { <#ty as #crate_path::dependencies::Provide>::first(__session)? }
                         };
 
                         non_each_inits.push(quote! { let #var_ident = #init_tokens; });
@@ -520,16 +520,16 @@ pub fn derive_resolve(input: TokenStream) -> TokenStream {
                 }
             }
         },
-        _ => quote! { compile_error!("Resolve can only be derived for structs"); },
+        _ => quote! { compile_error!("Provide can only be derived for structs"); },
     };
 
     let expanded = quote! {
-        impl #impl_generics #crate_path::dependencies::Resolve for #name #ty_generics #where_clause {
+        impl #impl_generics #crate_path::dependencies::Provide for #name #ty_generics #where_clause {
             type Item = Self;
 
             // Parameter named `__session` to avoid collisions with struct fields named `session`
             fn iter(__session: &#crate_path::dependencies::Session) -> ::std::result::Result<impl ::std::iter::Iterator<Item = Self>, #crate_path::dependencies::ResolveDependencyError> {
-                #resolve_body
+                #provide_body
             }
 
             fn iter_from_items<#g_i>(items: #g_i) -> ::std::result::Result<impl ::std::iter::Iterator<Item = Self>, #crate_path::dependencies::ResolveDependencyError>

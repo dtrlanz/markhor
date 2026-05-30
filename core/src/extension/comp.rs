@@ -1,4 +1,4 @@
-use crate::{chat::{chat::ChatModel, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::{Resolve, ResolveDependencyError, Session}, embedding::EmbeddingModel, extension::Extension, tool::Tool};
+use crate::{chat::{chat::ChatModel, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::{Provide, ResolveDependencyError, Session}, embedding::EmbeddingModel, extension::Extension, tool::Tool};
 
 use std::{any::TypeId, fmt::Display, ops::{Deref, DerefMut}, sync::Arc};
 use serde::{Deserialize, Serialize};
@@ -66,10 +66,10 @@ impl<T: ?Sized + 'static> Comp<T> {
     }
 }
 
-macro_rules! impl_resolve_comp {
+macro_rules! impl_provide_comp {
     ($($trait:ident => $method:ident),*  $(,)? ) => {
         $(
-            impl Resolve for Comp<dyn $trait> {
+            impl Provide for Comp<dyn $trait> {
                 type Item = Self;
 
                 fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
@@ -90,7 +90,7 @@ macro_rules! impl_resolve_comp {
     };
 }
 
-impl_resolve_comp! {
+impl_provide_comp! {
     ChatModel => chat_models,
     EmbeddingModel => embedding_models,
     Chunker => chunkers,
@@ -145,7 +145,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve() {
+    async fn provide() {
         let mut session = Session::new();
         let chunker_ext_5 = FixedSizeChunkerExtension::new(5);
         let chunker_ext_10 = FixedSizeChunkerExtension::new(10);
@@ -154,17 +154,17 @@ mod tests {
         session.add_extension(chunker_ext_10).await.unwrap();
         session.add_extension(embedder_ext).await.unwrap();
 
-        // Test resolving single components
-        let chunker: Comp<dyn Chunker> = Resolve::first(&session).unwrap();
+        // Test providing single components
+        let chunker: Comp<dyn Chunker> = Provide::first(&session).unwrap();
         assert_eq!(chunker.component_type(), ComponentType::Chunker);
         assert_eq!(chunker.metadata_id(), "markhorchunkerfixed-size chunker");
 
-        let embedder: Comp<dyn EmbeddingModel> = Resolve::first(&session).unwrap();
+        let embedder: Comp<dyn EmbeddingModel> = Provide::first(&session).unwrap();
         assert_eq!(embedder.component_type(), ComponentType::EmbeddingModel);
         assert_eq!(embedder.metadata_id(), "markhorembeddermock embedding-model");
 
         // Test resolving multiple components of the same type
-        let chunkers: Vec<Comp<dyn Chunker>> = Resolve::first(&session).unwrap();
+        let chunkers: Vec<Comp<dyn Chunker>> = Provide::first(&session).unwrap();
         assert_eq!(chunkers.len(), 2);
         assert_eq!(chunkers[0].component_type(), ComponentType::Chunker);
         assert_eq!(chunkers[1].component_type(), ComponentType::Chunker);

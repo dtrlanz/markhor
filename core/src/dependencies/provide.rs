@@ -4,9 +4,9 @@ use tracing::warn;
 
 use crate::dependencies::Session;
 
-pub use derive_resolve::Resolve;
+pub use derive_provide::Provide;
 
-pub trait Resolve {
+pub trait Provide {
     type Item;
 
     fn first(session: &Session) -> Result<Self, ResolveDependencyError> 
@@ -29,7 +29,7 @@ pub trait Resolve {
         I: Iterator<Item = Self::Item>;
 }
 
-impl<T> Resolve for std::marker::PhantomData<T> {
+impl<T> Provide for std::marker::PhantomData<T> {
     type Item = Self;
 
     fn iter(_session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
@@ -46,7 +46,7 @@ impl<T> Resolve for std::marker::PhantomData<T> {
     }
 }
 
-impl<T: Resolve> Resolve for Option<T> {
+impl<T: Provide> Provide for Option<T> {
     type Item = T;
 
     fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
@@ -66,7 +66,7 @@ impl<T: Resolve> Resolve for Option<T> {
 
 /// Iterator that yields at least one item.
 /// 
-/// Helper struct used by `impl<T: Resolve> Resolve for Option<T>`.
+/// Helper struct used by `impl<T: Provide> Provide for Option<T>`.
 /// Yields items of type `Option<T>`, always yielding  `Some` at least once.
 /// 
 /// - If the original iterator is empty: `Some(None)`, `None`, `None`, ...
@@ -92,7 +92,7 @@ impl<T, I: Iterator<Item = T>> Iterator for OnceOrMore<T, I> {
     }
 }
 
-impl<T: Resolve> Resolve for Vec<T> {
+impl<T: Provide> Provide for Vec<T> {
     type Item = T;
 
     fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
@@ -110,7 +110,7 @@ impl<T: Resolve> Resolve for Vec<T> {
     }
 }
 
-impl<K, V> Resolve for std::collections::HashMap<K, V>
+impl<K, V> Provide for std::collections::HashMap<K, V>
 where
     K: Eq + Hash,
 {
@@ -122,7 +122,7 @@ where
         // in such cases. Or we could panic.
         // Regardless, the solution is not ideal. It would be much more Rustaceous to get a 
         // compiler error.
-        warn!("Keys cannot be resolved, so HashMap will be empty. Use a mapping function to generate key-value tuples.");
+        warn!("Keys cannot be provided, so HashMap will be empty. Use a mapping function to generate key-value tuples.");
         Self::iter_from_items(std::iter::empty())
     }
 
@@ -151,28 +151,28 @@ use super::*;
     mod simple {
         use super::*;
 
-        #[derive(Debug, PartialEq, Eq, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, PartialEq, Eq, Provide)]
+        #[provide(crate = "crate")]
         pub struct Foo {
             pub bar: Bar,
             pub baz: Baz,
         }
 
-        #[derive(Debug, PartialEq, Eq, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, PartialEq, Eq, Provide)]
+        #[provide(crate = "crate")]
         pub struct FooTuple(pub Bar, pub Baz);
 
-        #[derive(Debug, PartialEq, Eq, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, PartialEq, Eq, Provide)]
+        #[provide(crate = "crate")]
         pub struct Bar;
 
-        #[derive(Debug, PartialEq, Eq, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, PartialEq, Eq, Provide)]
+        #[provide(crate = "crate")]
         pub struct Baz;
     }
 
     #[test]
-    fn derive_resolve() {
+    fn derive_provide() {
         let session = Session::new();
 
         // --- Classic struct ---
@@ -219,7 +219,7 @@ use super::*;
             pub bar: Bar,
         }
 
-        impl Resolve for Foo {
+        impl Provide for Foo {
             type Item = Self;
 
             fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
@@ -239,14 +239,14 @@ use super::*;
             }
         }
 
-        #[derive(Debug, Clone, PartialEq, Eq, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, Clone, PartialEq, Eq, Provide)]
+        #[provide(crate = "crate")]
         pub struct Bar;
 
         #[derive(Debug, PartialEq, Eq)]
         pub struct Blank;
 
-        impl Resolve for Blank {
+        impl Provide for Blank {
             type Item = Self;
 
             fn iter(_assets: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
@@ -267,8 +267,8 @@ use super::*;
     fn vec_and_option_without_filters() {
         // --- Classic struct ---
 
-        #[derive(Debug, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, Provide)]
+        #[provide(crate = "crate")]
         struct TestNoFilter0 {
             all_foos: Vec<enumerated::Foo>,
             first_foo: Option<enumerated::Foo>,
@@ -289,8 +289,8 @@ use super::*;
 
         // --- Tuple struct ---
 
-        #[derive(Debug, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, Provide)]
+        #[provide(crate = "crate")]
         struct TestNoFilter1 (
             Vec<enumerated::Foo>,
             Option<enumerated::Foo>,
@@ -308,17 +308,17 @@ use super::*;
 
     #[test]
     fn bare_field_with_filter() {
-        #[derive(Debug, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, Provide)]
+        #[provide(crate = "crate")]
         struct TestBareFilter {
-            #[resolve(filter = |f| f.idx == 2)]
+            #[provide(filter = |f| f.idx == 2)]
             target_foo: enumerated::Foo,
         }
 
-        #[derive(Debug, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, Provide)]
+        #[provide(crate = "crate")]
         struct TestBareFilterFail {
-            #[resolve(filter = |f| f.idx == 99)]
+            #[provide(filter = |f| f.idx == 99)]
             _missing_foo: enumerated::Foo, // Should error because 99 doesn't exist
         }
 
@@ -341,13 +341,13 @@ use super::*;
 
     #[test]
     fn option_field_with_filter() {
-        #[derive(Debug, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, Provide)]
+        #[provide(crate = "crate")]
         struct TestOptionFilter {
-            #[resolve(filter = |f| f.idx == 3)]
+            #[provide(filter = |f| f.idx == 3)]
             target_foo: Option<enumerated::Foo>,
             
-            #[resolve(filter = |f| f.idx == 99)]
+            #[provide(filter = |f| f.idx == 99)]
             missing_foo: Option<enumerated::Foo>, // Should silently become None
         }
 
@@ -363,10 +363,10 @@ use super::*;
 
     #[test]
     fn vec_field_with_filter() {
-        #[derive(Debug, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, Provide)]
+        #[provide(crate = "crate")]
         struct TestVecFilter {
-            #[resolve(filter = |f| f.idx % 2 == 0)]
+            #[provide(filter = |f| f.idx % 2 == 0)]
             even_foos: Vec<enumerated::Foo>,
         }
 
@@ -386,10 +386,10 @@ use super::*;
 
         // --- Map within the same type ---
 
-        #[derive(Debug, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, Provide)]
+        #[provide(crate = "crate")]
         struct TestVecMap0 {
-            #[resolve(map = |f: Foo| Foo { idx: f.idx * 2, bar: f.bar })]
+            #[provide(map = |f: Foo| Foo { idx: f.idx * 2, bar: f.bar })]
             doubled_foos: Vec<Foo>,
         }
 
@@ -406,16 +406,16 @@ use super::*;
 
         // --- Map one type to another ---
 
-        #[derive(Debug, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, Provide)]
+        #[provide(crate = "crate")]
         struct Baz {
             foo: Foo,
         }
 
-        #[derive(Debug, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, Provide)]
+        #[provide(crate = "crate")]
         struct TestVecMap1 {
-            #[resolve(map = |f: Foo| Baz { foo: f })]
+            #[provide(map = |f: Foo| Baz { foo: f })]
             bazes: Vec<Baz>,
         }
 
@@ -434,10 +434,10 @@ use super::*;
     fn hash_map_field_with_map() {
         use enumerated::Foo;
 
-        #[derive(Debug, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, Provide)]
+        #[provide(crate = "crate")]
         struct TestMapMap {
-            #[resolve(map = |f: Foo| (f.idx, f))]
+            #[provide(map = |f: Foo| (f.idx, f))]
             foo_map: std::collections::HashMap<usize, Foo>,
         }
 
@@ -457,11 +457,11 @@ use super::*;
 
         // --- Classic structs ---
         
-        #[derive(Debug, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, Provide)]
+        #[provide(crate = "crate")]
         struct TestMapMap0 {
             // with explicit type annotation
-            #[resolve(key = |f: &Foo| f.idx)]
+            #[provide(key = |f: &Foo| f.idx)]
             foo_map: std::collections::HashMap<usize, Foo>,
         }
 
@@ -474,11 +474,11 @@ use super::*;
             assert_eq!(result.foo_map[&idx].idx, idx);
         }
 
-        #[derive(Debug, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, Provide)]
+        #[provide(crate = "crate")]
         struct TestMapMap1 {
             // without type annotation
-            #[resolve(key = |f| f.idx)]
+            #[provide(key = |f| f.idx)]
             foo_map: std::collections::HashMap<usize, Foo>,
         }
 
@@ -493,10 +493,10 @@ use super::*;
 
         // --- Tuple struct ---
 
-        #[derive(Debug, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, Provide)]
+        #[provide(crate = "crate")]
         struct TestMapMap2 (
-            #[resolve(key = |f| f.idx)]
+            #[provide(key = |f| f.idx)]
             std::collections::HashMap<usize, Foo>,
         );
 
@@ -513,11 +513,11 @@ use super::*;
     fn sort_by() {
         use enumerated::Foo;
 
-        #[derive(Debug, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, Provide)]
+        #[provide(crate = "crate")]
         struct TestSortBy {
             // default is ascending order; reverse it
-            #[resolve(sort_by = |a, b| b.idx.cmp(&a.idx))]
+            #[provide(sort_by = |a, b| b.idx.cmp(&a.idx))]
             sorted_foos: Vec<Foo>,
         }
 
@@ -535,7 +535,7 @@ use super::*;
         pub ch: char,
     }
 
-    impl Resolve for Letter {
+    impl Provide for Letter {
         type Item = Self;
 
         fn iter(_assets: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
@@ -558,11 +558,11 @@ use super::*;
 
     #[test]
     fn single_each() {
-        #[derive(Debug, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, Provide)]
+        #[provide(crate = "crate")]
         struct SingleEach {
             // Outer loop: 5 iterations
-            #[resolve(each)]
+            #[provide(each)]
             foo: enumerated::Foo,
             
             // Standard field: Fetched freshly on every iteration. 
@@ -572,7 +572,7 @@ use super::*;
 
         let session = Session::new();
         
-        // Resolve iterator should yield multiple items
+        // Provide iterator should yield multiple items
         let results: Vec<_> = SingleEach::iter(&session)
             .expect("Failed to build SingleEach")
             .collect();
@@ -590,15 +590,15 @@ use super::*;
 
     #[test]
     fn cartesian_each() {
-        #[derive(Debug, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, Provide)]
+        #[provide(crate = "crate")]
         struct CartesianEach {
             // Outer loop: 2 iterations
-            #[resolve(each)]
+            #[provide(each)]
             letter: Letter,
             
             // Inner loop: 5 iterations
-            #[resolve(each)]
+            #[provide(each)]
             foo: enumerated::Foo,
         }
 
@@ -629,15 +629,15 @@ use super::*;
 
     #[test]
     fn filtered_each() {
-        #[derive(Debug, Resolve)]
-        #[resolve(crate = "crate")]
+        #[derive(Debug, Provide)]
+        #[provide(crate = "crate")]
         struct FilteredEach {
             // Filtered loop: Only yields 3 items (idx 0, 2, 4)
-            #[resolve(each, filter = |f: &enumerated::Foo| f.idx % 2 == 0)]
+            #[provide(each, filter = |f: &enumerated::Foo| f.idx % 2 == 0)]
             even_foo: enumerated::Foo,
             
             // Inner loop: 2 iterations
-            #[resolve(each)]
+            #[provide(each)]
             letter: Letter,
         }
 

@@ -1,4 +1,4 @@
-use crate::{dependencies::Resolve, extension::{Extension, InitExtensionError}};
+use crate::{dependencies::Provide, extension::{Extension, InitExtensionError}};
 
 use std::sync::Arc;
 
@@ -17,7 +17,7 @@ impl Session {
         Ok(())
     }
 
-    pub async fn resolve_extension<E: Extension + Resolve + 'static>(&mut self) -> Result<(), InitExtensionError> {
+    pub async fn resolve_extension<E: Extension + Provide + 'static>(&mut self) -> Result<(), InitExtensionError> {
         let extension = E::first(self)?;
         self.add_extension(extension).await
     }

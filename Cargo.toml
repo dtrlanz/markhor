@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "core",
-    "core_derive_resolve",
+    "core_derive_provide",
     "cli",
     "extensions", "markhor",
     "gui", 

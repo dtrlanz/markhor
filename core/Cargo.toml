@@ -7,7 +7,7 @@ repository = "https://github.com/dtrlanz/markhor"
 version.workspace = true
 
 [dependencies]
-derive_resolve = { path = "../core_derive_resolve" }
+derive_provide = { path = "../core_derive_provide" }
 async-trait = "0.1.88"
 crossbeam-skiplist = "0.1.3"
 dynosaur = "0.2.0"
