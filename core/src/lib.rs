@@ -9,6 +9,7 @@ pub mod event;
 pub mod job;
 pub mod library;
 pub mod markdown;
+pub mod permissions;
 pub mod tool;
 pub mod vector_store;
 
