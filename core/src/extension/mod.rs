@@ -1,4 +1,4 @@
-use crate::{chat::{chat::ChatModel, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::ResolveDependencyError, embedding::EmbeddingModel};
+use crate::{chat::{chat::ChatModel, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::ResolveDependencyError, embedding::EmbeddingModel, permissions::Permission};
 
 use std::{fmt::Display, ops::{Deref, DerefMut}};
 use async_trait::async_trait;
@@ -30,6 +30,9 @@ pub trait Extension: Send + Sync {
 pub enum InitExtensionError {
     #[error("Failed to initialize extension: {0}")]
     Dependency(#[from] ResolveDependencyError),
+
+    #[error("Extension lacks required permissions: {}", .0.iter().map(|p| p.name()).collect::<Vec<_>>().join(", "))]
+    Permission(Vec<Permission>),
 }
 
 #[derive(Debug, Error)]

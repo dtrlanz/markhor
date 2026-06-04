@@ -73,8 +73,7 @@ macro_rules! impl_provide_comp {
                 type Item = Self;
 
                 fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
-                    let extensions = session.extensions();
-                    let comps = extensions.iter()
+                    let comps = session.extensions()
                         .flat_map(|ext| ext.$method().into_iter().map(|comp| Self::new(Arc::clone(ext), comp)));
                     Ok(comps)
                 }
@@ -150,9 +149,9 @@ mod tests {
         let chunker_ext_5 = FixedSizeChunkerExtension::new(5);
         let chunker_ext_10 = FixedSizeChunkerExtension::new(10);
         let embedder_ext = MockEmbedderExtension::new(vec!["the", "cat", "sat", "on", "mat"]);
-        session.add_extension(chunker_ext_5).await.unwrap();
-        session.add_extension(chunker_ext_10).await.unwrap();
-        session.add_extension(embedder_ext).await.unwrap();
+        session.add_extension(chunker_ext_5, vec![]).await.unwrap();
+        session.add_extension(chunker_ext_10, vec![]).await.unwrap();
+        session.add_extension(embedder_ext, vec![]).await.unwrap();
 
         // Test providing single components
         let chunker: Comp<dyn Chunker> = Provide::first(&session).unwrap();
