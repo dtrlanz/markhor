@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 /// Permission that can be used to control access to resources
 /// 
 /// Permissions may be applied to resources and actors. Resources with a given permission can only
@@ -36,6 +38,30 @@ impl Permission {
     pub fn entailed_permissions(&self) -> &[&Permission] {
         self.entailed
     }
+
+    pub fn insert(vec: &mut Vec<Permission>, permission: Permission) {
+        for i in 0..vec.len() {
+            match permission.partial_cmp(&vec[i]) {
+                Some(Ordering::Less) => return,  // Higher permission already in the list
+                Some(Ordering::Equal) => return, // Same permission already in the list
+                Some(Ordering::Greater) => {
+                    // Lower permissions can be replaced with the higher one
+                    let mut j = i + 1;
+                    while j < vec.len() {
+                        if permission > vec[j] {
+                            vec.swap_remove(j);
+                        } else {
+                            j += 1;
+                        }
+                    }
+                    vec[i] = permission;
+                    return;
+                }
+                None => (), // Uncomparable permissions, keep looking
+            }
+        }
+        vec.push(permission);
+    }
 }
 
 impl PartialEq for Permission {
@@ -47,11 +73,11 @@ impl PartialEq for Permission {
 impl PartialOrd for Permission {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         if self == other {
-            Some(std::cmp::Ordering::Equal)
+            Some(Ordering::Equal)
         } else if self.entailed.contains(&other) {
-            Some(std::cmp::Ordering::Greater)
+            Some(Ordering::Greater)
         } else if other.entailed.contains(&self) {
-            Some(std::cmp::Ordering::Less)
+            Some(Ordering::Less)
         } else {
             None
         }
@@ -121,5 +147,34 @@ mod tests {
         assert!(!(GDPR >= ON_DEVICE));
         assert!(!(GDPR <= NOT_USED_FOR_TRAINING));
         assert!(!(GDPR >= NOT_USED_FOR_TRAINING));
+    }
+
+    #[test]
+    fn permission_insert() {
+        let mut permissions = vec![PUBLIC];
+        Permission::insert(&mut permissions, NOT_USED_FOR_TRAINING);
+        assert_eq!(permissions, vec![NOT_USED_FOR_TRAINING]);
+
+        Permission::insert(&mut permissions, ON_DEVICE);
+        assert_eq!(permissions, vec![ON_DEVICE]);
+
+        Permission::insert(&mut permissions, PUBLIC);
+        assert_eq!(permissions, vec![ON_DEVICE]);
+
+        Permission::insert(&mut permissions, GDPR);
+        assert_eq!(permissions, vec![ON_DEVICE, GDPR]);
+
+        let mut permissions = vec![];
+        Permission::insert(&mut permissions, GDPR);
+        assert_eq!(permissions, vec![GDPR]);
+
+        Permission::insert(&mut permissions, PUBLIC);
+        assert_eq!(permissions, vec![GDPR]);
+
+        Permission::insert(&mut permissions, NOT_USED_FOR_TRAINING);
+        assert_eq!(permissions, vec![GDPR, NOT_USED_FOR_TRAINING]);
+
+        Permission::insert(&mut permissions, ON_DEVICE);
+        assert_eq!(permissions, vec![GDPR, ON_DEVICE]);
     }
 }
