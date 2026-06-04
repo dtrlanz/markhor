@@ -26,3 +26,6 @@ mod restricted;
 pub use permission::{Permission, ON_DEVICE, NOT_USED_FOR_TRAINING, PUBLIC};
 pub use authorized::Authorized;
 pub use restricted::Restricted;
+
+#[cfg(test)]
+pub(crate) use permission::GDPR;

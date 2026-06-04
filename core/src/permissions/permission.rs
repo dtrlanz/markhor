@@ -108,15 +108,16 @@ pub const PUBLIC: Permission = Permission {
 };
 
 #[cfg(test)]
+pub(crate) const GDPR: Permission = Permission {
+    name: "gdpr",
+    resource_descr: Some("Subject to GDPR regulations"),
+    actor_descr: Some("Complies with GDPR regulations"),
+    entailed: &[&PUBLIC],
+};
+
+#[cfg(test)]
 mod tests {
     use super::*;
-
-    const GDPR: Permission = Permission {
-        name: "gdpr",
-        resource_descr: Some("Subject to GDPR regulations"),
-        actor_descr: Some("Complies with GDPR regulations"),
-        entailed: &[&PUBLIC],
-    };
 
     #[test]
     fn permission_hierarchy() {
