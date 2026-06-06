@@ -20,6 +20,7 @@
 //! TODO: add example
 //!
 
+mod api_key;
 mod provide;
 mod session;
 
