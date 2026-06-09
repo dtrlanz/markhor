@@ -100,7 +100,7 @@ impl Provide for ApiKey {
     type Item = Self;
 
     fn iter(session: &super::Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
-        Ok(session.active_api_keys.iter().cloned())
+        Ok(session.api_keys.iter().cloned())
     }
 
     fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
@@ -184,8 +184,8 @@ mod tests {
         );
 
         let mut session = Session::new();
-        session.active_api_keys.push(api_key1);
-        session.active_api_keys.push(api_key2);
+        session.api_keys.push(api_key1);
+        session.api_keys.push(api_key2);
 
         let provided_keys: Vec<ApiKey> = ApiKey::iter(&session).unwrap().collect();
         assert_eq!(provided_keys.len(), 2);

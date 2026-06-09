@@ -7,8 +7,8 @@ use std::{mem, sync::Arc};
 pub struct Session {
     workspace: Option<Workspace>,
     documents: Vec<Document>,
-    pub(crate) active_api_keys: Vec<ApiKey>,
-    inactive_api_keys: Vec<ApiKey>,
+    pub(crate) api_keys: Vec<ApiKey>,
+    provides_api_keys: bool,
     extensions: Vec<ExtensionSlot>,
     permissions: Vec<Permission>,
 }
@@ -18,8 +18,8 @@ impl Session {
         Self {
             workspace: None,
             documents: vec![],
-            active_api_keys: vec![],
-            inactive_api_keys: vec![],
+            api_keys: vec![],
+            provides_api_keys: false,
             extensions: vec![], 
             permissions: vec![] 
         }
@@ -48,7 +48,7 @@ impl Session {
         self.add_extension(extension?, permissions).await
     }
 
-    async fn track_permissions<T, F: AsyncFnOnce(&Session) -> T>(&mut self, f: F) -> (T, Vec<Permission>) {
+    async fn track_permissions<T, F: AsyncFnOnce(&Session) -> T>(&self, f: F) -> (T, Vec<Permission>) {
         // Provide an isolated Session instance without library access
         
         // The point of this separation is that if an extension's dependencies cannot be resolved,
@@ -72,16 +72,13 @@ impl Session {
         // extensions should be designed, particularly how they should behave during dependency
         // resolution and initialization (before they become part of a session's extension list).
         
-        let active_api_keys = self.active_api_keys.iter().map(ApiKey::to_inactive)
-            // Since we're tracking usage, we can allow access to new, previously unused API keys
-            .chain(self.inactive_api_keys.iter().cloned())
-            .collect();
+        let api_keys = self.api_keys.iter().map(ApiKey::to_inactive).collect();
         let temp_session = Session {
             workspace: None,
             documents: vec![],
-            active_api_keys,
-            inactive_api_keys: vec![],
-            extensions: mem::take(&mut self.extensions),
+            api_keys,
+            provides_api_keys: true,
+            extensions: self.extensions.clone(),
             permissions: vec![],
         };
 
@@ -118,49 +115,29 @@ impl Session {
 
         // Collect permissions from any API keys and extensions that were accessed
         let mut permissions = vec![];
-        let Session { mut active_api_keys, extensions, .. } = temp_session;
-
-        // Remove previously inactive API keys from list. Since they are cloned from
-        // `self.inactive_api_keys`, the strong counts == 2 would trigger false positives.
-        active_api_keys.truncate(self.active_api_keys.len());
 
         // Collect permissions from any API keys that were accessed
-        // a) Previously active API keys
-        for api_key in active_api_keys {
+        for (idx, api_key) in temp_session.api_keys.iter().enumerate() {
             if api_key.is_active() {
                 for perm in api_key.permissions_granted() {
                     Permission::insert(&mut permissions, perm.clone());
                 }
-            }
-        }
-
-        // b) Previously inactive API keys: Upon first use, move into `active_api_keys`
-        let mut idx = 0;
-        while idx < self.inactive_api_keys.len() {
-            if self.inactive_api_keys[idx].is_active() {
-                let api_key = self.inactive_api_keys.remove(idx);
-                for perm in api_key.permissions_granted() {
-                    Permission::insert(&mut permissions, perm.clone());
-                }
-                self.active_api_keys.push(api_key);
-            } else {
-                idx += 1;
+                // Mark original as active
+                self.api_keys[idx].key();
             }
         }
 
         // Compare extension usage counts after execution and collect permissions from any extensions that were used
-        for idx in 0..extensions.len() {
-            let usage_after = Arc::strong_count(&extensions[idx].ext);
+        for idx in 0..temp_session.extensions.len() {
+            let usage_after = Arc::strong_count(&temp_session.extensions[idx].ext);
             if usage_after > usage_before[idx] {
                 // Extension was used, collect its permissions
-                for perm in extensions[idx].permissions_granted() {
+                for perm in temp_session.extensions[idx].permissions_granted() {
                     Permission::insert(&mut permissions, perm.clone());
                 }
             }
         }
 
-        // Restore extensions to the main session
-        self.extensions = extensions;
         (result, permissions)
     }
 
@@ -177,7 +154,7 @@ impl Session {
 
         // Check if active API keys have necessary permissions
         let mut api_key_error_indices = vec![];
-        for api_key in &self.active_api_keys {
+        for api_key in &self.api_keys {
             if !api_key.may_access(&added_permissions) {
                 api_key_error_indices.push(format!("{} ({})", api_key.provider(), api_key.project()));
             }
@@ -212,9 +189,9 @@ impl Session {
         // Remove any unauthorized API keys that are not in use
         let mut removed_api_keys = vec![];
         let mut idx = 0;
-        while idx < self.inactive_api_keys.len() {
-            if !self.inactive_api_keys[idx].may_access(&added_permissions) {
-                let api_key = self.inactive_api_keys.remove(idx);
+        while idx < self.api_keys.len() {
+            if !self.api_keys[idx].may_access(&added_permissions) {
+                let api_key = self.api_keys.remove(idx);
                 removed_api_keys.push(format!("{} ({})", api_key.provider(), api_key.project()));
             } else {
                 idx += 1
@@ -248,8 +225,8 @@ impl From<Workspace> for Session {
         Self {
             workspace: Some(workspace),
             documents: vec![],
-            active_api_keys: vec![],
-            inactive_api_keys: vec![],
+            api_keys: vec![],
+            provides_api_keys: false,
             extensions: vec![],
             permissions: vec![],
         }
@@ -265,6 +242,7 @@ pub enum RestrictAccessError {
     ExtensionNotAuthorized(Vec<String>),
 }
 
+#[derive(Clone)]
 struct ExtensionSlot {
     ext: Arc<dyn Extension>,
     perm: Vec<Permission>,
@@ -289,8 +267,8 @@ impl Restricted for Perms {
 mod tests {
     use super::*;
     use crate::chunking::{Chunker, test_chunker::FixedSizeChunkerExtension};
-    use crate::dependencies::{ResolveDependencyError, session};
-use crate::extension::Comp;
+    use crate::dependencies::{ResolveDependencyError};
+    use crate::extension::Comp;
     use crate::permissions::{GDPR, NOT_USED_FOR_TRAINING, PUBLIC};
 
     #[tokio::test]
@@ -350,8 +328,8 @@ use crate::extension::Comp;
         );
 
         let mut session = Session::new();
-        session.active_api_keys.push(api_key1);
-        session.active_api_keys.push(api_key2);
+        session.api_keys.push(api_key1);
+        session.api_keys.push(api_key2);
 
         let (_, perm) = session.track_permissions(async |sess| {
             // Use no API keys
@@ -505,15 +483,13 @@ use crate::extension::Comp;
         }
 
         let mut session = Session::new();
-        session.active_api_keys.push(
+        session.api_keys.extend(vec![
             ApiKey::new (
                 "1234567890abcdef".to_string(),
                 "TestProvider".to_string(),
                 "TestProject".to_string(),
                 vec![GDPR],
-            )
-        );
-        session.inactive_api_keys.extend(vec![
+            ),
             ApiKey::new (
                 "abcdef1234567890".to_string(),
                 "AnotherProvider".to_string(),
@@ -527,15 +503,19 @@ use crate::extension::Comp;
                 vec![NOT_USED_FOR_TRAINING],
             ),
         ]);
+
+        fn count_active_api_keys(session: &Session) -> usize {
+            session.api_keys.iter().filter(|k| k.is_active()).count()
+        }
+        assert_eq!(count_active_api_keys(&session), 0);
         
         // Resolve TestExtension0, which should require only permission GDPR
         session.resolve_extension::<TestExtension0>().await.unwrap();
         assert_eq!(session.extensions.len(), 1);
         assert_eq!(session.extensions[0].ext.name(), "test-extension-0");
         assert_eq!(session.extensions[0].perm, vec![GDPR]);
-        // Still only 1 active API key
-        assert_eq!(session.active_api_keys.len(), 1);
-        assert_eq!(session.inactive_api_keys.len(), 2);
+        // Only 1 active API key
+        assert_eq!(count_active_api_keys(&session), 1);
 
         // Resolve TestExtension1, which should require permissions of all 3 API keys
         session.resolve_extension::<TestExtension1>().await.unwrap();
@@ -543,8 +523,7 @@ use crate::extension::Comp;
         assert_eq!(session.extensions[1].ext.name(), "test-extension-1");
         assert_eq!(session.extensions[1].perm, vec![GDPR, NOT_USED_FOR_TRAINING]);
         // All 3 API keys are now active
-        assert_eq!(session.active_api_keys.len(), 3);
-        assert_eq!(session.inactive_api_keys.len(), 0);
+        assert_eq!(count_active_api_keys(&session), 3);
 
         // Resolve TestExtension2, which should require permission GDPR
         // even though the extension doesn't store the key
