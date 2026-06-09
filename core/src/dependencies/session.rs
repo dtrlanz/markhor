@@ -41,11 +41,73 @@ impl Session {
     }
 
     pub async fn resolve_extension<E: Extension + Provide + 'static>(&mut self) -> Result<(), InitExtensionError> {
-        let (extension, permissions) = self.track_permissions(async |session| {
-            let e = E::first(session)?;
-            Ok::<_, InitExtensionError>(e)
-        }).await;
-        self.add_extension(extension?, permissions).await
+        // The following (incorrect) implementation pursues the goal of allowing multiple
+        // instances of a single extension type. Extensions providing multiple instances of 
+        // themselves would most typically do this via the macro attribute `#[provide(each)]`.
+
+        // This does not work (tests failing correctly, etc.); just committing this to illustrate
+        // the challenge.
+        // Here we're providing (potentially) multiple instances of the extension (e.g.,
+        // a chat client with one or more different API keys). But we can only pass a single
+        // `Session` ref (in this case `self`).
+        let mut iter = E::iter(self)?;
+        let mut ext_instances = Vec::new();
+        loop {
+            let (Some(ext), perm) = self.track_permissions(async |_| {
+                // We could, in principle iterate inside of a loop where we create an isolated
+                // `Session` instance for each iteration (as indeed we're doing here). But of
+                // course, the iterator is still working off of the original reference (`self`).
+                // So we can't track permissions for each individual extension instance, which
+                // is precisely what we'd need to do in the aforementioned example. (The point
+                // of having different API keys for the same model is to select them based on
+                // their different permissions and price points, but that information will not now
+                // be connected to the specific extension instance).
+                // If we really wanted to, we could find a way to swap out `Session` references on
+                // each iteration via internal mutability, but there should be an easier way to do
+                // this. (And even if we did that, it's still not bulletproof, see below.)
+                let Some(e) = iter.next() else {
+                    return None;
+                };
+                Some(e)
+            }).await else {
+                break;
+            };
+            ext_instances.push((ext, perm));
+        }
+        mem::drop(iter);
+        for (ext, perm) in ext_instances {
+            // TODO: consider calling `Extension::initialize` inside of `track_permissions`
+            // so we could better accommodate dependency resolution during `initialize` (in case 
+            // we update `Extension` trait to include `&Session` in method signature)
+            self.add_extension(ext, perm).await?;
+        }
+        Ok(())
+
+        // However this is solved, it's worth noting that we still need to assume that the 
+        // `Provide::iter` implementation is well-behaved and lazy. That's true if it's 
+        // macro-generated or if follows a similar strategy as macro-generated ones. But if an 
+        // implementation eagerly iterates all (e.g.) API keys and then shuffles or clones them,
+        // passing them to arbitrary instences of itself, there's nothing we can do to track that.
+
+        // Theoretically, we could go so far as to redesign the `Provide` trait around this 
+        // challenge adding a method to deal with `#[provide(each)]` fields explicitly and
+        // adding a bunch of code elsewhere to implement iteration over Cartesian products from 
+        // the outside. But at the end of the day, if an extension really wanted to subvert our
+        // permissions system by sharing assets like API keys with instances that are not tagged
+        // with the corresponding permissions, that's always possible (e.g., via global state,
+        // file system, config, etc.). The real concern is that if it's too difficult to write 
+        // extensions that work correctly with the built-in permissions system, bugs and 
+        // annoyances will multiply mightily.
+        
+        // So the point here is not to police extensions to the extreme, but to avoid unnecessary
+        // gotchas. In other words, however we solve this, the design goal is to make it easy 
+        // and natural to write extensions that just work.
+
+        // As a side note, it's worth mentioning that the "extensions" referred to here are those
+        // included at compile time (which would be vetted, if not written, by application 
+        // authors). Sooner or later, there will also be plugins which can be added by the user 
+        // and loaded dynamically. Those will require stricter security measures (e.g., 
+        // sandboxing), but that's a story for another day.
     }
 
     async fn track_permissions<T, F: AsyncFnOnce(&Session) -> T>(&self, f: F) -> (T, Vec<Permission>) {
