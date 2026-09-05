@@ -21,9 +21,10 @@
 //!
 
 mod api_key;
+mod dependency_slot;
 mod provide;
 mod session;
 
 pub use provide::{Provide, ResolveDependencyError};
 pub use session::Session;
-
+pub(crate) use dependency_slot::TrackingGuard;

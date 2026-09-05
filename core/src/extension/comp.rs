@@ -1,4 +1,4 @@
-use crate::{chat::{chat::ChatModel, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::{Provide, ResolveDependencyError, Session}, embedding::EmbeddingModel, extension::Extension, tool::Tool};
+use crate::{chat::{chat::ChatModel, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::{Provide, ResolveDependencyError, Session, TrackingGuard}, embedding::EmbeddingModel, extension::Extension, tool::Tool};
 
 use std::{any::TypeId, fmt::Display, ops::{Deref, DerefMut}, sync::Arc};
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 pub struct Comp<T: ?Sized> {
     extension: Arc<dyn Extension>,
     component: Box<T>,
+    tracking_guard: TrackingGuard,
 }
 
 impl<T: ?Sized> Deref for Comp<T> {
@@ -30,10 +31,6 @@ impl<T: ?Sized> DerefMut for Comp<T> {
 }
 
 impl<T: ?Sized + 'static> Comp<T> {
-    pub fn new(extension: Arc<dyn Extension>, component: Box<T>) -> Self {
-        Self { extension, component }
-    }
-
     pub fn extension(&self) -> &Arc<dyn Extension> {
         &self.extension
     }
@@ -73,8 +70,12 @@ macro_rules! impl_provide_comp {
                 type Item = Self;
 
                 fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
-                    let comps = session.extensions()
-                        .flat_map(|ext| ext.$method().into_iter().map(|comp| Self::new(Arc::clone(ext), comp)));
+                    let comps = session.extensions().into_iter()
+                        .flat_map(|slot| slot.item.$method().into_iter().map(|comp| Self {
+                            extension: slot.item.clone(),
+                            component: comp,
+                            tracking_guard: slot.tracking_guard(),
+                        }));
                     Ok(comps)
                 }
 
@@ -133,10 +134,11 @@ mod tests {
         let extension = FixedSizeChunkerExtension::new(10);
         let chunker = extension.chunkers().into_iter().next().unwrap();
 
-        let comp = Comp::new(
-            Arc::new(extension),
-            chunker,
-        );
+        let comp = Comp {
+            extension: Arc::new(extension),
+            component: chunker,
+            tracking_guard: Default::default()
+        };
         
         assert_eq!(comp.component_type(), ComponentType::Chunker);
         assert_eq!(comp.extension().uri(), "markhor://chunker/fixed-size");
