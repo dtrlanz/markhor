@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::HashSet};
 
 /// Permission that can be used to control access to resources
 /// 
@@ -62,6 +62,33 @@ impl Permission {
         }
         vec.push(permission);
     }
+
+    pub fn intersection(vec1: &[Permission], vec2: &[Permission]) -> Vec<Permission> {
+        // This is not the most efficient implementation, but it handles the complexity of 
+        // permission hierarchy in a way that's simple and easy to reason about. Optimize later 
+        // if needed.
+        let mut set1 = HashSet::new();
+        for p in vec1 {
+            set1.insert(p);
+            for ep in p.entailed_permissions() {
+                set1.insert(ep);
+            }
+        }
+        let mut set2 = HashSet::new();
+        for p in vec2 {
+            set2.insert(p);
+            for ep in p.entailed_permissions() {
+                set2.insert(ep);
+            }
+        }
+        let intersection = set1.intersection(&set2);
+        let mut result = Vec::new();
+        for p in intersection {
+            // Deduplicate entailed permissions
+            Permission::insert(&mut result, (*p).clone());
+        }
+        result
+    }
 }
 
 impl PartialEq for Permission {
@@ -114,6 +141,12 @@ pub(crate) const GDPR: Permission = Permission {
     actor_descr: Some("Complies with GDPR regulations"),
     entailed: &[&PUBLIC],
 };
+
+pub(crate) fn all_permissions() -> Vec<Permission> {
+    #[cfg(test)]
+    return vec![ON_DEVICE, GDPR];
+    vec![ON_DEVICE, NOT_USED_FOR_TRAINING, PUBLIC]
+}
 
 #[cfg(test)]
 mod tests {

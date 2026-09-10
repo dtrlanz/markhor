@@ -1,16 +1,16 @@
 use std::sync::{Arc, atomic::AtomicBool};
 
-use crate::permissions::{Permission, Restricted};
+use crate::permissions::{Authorized, Permission};
 
 pub struct DependencySlot<T> {
     pub(crate) item: T,
-    permissions_required: Vec<Permission>,
+    permissions_granted: Vec<Permission>,
     tracker: Arc<AtomicBool>,
 }
 
 impl<T> DependencySlot<T> {
-    pub fn new(item: T, permissions_required: Vec<Permission>) -> Self {
-        Self { item, permissions_required, tracker: Arc::new(AtomicBool::new(false)) }
+    pub fn new(item: T, permissions_granted: Vec<Permission>) -> Self {
+        Self { item, permissions_granted, tracker: Arc::new(AtomicBool::new(false)) }
     }
 
     pub fn is_active(&self) -> bool {
@@ -40,8 +40,8 @@ impl TrackingGuard {
     }
 }
 
-impl<T> Restricted for DependencySlot<T> {
-    fn permissions_required(&self) -> &[Permission] {
-        &self.permissions_required
+impl<T> Authorized for DependencySlot<T> {
+    fn permissions_granted(&self) -> &[Permission] {
+        &self.permissions_granted
     }
 }
