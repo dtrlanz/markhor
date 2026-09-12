@@ -33,13 +33,13 @@ impl Session {
         );
     }
 
-    // Crate-public because it should be called with accurate permissions
-    // This method is more of a temporary solution anyway
-    pub(crate) async fn add_extension<E: Extension + 'static>(
-        &mut self,
-        mut extension: E,
-        permissions: Vec<Permission>,
-    ) -> Result<(), InitExtensionError> {
+    pub async fn initialize_extension<F: FnOnce(&Session) -> Result<E, InitExtensionError>, E: Extension + 'static>(&mut self, config: ExtensionConfig, f: F) -> Result<(), InitExtensionError> {
+        let default_permissions = config.permissions;
+        let (extension, permissions) = self.track_permissions(
+            default_permissions, 
+            async |s: &Session| f(s)
+        ).await;
+        let mut extension = extension?;
         extension.initialize().await?;
         for p in &permissions {
             // TODO: avoid cloning when permission is already present (`ToOwned` etc.)
@@ -48,27 +48,6 @@ impl Session {
         self.extensions.push(DependencySlot::new(Arc::new(extension), permissions));
         Ok(())
     }
-
-    pub async fn initialize_extension<F: FnOnce(&Session) -> Result<E, InitExtensionError>, E: Extension + 'static>(&mut self, config: ExtensionConfig, f: F) -> Result<(), InitExtensionError> {
-        let default_permissions = config.permissions;
-        let (extension, permissions) = self.track_permissions(
-            default_permissions, 
-            async |s: &Session| f(s)
-        ).await;
-        self.add_extension(extension?, permissions).await
-    }
-
-    // pub async fn resolve_extension<E: Extension + Provide + 'static>(&mut self) -> Result<(), InitExtensionError> {
-    //     let default_permissions = permissions::all_permissions();
-    //     let (extension, permissions) = self.track_permissions(
-    //         default_permissions, 
-    //         async |session| {
-    //             let e = E::first(session)?;
-    //             Ok::<_, InitExtensionError>(e)
-    //         }
-    //     ).await;
-    //     self.add_extension(extension?, permissions).await
-    // }
 
     /// Executes a function while tracking its dependencies and the permissions entailed by those
     /// dependencies.
@@ -206,6 +185,19 @@ mod tests {
         }
     }
 
+    /// Utility function for session setup. Adds an extension to the session with the given permissions.
+    async fn add_extension<E: Extension + 'static>(
+        session: &mut Session,
+        extension: E,
+        permissions: Vec<Permission>,
+    ) -> Result<(), InitExtensionError> {
+        session.initialize_extension(
+            ExtensionConfig { permissions }, 
+            |_| Ok(extension)
+        ).await
+    }
+
+
     #[tokio::test]
     async fn track_permissions_for_extensions() {
         let ext0 = FixedSizeChunkerExtension::new(10);
@@ -216,23 +208,23 @@ mod tests {
         let mut session = Session::new();
         assert!(Actor(vec![]).may_access(&session));
 
-        session.add_extension(ext0, vec![PUBLIC]).await.unwrap();
+        add_extension(&mut session, ext0, vec![PUBLIC]).await.unwrap();
         assert!(!Actor(vec![]).may_access(&session));
         assert!(Actor(vec![PUBLIC]).may_access(&session));
 
-        session.add_extension(ext1, vec![NOT_USED_FOR_TRAINING]).await.unwrap();
+        add_extension(&mut session, ext1, vec![NOT_USED_FOR_TRAINING]).await.unwrap();
         assert!(!Actor(vec![]).may_access(&session));
         assert!(!Actor(vec![PUBLIC]).may_access(&session));
         assert!(Actor(vec![NOT_USED_FOR_TRAINING]).may_access(&session));
 
-        session.add_extension(ext2, vec![GDPR]).await.unwrap();
+        add_extension(&mut session, ext2, vec![GDPR]).await.unwrap();
         assert!(!Actor(vec![]).may_access(&session));
         assert!(!Actor(vec![NOT_USED_FOR_TRAINING]).may_access(&session));
         assert!(!Actor(vec![GDPR]).may_access(&session));
         assert!(Actor(vec![NOT_USED_FOR_TRAINING, GDPR]).may_access(&session));
         assert_eq!(session.extensions.len(), 3);
 
-        session.add_extension(ext3, vec![ON_DEVICE]).await.unwrap();
+        add_extension(&mut session, ext3, vec![ON_DEVICE]).await.unwrap();
         assert!(!Actor(vec![NOT_USED_FOR_TRAINING, GDPR]).may_access(&session));
         assert_eq!(session.extensions.len(), 4);
 
@@ -372,8 +364,8 @@ mod tests {
         let ext0 = FixedSizeChunkerExtension::new(10);
         let ext1 = FixedSizeChunkerExtension::new(20);
         let mut session = Session::new();
-        session.add_extension(ext0, vec![NOT_USED_FOR_TRAINING]).await.unwrap();
-        session.add_extension(ext1, vec![PUBLIC]).await.unwrap();
+        add_extension(&mut session, ext0, vec![NOT_USED_FOR_TRAINING]).await.unwrap();
+        add_extension(&mut session, ext1, vec![PUBLIC]).await.unwrap();
         assert_eq!(session.extensions.len(), 2);
 
         // Initialize TestExtension0, which should be granted permission NOT_USED_FOR_TRAINING
@@ -579,7 +571,7 @@ mod tests {
         // Session setup
         let ext0 = FixedSizeChunkerExtension::new(10);
         let mut session = Session::new();
-        session.add_extension(ext0, vec![NOT_USED_FOR_TRAINING]).await.unwrap();
+        add_extension(&mut session, ext0, vec![NOT_USED_FOR_TRAINING]).await.unwrap();
         assert_eq!(session.extensions.len(), 1);
 
         // Simulate that `FixedSizeChunkerExtension` is already in use and its pointer dropped at
