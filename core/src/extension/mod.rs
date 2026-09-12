@@ -6,10 +6,12 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod active_extension;
-pub use active_extension::{ActiveExtension, ExtensionConfig};
-
 mod comp;
+mod extension_config;
+
+pub use active_extension::ActiveExtension;
 pub use comp::Comp;
+pub use extension_config::ExtensionConfig;
 
 #[async_trait]
 pub trait Extension: Send + Sync {

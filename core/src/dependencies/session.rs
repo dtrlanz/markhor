@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::{dependencies::{Provide, api_key::ApiKey, dependency_slot::DependencySlot}, extension::{Extension, InitExtensionError}, library::{Document, Scope, Workspace}, permissions::{self, Authorized, Permission, Restricted}};
+use crate::{dependencies::{Provide, api_key::ApiKey, dependency_slot::DependencySlot}, extension::{Extension, ExtensionConfig, InitExtensionError}, library::{Document, Scope, Workspace}, permissions::{self, Authorized, Permission, Restricted}};
 
 use std::{mem, sync::Arc};
 
@@ -49,17 +49,26 @@ impl Session {
         Ok(())
     }
 
-    pub async fn resolve_extension<E: Extension + Provide + 'static>(&mut self) -> Result<(), InitExtensionError> {
-        let default_permissions = permissions::all_permissions();
+    pub async fn initialize_extension<F: FnOnce(&Session) -> Result<E, InitExtensionError>, E: Extension + 'static>(&mut self, config: ExtensionConfig, f: F) -> Result<(), InitExtensionError> {
+        let default_permissions = config.permissions;
         let (extension, permissions) = self.track_permissions(
             default_permissions, 
-            async |session| {
-                let e = E::first(session)?;
-                Ok::<_, InitExtensionError>(e)
-            }
+            async |s: &Session| f(s)
         ).await;
         self.add_extension(extension?, permissions).await
     }
+
+    // pub async fn resolve_extension<E: Extension + Provide + 'static>(&mut self) -> Result<(), InitExtensionError> {
+    //     let default_permissions = permissions::all_permissions();
+    //     let (extension, permissions) = self.track_permissions(
+    //         default_permissions, 
+    //         async |session| {
+    //             let e = E::first(session)?;
+    //             Ok::<_, InitExtensionError>(e)
+    //         }
+    //     ).await;
+    //     self.add_extension(extension?, permissions).await
+    // }
 
     /// Executes a function while tracking its dependencies and the permissions entailed by those
     /// dependencies.
@@ -332,7 +341,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_extension_depending_on_extensions() {
+    async fn initialize_extension_depending_on_extensions() {
         #[derive(Provide)]
         #[provide(crate = "crate")]
         struct TestExtension0 {
@@ -367,21 +376,25 @@ mod tests {
         session.add_extension(ext1, vec![PUBLIC]).await.unwrap();
         assert_eq!(session.extensions.len(), 2);
 
-        // Resolve TestExtension0, which should be granted permission NOT_USED_FOR_TRAINING
-        session.resolve_extension::<TestExtension0>().await.unwrap();
+        // Initialize TestExtension0, which should be granted permission NOT_USED_FOR_TRAINING
+        session.initialize_extension(Default::default(), |s| {
+            Ok(TestExtension0::first(s)?)
+        }).await.unwrap();
         assert_eq!(session.extensions.len(), 3);
         assert_eq!(session.extensions[2].item.name(), "test-extension-0");
         assert_eq!(session.extensions[2].permissions_granted(), vec![NOT_USED_FOR_TRAINING]);
 
-        // Resolve TestExtension1, which should be granted only permission PUBLIC
-        session.resolve_extension::<TestExtension1>().await.unwrap();
+        // Initialize TestExtension1, which should be granted only permission PUBLIC
+        session.initialize_extension(Default::default(), |s| {
+            Ok(TestExtension1::first(s)?)
+        }).await.unwrap();
         assert_eq!(session.extensions.len(), 4);
         assert_eq!(session.extensions[3].item.name(), "test-extension-1");
         assert_eq!(session.extensions[3].permissions_granted(), vec![PUBLIC]);
     }
 
     #[tokio::test]
-    async fn resolve_extension_depending_on_api_keys() {
+    async fn initialize_extension_depending_on_api_keys() {
         #[derive(Provide)]
         #[provide(crate = "crate")]
         struct TestExtension0 {
@@ -483,39 +496,47 @@ mod tests {
         }
         assert_eq!(count_active_api_keys(&session), 0);
         
-        // Resolve TestExtension0, which should be granted only permission GDPR
-        session.resolve_extension::<TestExtension0>().await.unwrap();
+        // Initialize TestExtension0, which should be granted only permission GDPR
+        session.initialize_extension(Default::default(), |s| {
+            Ok(TestExtension0::first(s)?)
+        }).await.unwrap();
         assert_eq!(session.extensions.len(), 1);
         assert_eq!(session.extensions[0].item.name(), "test-extension-0");
         assert_eq!(session.extensions[0].permissions_granted(), vec![GDPR]);
         // Only 1 active API key
         assert_eq!(count_active_api_keys(&session), 1);
 
-        // Resolve TestExtension1, which should be granted only permission PUBLIC
-        session.resolve_extension::<TestExtension1>().await.unwrap();
+        // Initialize TestExtension1, which should be granted only permission PUBLIC
+        session.initialize_extension(Default::default(), |s| {
+            Ok(TestExtension1::first(s)?)
+        }).await.unwrap();
         assert_eq!(session.extensions.len(), 2);
         assert_eq!(session.extensions[1].item.name(), "test-extension-1");
         assert_eq!(session.extensions[1].permissions_granted(), vec![PUBLIC]);
         // All 3 API keys are now active
         assert_eq!(count_active_api_keys(&session), 3);
 
-        // Resolve TestExtension2, which should be granted permission GDPR
+        // Initialize TestExtension2, which should be granted permission GDPR
         // even though the extension doesn't store the key
-        session.resolve_extension::<TestExtension2>().await.unwrap();
+        session.initialize_extension(Default::default(), |s| {
+            Ok(TestExtension2::first(s)?)
+        }).await.unwrap();
         assert_eq!(session.extensions.len(), 3);
         assert_eq!(session.extensions[2].item.name(), "test-extension-2");
         assert_eq!(session.extensions[2].permissions_granted(), vec![GDPR]);
 
-        // Resolve TestExtension3, which should be granted only permission NOT_USED_FOR_TRAINING
+        // Initialize TestExtension3, which should be granted only permission NOT_USED_FOR_TRAINING
         // as per API key "AnotherProvider"
-        session.resolve_extension::<TestExtension3>().await.unwrap();
+        session.initialize_extension(Default::default(), |s| {
+            Ok(TestExtension3::first(s)?)
+        }).await.unwrap();
         assert_eq!(session.extensions.len(), 4);
         assert_eq!(session.extensions[3].item.name(), "test-extension-3");
         assert_eq!(session.extensions[3].permissions_granted(), vec![NOT_USED_FOR_TRAINING]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn resolve_extension_with_concurrent_drop() {
+    async fn initialize_extension_with_concurrent_drop() {
         static BARRIER: OnceLock<Barrier> = OnceLock::new();
         BARRIER.get_or_init(|| Barrier::new(2));
 
@@ -570,10 +591,12 @@ mod tests {
             BARRIER.get().unwrap().wait();
         });
 
-        // Resolve TestExtension0, which should be granted only permission NOT_USED_FOR_TRAINING
+        // Initialize TestExtension0, which should be granted only permission NOT_USED_FOR_TRAINING
         // However, the existing `Comp` referencing the same `FixedSizeChunkerExtension` will be
-        // dropped *while* `TestExtension0` is resolved.
-        session.resolve_extension::<TestExtension0>().await.unwrap();
+        // dropped *while* `TestExtension0` is initialized.
+        session.initialize_extension(Default::default(), |s| {
+            Ok(TestExtension0::first(s)?)
+        }).await.unwrap();
 
         // Nevertheless, if permissions are tracked correctly, `TestExtension0` should end up
         // with the same requirements as `FixedSizeChunkerExtension`.
