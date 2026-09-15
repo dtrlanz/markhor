@@ -65,7 +65,7 @@ impl Provide for ApiKey {
     type Item = Self;
 
     fn iter(session: &super::Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
-        Ok(session.api_keys().into_iter().map(|slot| slot.item.tracked(slot.tracking_guard())))
+        Ok(session.api_keys().into_iter().map(|slot| slot.item.tracked(slot.track_one())))
     }
 
     fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>

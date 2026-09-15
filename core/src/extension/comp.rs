@@ -74,7 +74,7 @@ macro_rules! impl_provide_comp {
                         .flat_map(|slot| slot.item.$method().into_iter().map(|comp| Self {
                             extension: slot.item.clone(),
                             component: comp,
-                            tracking_guard: slot.tracking_guard(),
+                            tracking_guard: slot.track_one(),
                         }));
                     Ok(comps)
                 }
