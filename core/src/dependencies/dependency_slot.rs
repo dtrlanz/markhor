@@ -18,13 +18,15 @@ impl<T> DependencySlot<T> {
         TrackingGuard { tracker: Some(Arc::downgrade(&self.tracker)) }
     }
 
-    pub fn observer(&self) -> TrackingObserver {
-        TrackingObserver { 
-            tracker: Arc::clone(&self.tracker)
-        }
+    pub fn is_active(&self) -> bool {
+        self.tracker.load(Ordering::Acquire) > 0
     }
 
-    pub fn reset_tracking(&mut self) {
+    pub fn reset_tracking_count(&self) {
+        self.tracker.store(0, Ordering::Release);
+    }
+
+    pub fn replace_tracker(&mut self) {
         self.tracker = Arc::new(AtomicUsize::new(0));
     }
 }
@@ -77,19 +79,5 @@ impl Drop for TrackingGuard {
                 counter.fetch_sub(1, Ordering::AcqRel);
             }
         }
-    }
-}
-
-pub struct TrackingObserver {
-    tracker: Arc<AtomicUsize>
-}
-
-impl TrackingObserver {
-    pub fn is_active(&self) -> bool {
-        self.tracker.load(Ordering::Acquire) > 0
-    }
-
-    pub fn reset(&self) {
-        self.tracker.store(0, Ordering::Release);
     }
 }

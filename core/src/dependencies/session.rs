@@ -73,55 +73,38 @@ impl Session {
     // extensions may offer access to documents; etc. A possible solution might be to limit 
     // functionality during dependency resolution (e.g., no tool calls, enforced by `Comp`).
     async fn track_permissions<T, F: AsyncFnOnce(&Session) -> T>(&mut self, default: Vec<Permission>, f: F) -> (T, Vec<Permission>) {
-        // Begin dependency tracking for API keys and extensions
-        let mut api_key_observers = vec![];
-        for slot in &mut self.api_keys {
-            slot.reset_tracking();
-            api_key_observers.push(slot.observer());
-        }
-        let mut extension_observers = vec![];
-        for slot in &mut self.extensions {
-            slot.reset_tracking();
-            extension_observers.push(slot.observer());
-        }
         // Provide API keys during dependency resolution since extensions may depend on them
         self.provides_api_keys = true;
 
         // Disallow library access during dependency resolution
         self.provides_library_access = false;
 
-        
+        // Begin dependency tracking for API keys and extensions
+        for slot in &mut self.api_keys {
+            slot.replace_tracker();
+        }
+        for slot in &mut self.extensions {
+            slot.replace_tracker();
+        }
+        let tracker = PermissionTracker { session: &self };
 
-        // Execute the function with the temporary session
+        // Execute the function
         let result = f(&self).await;
 
-        // Find intersection of permissions, starting with the default set of permissions
-        let mut permissions = default;
-
-        // Permissions granted to API keys in use
-        for (slot, observer) in self.api_keys.iter().zip(api_key_observers.iter()) {
-            if observer.is_active() {
-                permissions = Permission::intersection(&permissions, slot.permissions_granted());
-            }
-        }
-
-        // Permissions granted to extensions in use
-        for (slot, observer) in self.extensions.iter().zip(extension_observers.iter()) {
-            if observer.is_active() {
-                permissions = Permission::intersection(&permissions, slot.permissions_granted());
-            }
-        }
-
-        self.provides_api_keys = false;
-        self.provides_library_access = true;
+        // Get permissions granted
+        let permissions = tracker.permissions_granted(default);
 
         // Stop dependency tracking
         for slot in &mut self.api_keys {
-            slot.reset_tracking();
+            slot.replace_tracker();
         }
         for slot in &mut self.extensions {
-            slot.reset_tracking();
+            slot.replace_tracker();
         }
+
+        // Reset session state
+        self.provides_api_keys = false;
+        self.provides_library_access = true;
 
         (result, permissions)
     }
@@ -161,6 +144,32 @@ impl From<Workspace> for Session {
             provides_api_keys: false,
             provides_library_access: true,
         }
+    }
+}
+
+struct PermissionTracker<'a> {
+    session: &'a Session,
+}
+
+impl<'a> PermissionTracker<'a> {
+    fn permissions_granted(&self, default: Vec<Permission>) -> Vec<Permission> {
+        // Find intersection of permissions, starting with the default set of permissions
+        let mut permissions = default;
+
+        // Permissions granted to API keys in use
+        for slot in &self.session.api_keys {
+            if slot.is_active() {
+                permissions = Permission::intersection(&permissions, slot.permissions_granted());
+            }
+        }
+
+        // Permissions granted to extensions in use
+        for slot in &self.session.extensions {
+            if slot.is_active() {
+                permissions = Permission::intersection(&permissions, slot.permissions_granted());
+            }
+        }
+        permissions
     }
 }
 
@@ -504,7 +513,7 @@ mod tests {
         assert_eq!(session.extensions.len(), 2);
         assert_eq!(session.extensions[1].item.name(), "test-extension-1");
         assert_eq!(session.extensions[1].permissions_granted(), vec![PUBLIC]);
-
+        
         // Initialize TestExtension2, which should be granted permission GDPR
         // even though the extension doesn't store the key
         session.initialize_extension(Default::default(), |s| {
