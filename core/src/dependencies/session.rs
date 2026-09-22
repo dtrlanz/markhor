@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::{dependencies::{Provide, api_key::ApiKey, dependency_slot::DependencySlot}, extension::{Extension, ExtensionConfig, InitExtensionError}, library::{Document, Scope, Workspace}, permissions::{self, Authorized, Permission, Restricted}};
 
-use std::{mem, sync::Arc};
+use std::{default, mem, sync::Arc};
 
 pub struct Session {
     workspace: Option<Workspace>,
@@ -109,6 +109,58 @@ impl Session {
         (result, permissions)
     }
 
+    // Will eventually replace `initialize_extension`
+    //
+    // Currently limited to extensions that `impl Provide`. That may change.
+    pub async fn initialize_extension_with_multiple_instances<E: Extension + Provide + 'static>(&mut self, config: ExtensionConfig) -> Result<(), InitExtensionError> {
+        // Provide API keys during dependency resolution since extensions may depend on them
+        self.provides_api_keys = true;
+
+        // Disallow library access during dependency resolution
+        self.provides_library_access = false;
+
+        // Begin dependency tracking for API keys and extensions
+        for slot in &mut self.api_keys {
+            slot.replace_tracker();
+        }
+        for slot in &mut self.extensions {
+            slot.replace_tracker();
+        }
+        let tracker = PermissionTracker { session: &self };
+
+        let mut instances = vec![];
+        let r = match E::iter(&self) {
+            Ok(iter) => {
+                for item in iter {
+                    let permissions = tracker.permissions_granted(config.permissions.clone());
+                    tracker.reset_tracking_count();
+                    instances.push((item, permissions));
+                }
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        };
+
+        // Stop dependency tracking
+        for slot in &mut self.api_keys {
+            slot.replace_tracker();
+        }
+        for slot in &mut self.extensions {
+            slot.replace_tracker();
+        }
+
+        // Reset session state
+        self.provides_api_keys = false;
+        self.provides_library_access = true;
+
+        for (mut extension, permissions) in instances {
+            extension.initialize().await?;
+            self.extensions.push(DependencySlot::new(Arc::new(extension), permissions));
+        }
+
+        r
+    }
+
     pub(crate) fn api_keys(&self) -> &[DependencySlot<ApiKey>] {
         if self.provides_api_keys {
             &self.api_keys
@@ -170,6 +222,15 @@ impl<'a> PermissionTracker<'a> {
             }
         }
         permissions
+    }
+
+    fn reset_tracking_count(&self) {
+        for slot in &self.session.api_keys {
+            slot.reset_tracking_count();
+        }
+        for slot in &self.session.extensions {
+            slot.reset_tracking_count();
+        }
     }
 }
 
@@ -602,5 +663,38 @@ mod tests {
         assert_eq!(session.extensions[1].item.name(), "test-extension-0");
         assert_eq!(session.extensions[0].permissions_granted(), vec![NOT_USED_FOR_TRAINING]);
         assert_eq!(session.extensions[1].permissions_granted(), vec![NOT_USED_FOR_TRAINING]);
+    }
+
+    #[tokio::test]
+    async fn initialize_extension_with_multiple_instances() {
+        #[derive(Provide)]
+        #[provide(crate = "crate")]
+        struct TestExtension {
+            // Provides one instance per available chunker
+            #[provide(each)]
+            _chunker: Comp<dyn Chunker>,
+        }
+
+        impl Extension for TestExtension {
+            fn uri(&self) -> &str           { "markhor://test-extension" }
+            fn name(&self) -> &str          { "test-extension" }
+            fn description(&self) ->  &str  { "Test extension" }
+        }
+
+        // Session setup
+        let ext0 = FixedSizeChunkerExtension::new(10);
+        let ext1 = FixedSizeChunkerExtension::new(20);
+        let mut session = Session::new();
+        add_extension(&mut session, ext0, vec![NOT_USED_FOR_TRAINING]).await.unwrap();
+        add_extension(&mut session, ext1, vec![GDPR]).await.unwrap();
+        assert_eq!(session.extensions.len(), 2);
+
+        // Initialize TestExtension
+        session.initialize_extension_with_multiple_instances::<TestExtension>(Default::default()).await.unwrap();
+        assert_eq!(session.extensions.len(), 4);
+        assert_eq!(session.extensions[2].item.name(), "test-extension");
+        assert_eq!(session.extensions[3].item.name(), "test-extension");
+        assert_eq!(session.extensions[2].permissions_granted(), vec![NOT_USED_FOR_TRAINING]);
+        assert_eq!(session.extensions[3].permissions_granted(), vec![GDPR]);
     }
 }
