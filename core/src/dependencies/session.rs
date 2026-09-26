@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::{dependencies::{Provide, api_key::ApiKey, dependency_slot::DependencySlot}, extension::{Extension, ExtensionConfig, InitExtensionError}, library::{Document, Scope, Workspace}, permissions::{self, Authorized, Permission, Restricted}};
+use crate::{dependencies::{Provide, ResolveDependencyError, api_key::ApiKey, dependency_slot::DependencySlot}, extension::{Extension, ExtensionConfig, InitExtensionError}, library::{Document, Scope, Workspace}, permissions::{self, Authorized, Permission, Restricted}};
 
 use std::{default, mem, sync::Arc};
 
@@ -25,6 +25,20 @@ impl Session {
             extensions: vec![], 
             permissions_required: vec![] 
         }
+    }
+
+    // Currently, this method is just a wrapper for `Provide::first`, similar to the
+    // relationship between `String::parse` and `FromStr::from_str`. 
+    // I suspect that additional functionality may be added in the future. It might turn
+    // out to be desirable to track asset usage or permissions here, or we might want to
+    // load/initialize assets lazily when they are first resolved (though that would require
+    // async).
+    // In any case, this method is the recommended way of resolving dependencies, rather than 
+    // calling `Provide::first` directly, if only for the sake of readability (as readers
+    // should not have to understand the `Provide` trait to make sense of code using 
+    // `Session`).
+    pub fn resolve<T: Provide>(&self) -> Result<T, ResolveDependencyError> {
+        T::first(self)
     }
 
     pub(crate) fn add_api_key(&mut self, api_key: ApiKey, permissions: Vec<Permission>) {
@@ -249,6 +263,7 @@ mod tests {
     use super::*;
     use crate::chunking::{Chunker, test_chunker::FixedSizeChunkerExtension};
     use crate::dependencies::{ResolveDependencyError};
+    use crate::embedding::test_utils::MockEmbedderExtension;
     use crate::extension::Comp;
     use crate::permissions::{GDPR, NOT_USED_FOR_TRAINING, ON_DEVICE, PUBLIC};
     use std::sync::{Barrier, OnceLock};
@@ -696,5 +711,28 @@ mod tests {
         assert_eq!(session.extensions[3].item.name(), "test-extension");
         assert_eq!(session.extensions[2].permissions_granted(), vec![NOT_USED_FOR_TRAINING]);
         assert_eq!(session.extensions[3].permissions_granted(), vec![GDPR]);
+    }
+
+    #[tokio::test]
+    async fn resolve() {
+        // Session setup
+        let ext0 = FixedSizeChunkerExtension::new(10);
+        let ext1 = FixedSizeChunkerExtension::new(20);
+        let ext2 = MockEmbedderExtension::new(vec!["the", "cat", "sat", "on", "mat"]);
+        let ext3 = MockEmbedderExtension::new(vec!["dog", "barked", "cat"]);
+        let mut session = Session::new();
+        add_extension(&mut session, ext0, vec![NOT_USED_FOR_TRAINING]).await.unwrap();
+        add_extension(&mut session, ext1, vec![GDPR]).await.unwrap();
+        add_extension(&mut session, ext2, vec![NOT_USED_FOR_TRAINING]).await.unwrap();
+        add_extension(&mut session, ext3, vec![GDPR]).await.unwrap();
+        assert_eq!(session.extensions.len(), 4);
+
+        // Resolve items
+        let chunker: Comp<dyn Chunker> = session.resolve().unwrap();
+        assert_eq!(chunker.chunk("01234567890123456789").unwrap().len(), 2);
+        let chunkers: Vec<Comp<dyn Chunker>> = session.resolve().unwrap();
+        assert_eq!(chunkers.len(), 2);
+        assert_eq!(chunkers[0].chunk("01234567890123456789").unwrap().len(), 2);
+        assert_eq!(chunkers[1].chunk("01234567890123456789").unwrap().len(), 1);
     }
 }
