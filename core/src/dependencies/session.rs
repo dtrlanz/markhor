@@ -263,6 +263,7 @@ mod tests {
     use super::*;
     use crate::chunking::{Chunker, test_chunker::FixedSizeChunkerExtension};
     use crate::dependencies::{ResolveDependencyError};
+    use crate::embedding::EmbeddingModel;
     use crate::embedding::test_utils::MockEmbedderExtension;
     use crate::extension::Comp;
     use crate::permissions::{GDPR, NOT_USED_FOR_TRAINING, ON_DEVICE, PUBLIC};
@@ -734,5 +735,14 @@ mod tests {
         assert_eq!(chunkers.len(), 2);
         assert_eq!(chunkers[0].chunk("01234567890123456789").unwrap().len(), 2);
         assert_eq!(chunkers[1].chunk("01234567890123456789").unwrap().len(), 1);
+
+        // Resolve tuples
+        let tuple: (Comp<dyn Chunker>, Comp<dyn EmbeddingModel>) = session.resolve().unwrap();
+        assert_eq!(tuple.0.chunk("01234567890123456789").unwrap().len(), 2);
+        assert_eq!(tuple.1.dimensions().unwrap(), 5);
+        let vec_tuple: (Vec<Comp<dyn Chunker>>, Vec<Comp<dyn EmbeddingModel>>) = session.resolve().unwrap();
+        assert_eq!(vec_tuple.0.len(), 2);
+        assert_eq!(vec_tuple.1.len(), 2);
+        assert_eq!(vec_tuple.1[0].dimensions().unwrap(), 5);
     }
 }

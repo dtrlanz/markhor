@@ -135,6 +135,54 @@ where
     }
 }
 
+macro_rules! impl_provide_for_tuple {
+    ($($name:ident),+) => {
+        impl<$($name: Provide),+> Provide for ($($name,)+) {
+            type Item = ($($name,)+);
+
+            fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+            {
+                // Only resolving a single tuple instance here because it's simpler.
+                // Tuples need to `impl Provide` primarily for their use with `Session::resolve`, 
+                // in which case one instance is sufficient (unlike the derive macro `Provide`,
+                // where you might be using the `each` attribute, relying on multiple instances,
+                // etc.). So we can avoid the non-trivial effort of producing cartesian products 
+                // of multiple iterators here, at least until someone produces a compelling use 
+                // case for it.
+                $( 
+                    #[allow(non_snake_case)]
+                    let $name = $name::first(session)?; 
+                )+
+                Self::iter_from_items(std::iter::once(($($name,)+)))
+            }
+
+            fn iter_from_items<__I>(items: __I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+            where
+                __I: Iterator<Item = Self::Item>
+            {
+                Ok::<__I, ResolveDependencyError>(items)
+            }
+        }
+    };
+}
+
+impl_provide_for_tuple!(A);
+impl_provide_for_tuple!(A, B);
+impl_provide_for_tuple!(A, B, C);
+impl_provide_for_tuple!(A, B, C, D);
+impl_provide_for_tuple!(A, B, C, D, E);
+impl_provide_for_tuple!(A, B, C, D, E, F);
+impl_provide_for_tuple!(A, B, C, D, E, F, G);
+impl_provide_for_tuple!(A, B, C, D, E, F, G, H);
+impl_provide_for_tuple!(A, B, C, D, E, F, G, H, I);
+impl_provide_for_tuple!(A, B, C, D, E, F, G, H, I, J);
+impl_provide_for_tuple!(A, B, C, D, E, F, G, H, I, J, K);
+impl_provide_for_tuple!(A, B, C, D, E, F, G, H, I, J, K, L);
+impl_provide_for_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M);
+impl_provide_for_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N);
+impl_provide_for_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O);
+impl_provide_for_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P);
+
 #[derive(Debug, Error)]
 pub enum ResolveDependencyError {
     #[error("Missing dependency: {0}")]
