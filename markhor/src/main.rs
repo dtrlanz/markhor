@@ -9,7 +9,7 @@ use clap::Parser;
 use markhor::app::Markhor;
 use markhor::cli::{Cli, Commands};
 use markhor::commands;
-use markhor_core::extension::{ActiveExtension, Extension};
+use markhor_core::extension::Extension;
 use markhor_core::library::Workspace;
 use markhor_extensions::chunking::Chunkers;
 use markhor_extensions::cli::CliExtension;
@@ -34,42 +34,42 @@ async fn main() -> Result<()> {
 
     // --- Configuration Loading ---
 
-    let mut extensions: Vec<ActiveExtension> = vec![
-        ActiveExtension::new(Chunkers, Default::default()),
-    ];
+    // let mut extensions: Vec<ActiveExtension> = vec![
+    //     ActiveExtension::new(Chunkers, Default::default()),
+    // ];
 
     // Process env vars
     dotenv::dotenv().ok();
 
-    // Load Google API key from env var
-    match std::env::var("GOOGLE_API_KEY") {
-        Ok(key) => {
-            info!("Google API key loaded from environment variables");
-            match GeminiClientExtension::new(key) {
-                Ok(ext) => extensions.push(ActiveExtension::new(ext, Default::default())),
-                Err(e) => {
-                    error!("Failed to construct Gemini extension: {}", e);
-                }
-            }
-        },
-        Err(_) => {
-            debug!("Google API key not found in environment variables");
-        }
-    };
+    // // Load Google API key from env var
+    // match std::env::var("GOOGLE_API_KEY") {
+    //     Ok(key) => {
+    //         info!("Google API key loaded from environment variables");
+    //         match GeminiClientExtension::new(key) {
+    //             Ok(ext) => extensions.push(ActiveExtension::new(ext, Default::default())),
+    //             Err(e) => {
+    //                 error!("Failed to construct Gemini extension: {}", e);
+    //             }
+    //         }
+    //     },
+    //     Err(_) => {
+    //         debug!("Google API key not found in environment variables");
+    //     }
+    // };
     
-    // Load Mistral API key from env var
-    match std::env::var("MISTRAL_API_KEY") {
-        Ok(key) => {
-            info!("Mistral API key loaded from environment variables");
-            extensions.push(ActiveExtension::new(
-                MistralClient::new(key),
-                Default::default(),
-            ));
-        },
-        Err(_) => {
-            debug!("Mistral API key not found in environment variables");
-        }
-    };
+    // // Load Mistral API key from env var
+    // match std::env::var("MISTRAL_API_KEY") {
+    //     Ok(key) => {
+    //         info!("Mistral API key loaded from environment variables");
+    //         extensions.push(ActiveExtension::new(
+    //             MistralClient::new(key),
+    //             Default::default(),
+    //         ));
+    //     },
+    //     Err(_) => {
+    //         debug!("Mistral API key not found in environment variables");
+    //     }
+    // };
 
     // --- Workspace Initialization ---
 
@@ -86,16 +86,16 @@ async fn main() -> Result<()> {
         Err(e) => None
     };
 
-    // Pass folder to CLI extension to enable auto-completion of document names
-    extensions.push(ActiveExtension::new(
-        CliExtension::new(folder.clone()),
-        Default::default(),
-    ));
+    // // Pass folder to CLI extension to enable auto-completion of document names
+    // extensions.push(ActiveExtension::new(
+    //     CliExtension::new(folder.clone()),
+    //     Default::default(),
+    // ));
 
     let app = Markhor {
         workspace,
         folder,
-        extensions,
+        // extensions,
     };
 
     // --- Command Dispatching ---

@@ -2,28 +2,25 @@ use std::ops::Range;
 
 use async_trait::async_trait;
 
-use markhor_core::{chat::prompter::{PromptError, Prompter}, job::AssetSender, library::{Folder, ReadEntry}};
+use markhor_core::{chat::prompter::{PromptError, Prompter}, library::{Folder, ReadEntry}};
 use nu_ansi_term::{Color, Style};
 use reedline::{default_emacs_keybindings, ColumnarMenu, Completer, DefaultPrompt, DefaultPromptSegment, Emacs, Highlighter, KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal, Span, StyledText, Suggestion};
 use tokio::sync::Mutex;
 
 pub struct ConsolePrompter {
     folder: Option<Folder>,
-    asset_sender: Option<AssetSender>,
 }
 
 impl ConsolePrompter {
     pub fn new(folder: Option<Folder>) -> Self {
         Self { 
             folder,
-            asset_sender: None,
         }
     }
 
     pub fn with_attach_callback(self, callback: Box<dyn Fn(&[&str]) + Send + Sync>) -> Self {
         Self {
             folder: self.folder,
-            asset_sender: None,
         }
     }
     
@@ -155,11 +152,9 @@ impl Prompter for ConsolePrompter {
         if let (
                 Ok(input), 
                 Some(folder), 
-                Some(sender)
             ) = (
                 result.as_mut(), 
                 self.folder.as_ref(), 
-                self.asset_sender.as_ref()
             ) {
             let mut prefix_suffix = vec![];
             for (prefix,range, suffix) in  ConsolePrompter::isolate_document_names_with_prefix_suffix(&input) {
@@ -167,10 +162,7 @@ impl Prompter for ConsolePrompter {
                 let file_name = &input[range];
                 match folder.document(file_name).await {
                     Ok(doc) => {
-                        // Send document to job via the asset sender
-                        sender.send_document(doc).unwrap_or_else(|e| {
-                            tracing::warn!("Could not attach document: {} ({})", file_name, e);
-                        });
+                        unimplemented!();
                     }
                     Err(e) => {
                         tracing::warn!("Could not attach document: {} ({})", file_name, e);
@@ -187,11 +179,6 @@ impl Prompter for ConsolePrompter {
             }
         }
         result
-    }
-
-    fn set_asset_sender(&mut self, sender: Option<AssetSender>) -> Result<(), PromptError> {
-        self.asset_sender = sender;
-        Ok(())
     }
 }
 

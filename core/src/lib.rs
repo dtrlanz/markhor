@@ -6,7 +6,6 @@ pub mod dependencies;
 pub mod extension;
 pub mod embedding;
 pub mod event;
-pub mod job;
 pub mod library;
 pub mod markdown;
 pub mod permissions;

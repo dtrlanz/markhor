@@ -123,6 +123,56 @@ impl Display for ComponentType {
     }
 }
 
+/// Utility for constructing `Comp<dyn ___>` directly without a `Session`.
+/// 
+/// Useful when you need `Comp`s for unit tests.
+#[cfg(test)]
+pub(crate) struct TryIntoComp<E>(pub E);
+
+#[cfg(test)]
+impl<E: Extension + 'static> TryFrom<TryIntoComp<E>> for Comp<dyn ChatModel> {
+    type Error = ResolveDependencyError;
+
+    fn try_from(value: TryIntoComp<E>) -> Result<Self, Self::Error> {
+        let item = value.0.chat_models().into_iter().next()
+            .ok_or(ResolveDependencyError::DependencyNotAvailable("chat model".into()))?;
+        Ok(Self {
+            extension: Arc::new(value.0),
+            component: item,
+            tracking_guard: Default::default(),
+        })
+    }
+}
+
+#[cfg(test)]
+impl<E: Extension + 'static> TryFrom<TryIntoComp<E>> for Comp<dyn EmbeddingModel> {
+    type Error = ResolveDependencyError;
+
+    fn try_from(value: TryIntoComp<E>) -> Result<Self, Self::Error> {
+        let item = value.0.embedding_models().into_iter().next()
+            .ok_or(ResolveDependencyError::DependencyNotAvailable("chat model".into()))?;
+        Ok(Self {
+            extension: Arc::new(value.0),
+            component: item,
+            tracking_guard: Default::default(),
+        })
+    }
+}
+
+#[cfg(test)]
+impl<E: Extension + 'static> TryFrom<TryIntoComp<E>> for Comp<dyn Chunker> {
+    type Error = ResolveDependencyError;
+
+    fn try_from(value: TryIntoComp<E>) -> Result<Self, Self::Error> {
+        let item = value.0.chunkers().into_iter().next()
+            .ok_or(ResolveDependencyError::DependencyNotAvailable("chat model".into()))?;
+        Ok(Self {
+            extension: Arc::new(value.0),
+            component: item,
+            tracking_guard: Default::default(),
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {

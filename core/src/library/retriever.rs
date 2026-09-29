@@ -4,7 +4,7 @@ use thiserror::Error;
 use tracing::{instrument, debug, trace};
 use uuid::Uuid;
 
-use crate::{chunking::{Chunker, ChunkerError}, embedding::{EmbeddingModel, Embedding, EmbeddingError}, extension::F11y, library::{AccessLibraryError, ChunkIdx, Document, Scope, HashValue, Workspace}, vector_store::{DocVersionId, VectorView}};
+use crate::{chunking::{Chunker, ChunkerError}, embedding::{Embedding, EmbeddingError, EmbeddingModel}, extension::Comp, library::{AccessLibraryError, ChunkIdx, Document, HashValue, Scope, Workspace}, vector_store::{DocVersionId, VectorView}};
 
 
 
@@ -13,14 +13,14 @@ pub struct Retriever {
     workspace: Workspace,
     scope: Scope,
     docs: HashMap<Uuid, IncludedDoc>,
-    chunker: F11y<dyn Chunker>,
-    embedder: F11y<dyn EmbeddingModel>,
+    chunker: Comp<dyn Chunker>,
+    embedder: Comp<dyn EmbeddingModel>,
     embeddings: VectorView,
 }
 
 impl Retriever {
     #[instrument(skip(chunker, embedder))]
-    pub async fn new(workspace: Workspace, scope: Scope, chunker: F11y<dyn Chunker>, embedder: F11y<dyn EmbeddingModel>) -> Result<Self, InitRetrieverError> {
+    pub async fn new(workspace: Workspace, scope: Scope, chunker: Comp<dyn Chunker>, embedder: Comp<dyn EmbeddingModel>) -> Result<Self, InitRetrieverError> {
         debug!("Initializing retriever for scope {:?}", scope);
         let vector_store = workspace.vector_store(&embedder);
         let utils = Arc::new((chunker, embedder));
@@ -92,7 +92,7 @@ impl Retriever {
     }
 
     #[instrument(skip_all, fields(doc_path = %doc.path().display()), level = "debug", err)]
-    async fn send_doc_vectors(mut doc: Document, utils: Arc<(F11y<dyn Chunker>, F11y<dyn EmbeddingModel>)>, sender: tokio::sync::mpsc::Sender<(DocVersionId, Vec<(ChunkIdx, HashValue, Embedding)>)>) -> Result<(), InitRetrieverError> {
+    async fn send_doc_vectors(mut doc: Document, utils: Arc<(Comp<dyn Chunker>, Comp<dyn EmbeddingModel>)>, sender: tokio::sync::mpsc::Sender<(DocVersionId, Vec<(ChunkIdx, HashValue, Embedding)>)>) -> Result<(), InitRetrieverError> {
         let doc_path = doc.path().display().to_string();
         debug!("Processing doc {} for embedding generation", doc_path);
         let chunker = &utils.0;
@@ -169,7 +169,8 @@ pub enum InitRetrieverError {
 mod tests {
     use super::*;
     use crate::embedding::test_utils::MockEmbedderExtension;
-    use crate::{chunking::test_chunker::FixedSizeChunkerExtension, extension::ActiveExtension};
+    use crate::extension::TryIntoComp;
+use crate::{chunking::test_chunker::FixedSizeChunkerExtension};
     use crate::library::fs_test_utils::{TempTree, fs_tree};
 
     #[tokio::test]
@@ -183,14 +184,13 @@ mod tests {
         let ws = Workspace::open(&dir).await.unwrap();
         let scope = Scope::from(ws.root());
 
-        let chunker = ActiveExtension::new(FixedSizeChunkerExtension::new(28), Default::default())
-            .chunkers().next().unwrap();
-        let embedder = ActiveExtension::new(
+        let chunker = TryIntoComp(FixedSizeChunkerExtension::new(28)).try_into().unwrap();
+        let embedder: Comp<dyn EmbeddingModel> = TryIntoComp(
             MockEmbedderExtension::new(
                 // Our 3-letter "anchor" words for predictable similarity
                 vec!["the", "and", "cat", "dog", "bug", "big", "mat", "sat", "fat", "bad"]
-            ), Default::default())
-            .embedders().next().unwrap();
+            ))
+            .try_into().unwrap();
         let sample = embedder.embed(&["The cat sat on the big mat."]).await.unwrap().pop().unwrap();
         let retriever = Retriever::new(ws, scope, chunker, embedder).await.unwrap();
 
@@ -221,14 +221,14 @@ mod tests {
         let ws = Workspace::open(&dir).await.unwrap();
         let scope = Scope::from(ws.root());
 
-        let chunker = ActiveExtension::new(FixedSizeChunkerExtension::new(28), Default::default())
-            .chunkers().next().unwrap();
-        let embedder = ActiveExtension::new(
+        let chunker = TryIntoComp(FixedSizeChunkerExtension::new(28))
+            .try_into().unwrap();
+        let embedder: Comp<dyn EmbeddingModel> = TryIntoComp(
             MockEmbedderExtension::new(
                 // Our 3-letter "anchor" words for predictable similarity
                 vec!["the", "and", "cat", "dog", "bug", "big", "mat", "sat", "fat", "bad"]
-            ), Default::default())
-            .embedders().next().unwrap();
+            ))
+            .try_into().unwrap();
         let sample = embedder.embed(&["The cat sat on the big mat."]).await.unwrap().pop().unwrap();
         let retriever = Retriever::new(ws.clone(), scope, chunker, embedder).await.unwrap();
 

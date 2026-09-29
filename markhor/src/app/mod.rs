@@ -1,6 +1,6 @@
 use std::{fs, path::{Path, PathBuf}, sync::{Arc, atomic::{AtomicBool, Ordering}}};
 
-use markhor_core::{chat::chat::Message, extension::{ActiveExtension, Extension}, job::{self, Job}, library::{Document, Folder, Part, Workspace}};
+use markhor_core::{chat::chat::Message, extension::Extension, library::{Document, Folder, Part, Workspace}};
 use markhor_extensions::cli::CliExtension;
 use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
 use tracing::error;
@@ -13,7 +13,7 @@ use crate::cli::ChatArgs;
 pub struct Markhor {
     pub workspace: anyhow::Result<Arc<Workspace>>,
     pub folder: Option<Folder>,
-    pub extensions: Vec<ActiveExtension>,
+    // pub extensions: Vec<ActiveExtension>,
 }
 
 impl Markhor {
@@ -59,35 +59,36 @@ impl Markhor {
         let mut doc = folder.document(file_path).await?;
 
         // Convert the file to markdown using the extensions
-        let input = file.to_path_buf();
-        let output_type = "text/markdown".parse().unwrap();
-        let job: Job<Vec<Box<dyn AsyncRead + Unpin>>, _> = 
-            Job::new(async |assets| {
-                let output = assets.convert(input, output_type).await?;
-                Ok(output)
-            })
-            .with_extensions(self.extensions.iter().cloned());
+        unimplemented!();
+        // let input = file.to_path_buf();
+        // let output_type = "text/markdown".parse().unwrap();
+        // let job: Job<Vec<Box<dyn AsyncRead + Unpin>>, _> = 
+        //     Job::new(async |assets| {
+        //         let output = assets.convert(input, output_type).await?;
+        //         Ok(output)
+        //     })
+        //     .with_extensions(self.extensions.iter().cloned());
 
-        let result = job.run().await;
-        let mut part_idx = 0;
-        match result {
-            Ok(vec) => {
-                for reader in vec {
-                    // Read to string
-                    let mut reader = BufReader::new(reader);
-                    let mut contents = String::new();
-                    reader.read_to_string(&mut contents).await?;
+        // let result = job.run().await;
+        // let mut part_idx = 0;
+        // match result {
+        //     Ok(vec) => {
+        //         for reader in vec {
+        //             // Read to string
+        //             let mut reader = BufReader::new(reader);
+        //             let mut contents = String::new();
+        //             reader.read_to_string(&mut contents).await?;
 
-                    doc.text_mut().await?.push_part(Part::new(format!("part-{}", part_idx), contents));
-                    part_idx += 1;
-                }
-            }
-            Err(e) => {
-                error!("Error during conversion: {:?}", e);
-            }
-        }
+        //             doc.text_mut().await?.push_part(Part::new(format!("part-{}", part_idx), contents));
+        //             part_idx += 1;
+        //         }
+        //     }
+        //     Err(e) => {
+        //         error!("Error during conversion: {:?}", e);
+        //     }
+        // }
 
-        Ok(doc)
+        // Ok(doc)
     }
 
     // pub async fn search(&self, query: &str, limit: usize, paths: Vec<PathBuf>) -> Result<(), anyhow::Error> {
@@ -139,8 +140,9 @@ impl Markhor {
     // }
 
     pub fn use_extension(&mut self, extension: impl Extension + 'static) -> &mut Self {
-        self.extensions.push(ActiveExtension::new(extension, Default::default()));
-        self
+        unimplemented!();
+        // self.extensions.push(ActiveExtension::new(extension, Default::default()));
+        // self
     }
 
     pub async fn chat(&self, args: ChatArgs) -> Result<(), anyhow::Error> {
@@ -161,21 +163,23 @@ impl Markhor {
             messages.push(Message::user(prompt.to_string()));
         }
 
-        let mut job  = job::chat(
-                messages, 
-                |msg| printer.print_message(msg), 
-                |docs| printer.print_attachment(docs),
-            ).with_extensions(self.extensions.iter().cloned());
+        unimplemented!();
 
-        // Load document contents
-        let docs = self.open_documents(docs).await?;
-        for doc in docs {
-            job.add_document(doc);
-        }
+        // let mut job  = job::chat(
+        //         messages, 
+        //         |msg| printer.print_message(msg), 
+        //         |docs| printer.print_attachment(docs),
+        //     ).with_extensions(self.extensions.iter().cloned());
+
+        // // Load document contents
+        // let docs = self.open_documents(docs).await?;
+        // for doc in docs {
+        //     job.add_document(doc);
+        // }
         
-        let _messages = job.run().await?;
+        // let _messages = job.run().await?;
 
-        Ok(())
+        // Ok(())
     }
 }
 

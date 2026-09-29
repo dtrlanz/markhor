@@ -5,13 +5,14 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-mod active_extension;
 mod comp;
 mod extension_config;
 
-pub use active_extension::ActiveExtension;
 pub use comp::Comp;
 pub use extension_config::ExtensionConfig;
+
+#[cfg(test)]
+pub(crate) use comp::TryIntoComp;
 
 #[async_trait]
 pub trait Extension: Send + Sync {
@@ -56,63 +57,5 @@ pub enum UseExtensionError {
 
     #[error("Tool not available in extension")]
     ToolNotAvailable,
-}
-
-pub struct F11y<T: ?Sized> {
-    trait_object: Box<T>,
-    functionality_type: FunctionalityType,
-    extension: ActiveExtension,
-}
-
-impl<T: ?Sized> F11y<T> {
-    pub fn extension(&self) -> &ActiveExtension {
-        &self.extension
-    }
-
-    pub fn functionality_type(&self) -> FunctionalityType {
-        self.functionality_type
-    }
-
-    pub fn metadata_id(&self) -> String {
-        let suffix = match self.functionality_type {
-            _ => "",
-        };
-        format!("{} {}{}", sanitize_filename::sanitize(self.extension.uri()),
-            self.functionality_type, suffix)
-    }
-}
-
-impl<T: ?Sized> Deref for F11y<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &*self.trait_object
-    }
-}
-
-impl<T: ?Sized> DerefMut for F11y<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut *self.trait_object
-    }
-}
-
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum FunctionalityType {
-    ChatProvider,
-    Embedder,
-    Chunker,
-    Converter,
-    Prompter,
-    Tool,
-}
-
-impl Display for FunctionalityType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        serde_json::to_string(self)
-            .map(|s| s.trim_matches('"').to_string())
-            .map_err(|_| std::fmt::Error)?
-            .fmt(f)
-    }
 }
 
