@@ -261,7 +261,8 @@ pub enum RestrictAccessError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chunking::{Chunker, test_chunker::FixedSizeChunkerExtension};
+    use crate::add;
+use crate::chunking::{Chunker, test_chunker::FixedSizeChunkerExtension};
     use crate::dependencies::{ResolveDependencyError};
     use crate::embedding::EmbeddingModel;
     use crate::embedding::test_utils::MockEmbedderExtension;
@@ -716,7 +717,7 @@ use std::sync::{Barrier, Mutex, OnceLock};
     }
 
     #[tokio::test]
-    async fn resolve() {
+    async fn resolve_vecs_and_tuples() {
         // Session setup
         let ext0 = FixedSizeChunkerExtension::new(10);
         let ext1 = FixedSizeChunkerExtension::new(20);
@@ -729,7 +730,7 @@ use std::sync::{Barrier, Mutex, OnceLock};
         add_extension(&mut session, ext3, vec![GDPR]).await.unwrap();
         assert_eq!(session.extensions.len(), 4);
 
-        // Resolve items
+        // Resolve items and vectors
         let chunker: Comp<dyn Chunker> = session.resolve().unwrap();
         assert_eq!(chunker.chunk("01234567890123456789").unwrap().len(), 2);
         let chunkers: Vec<Comp<dyn Chunker>> = session.resolve().unwrap();
@@ -748,17 +749,37 @@ use std::sync::{Barrier, Mutex, OnceLock};
     }
 
     #[tokio::test]
-    async fn box_and_arc() {
+    async fn resolve_arc_and_box() {
         // Session setup
         let ext0 = MockEmbedderExtension::new(vec!["the", "cat", "sat", "on", "mat"]);
+        let ext1 = MockEmbedderExtension::new(vec!["dog", "barked", "cat"]);
         let mut session = Session::new();
-        add_extension(&mut session, ext0, vec![PUBLIC]).await.unwrap();
+        add_extension(&mut session, ext0, vec![]).await.unwrap();
+        add_extension(&mut session, ext1, vec![]).await.unwrap();
+
+        // Box
+        let boxes: Vec<Box<Comp<dyn EmbeddingModel>>> = session.resolve().unwrap();
+        assert_eq!(boxes[0].dimensions().unwrap(), 5);
+        assert_eq!(boxes[1].dimensions().unwrap(), 3);
+
+        // Arc
+        let arcs: Vec<Arc<Comp<dyn EmbeddingModel>>> = session.resolve().unwrap();
+        assert_eq!(arcs[0].dimensions().unwrap(), 5);
+        assert_eq!(arcs[1].dimensions().unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn resolve_mutex() {
+        // Session setup
+        let ext0 = MockEmbedderExtension::new(vec!["the", "cat", "sat", "on", "mat"]);
+        let ext1 = MockEmbedderExtension::new(vec!["dog", "barked", "cat"]);
+        let mut session = Session::new();
+        add_extension(&mut session, ext0, vec![]).await.unwrap();
+        add_extension(&mut session, ext1, vec![]).await.unwrap();
 
         // Resolve
-        let arc_embedder: Arc<Comp<dyn EmbeddingModel>> = session.resolve().unwrap();
-        assert_eq!(arc_embedder.dimensions().unwrap(), 5);
-
-        let box_embedder: Box<Comp<dyn EmbeddingModel>> = session.resolve().unwrap();
-        assert_eq!(box_embedder.dimensions().unwrap(), 5);
+        let mut mutexes: Vec<Mutex<Comp<dyn EmbeddingModel>>> = session.resolve().unwrap();
+        assert_eq!(mutexes[0].get_mut().unwrap().dimensions().unwrap(), 5);
+        assert_eq!(mutexes[1].get_mut().unwrap().dimensions().unwrap(), 3);
     }
 }

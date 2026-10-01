@@ -219,6 +219,24 @@ impl_provide_for_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N);
 impl_provide_for_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O);
 impl_provide_for_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P);
 
+impl<T: Provide> Provide for std::sync::Mutex<T> {
+    type Item = T;
+
+    fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+    {
+        let items = T::iter(session)?;
+        Self::iter_from_items(items)
+    }
+
+    fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+    where
+        I: Iterator<Item = Self::Item>
+    {
+        let iter = items.map(|item| std::sync::Mutex::new(item));
+        Ok(iter)
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ResolveDependencyError {
     #[error("Missing dependency: {0}")]
