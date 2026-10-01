@@ -1,4 +1,4 @@
-use std::{any::type_name, hash::Hash};
+use std::{any::type_name, hash::Hash, sync::Arc};
 use thiserror::Error;
 use tracing::warn;
 
@@ -42,6 +42,42 @@ impl<T> Provide for std::marker::PhantomData<T> {
         I: Iterator<Item = Self::Item>
     {
         let iter = items.map(|_| std::marker::PhantomData);
+        Ok(iter)
+    }
+}
+
+impl<T: Provide> Provide for Box<T> {
+    type Item = T;
+
+    fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+    {
+        let items = T::iter(session)?;
+        Self::iter_from_items(items)
+    }
+
+    fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+    where
+        I: Iterator<Item = Self::Item>
+    {
+        let iter = items.map(|item| Box::new(item));
+        Ok(iter)
+    }
+}
+
+impl<T: Provide> Provide for Arc<T> {
+    type Item = T;
+
+    fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+    {
+        let items = T::iter(session)?;
+        Self::iter_from_items(items)
+    }
+
+    fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+    where
+        I: Iterator<Item = Self::Item>
+    {
+        let iter = items.map(|item| Arc::new(item));
         Ok(iter)
     }
 }

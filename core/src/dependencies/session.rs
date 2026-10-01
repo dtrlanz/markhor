@@ -267,7 +267,8 @@ mod tests {
     use crate::embedding::test_utils::MockEmbedderExtension;
     use crate::extension::Comp;
     use crate::permissions::{GDPR, NOT_USED_FOR_TRAINING, ON_DEVICE, PUBLIC};
-    use std::sync::{Barrier, OnceLock};
+    use std::marker::PhantomData;
+use std::sync::{Barrier, Mutex, OnceLock};
 
     struct Actor(Vec<Permission>);
 
@@ -744,5 +745,20 @@ mod tests {
         assert_eq!(vec_tuple.0.len(), 2);
         assert_eq!(vec_tuple.1.len(), 2);
         assert_eq!(vec_tuple.1[0].dimensions().unwrap(), 5);
+    }
+
+    #[tokio::test]
+    async fn box_and_arc() {
+        // Session setup
+        let ext0 = MockEmbedderExtension::new(vec!["the", "cat", "sat", "on", "mat"]);
+        let mut session = Session::new();
+        add_extension(&mut session, ext0, vec![PUBLIC]).await.unwrap();
+
+        // Resolve
+        let arc_embedder: Arc<Comp<dyn EmbeddingModel>> = session.resolve().unwrap();
+        assert_eq!(arc_embedder.dimensions().unwrap(), 5);
+
+        let box_embedder: Box<Comp<dyn EmbeddingModel>> = session.resolve().unwrap();
+        assert_eq!(box_embedder.dimensions().unwrap(), 5);
     }
 }
