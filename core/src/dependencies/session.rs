@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::{dependencies::{Provide, ResolveDependencyError, api_key::ApiKey, dependency_slot::DependencySlot}, extension::{Extension, ExtensionConfig, InitExtensionError}, library::{Document, Scope, Workspace}, permissions::{self, Authorized, Permission, Restricted}};
 
-use std::{default, mem, sync::Arc};
+use std::sync::Arc;
 
 pub struct Session {
     workspace: Option<Workspace>,
@@ -260,16 +260,18 @@ pub enum RestrictAccessError {
 
 #[cfg(test)]
 mod tests {
+    use tokio::task;
+
     use super::*;
-    use crate::add;
-use crate::chunking::{Chunker, test_chunker::FixedSizeChunkerExtension};
+    use crate::chunking::{Chunker, test_chunker::FixedSizeChunkerExtension};
     use crate::dependencies::{ResolveDependencyError};
     use crate::embedding::EmbeddingModel;
     use crate::embedding::test_utils::MockEmbedderExtension;
     use crate::extension::Comp;
     use crate::permissions::{GDPR, NOT_USED_FOR_TRAINING, ON_DEVICE, PUBLIC};
-    use std::marker::PhantomData;
-use std::sync::{Barrier, Mutex, OnceLock};
+    use std::mem;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Barrier, Mutex, OnceLock};
 
     struct Actor(Vec<Permission>);
 
@@ -782,4 +784,224 @@ use std::sync::{Barrier, Mutex, OnceLock};
         assert_eq!(mutexes[0].get_mut().unwrap().dimensions().unwrap(), 5);
         assert_eq!(mutexes[1].get_mut().unwrap().dimensions().unwrap(), 3);
     }
+
+    #[tokio::test]
+    async fn provide_with_values_cached_due_to_sorting() {
+        #[derive(Provide)]
+        #[provide(crate = "crate")]
+        struct TestExtension {
+            // Sort in ascending order of # dimensions (i.e., number of words in vocabulary, in 
+            // our example). This won't actually change the order (already sorted, see below), but
+            // it will cause the `Comp` instances to be provided eagerly rather than lazily.
+            #[provide(each, sort_by = |a, b| a.dimensions().unwrap().cmp(&b.dimensions().unwrap()))]
+            _embedder: Comp<dyn EmbeddingModel>,
+        }
+
+        impl Extension for TestExtension {
+            fn uri(&self) -> &str           { "markhor://test-extension" }
+            fn name(&self) -> &str          { "test-extension" }
+            fn description(&self) ->  &str  { "Test extension" }
+        }
+
+        // Session setup
+        let ext0 = MockEmbedderExtension::new(vec!["dog", "barked", "cat"]);
+        let ext1 = MockEmbedderExtension::new(vec!["the", "cat", "sat", "on", "mat"]);
+        let mut session = Session::new();
+        add_extension(&mut session, ext0, vec![NOT_USED_FOR_TRAINING]).await.unwrap();
+        add_extension(&mut session, ext1, vec![PUBLIC]).await.unwrap();
+        assert_eq!(session.extensions.len(), 2);
+
+        // Initialize TestExtension
+        session.initialize_extension_with_multiple_instances::<TestExtension>(Default::default()).await.unwrap();
+        assert_eq!(session.extensions.len(), 4);
+        assert_eq!(session.extensions[2].item.name(), "test-extension");
+        assert_eq!(session.extensions[3].item.name(), "test-extension");
+
+        // FAILS
+        // Before 1st instance of TestExtension is constructed, both Comp<dyn EmbeddingModel>
+        // instances are provided and sorted. Session attributes their permission constraints to
+        // the 1st instance of TestExtension, granting only PUBLIC.
+        assert_eq!(session.extensions[2].permissions_granted(), vec![NOT_USED_FOR_TRAINING]);
+
+        // Also FAILS
+        // When 2nd instance of TestExtension is constructed, 2nd Comp<dyn EmbeddingModel> has
+        // already been cached. Session tracks no further permissions constraints, granting
+        // the default ON_DEVICE (!), higher than either NOT_USED_FOR_TRAINING or PUBLIC.
+        assert_eq!(session.extensions[3].permissions_granted(), vec![PUBLIC]);
+    }
+
+    #[tokio::test]
+    async fn provide_with_values_cached_due_to_nested_iteration() {
+        #[derive(Provide)]
+        #[provide(crate = "crate")]
+        struct TestExtension {
+            #[provide(each)]
+            _embedder0: Arc<Comp<dyn EmbeddingModel>>,
+            #[provide(each)]
+            _embedder1: Arc<Comp<dyn EmbeddingModel>>,
+        }
+
+        impl Extension for TestExtension {
+            fn uri(&self) -> &str           { "markhor://test-extension" }
+            fn name(&self) -> &str          { "test-extension" }
+            fn description(&self) ->  &str  { "Test extension" }
+        }
+
+        // Session setup
+        let ext0 = MockEmbedderExtension::new(vec!["dog", "barked", "cat"]);
+        let ext1 = MockEmbedderExtension::new(vec!["the", "cat", "sat", "on", "mat"]);
+        let mut session = Session::new();
+        add_extension(&mut session, ext0, vec![NOT_USED_FOR_TRAINING]).await.unwrap();
+        add_extension(&mut session, ext1, vec![PUBLIC]).await.unwrap();
+        assert_eq!(session.extensions.len(), 2);
+
+        // Initialize TestExtension
+        session.initialize_extension_with_multiple_instances::<TestExtension>(Default::default()).await.unwrap();
+        assert_eq!(session.extensions.len(), 6);
+
+        // NOT_USED_FOR_TRAINING & NOT_USED_FOR_TRAINING = NOT_USED_FOR_TRAINING
+        // FAILS (mistakenly takes all instances into account, granting only PUBLIC)
+        assert_eq!(session.extensions[2].permissions_granted(), vec![NOT_USED_FOR_TRAINING]);
+
+        // NOT_USED_FOR_TRAINING & PUBLIC = PUBLIC
+        // FAILS (no additional instances created, grants ON_DEVICE)
+        assert_eq!(session.extensions[3].permissions_granted(), vec![PUBLIC]);
+
+        // PUBLIC & NOT_USED_FOR_TRAINING = PUBLIC
+        // OK (due to iterating outermost loop, which is not cached)
+        assert_eq!(session.extensions[4].permissions_granted(), vec![PUBLIC]);
+
+        // PUBLIC & PUBLIC = PUBLIC
+        // FAILS (no additional instances created, grants ON_DEVICE)
+        assert_eq!(session.extensions[5].permissions_granted(), vec![PUBLIC]);
+    }
+
+    #[tokio::test]
+    async fn provide_with_values_cached_due_to_shared_ownership() {
+        /// Struct for which `Provide` offers exactly two instances.
+        struct Twice;
+
+        impl Provide for Twice {
+            type Item = Self;
+
+            fn iter(_session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
+                Ok(std::iter::once(Twice).chain(std::iter::once(Twice)))
+            }
+
+            fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+            where
+                I: Iterator<Item = Self::Item>
+            {
+                Ok(items)
+            }
+        }
+
+        #[derive(Provide)]
+        #[provide(crate = "crate")]
+        struct TestExtension {
+            _embedder: Arc<Comp<dyn EmbeddingModel>>,
+            #[provide(each)]
+            _twice: Twice,
+        }
+
+        impl Extension for TestExtension {
+            fn uri(&self) -> &str           { "markhor://test-extension" }
+            fn name(&self) -> &str          { "test-extension" }
+            fn description(&self) ->  &str  { "Test extension" }
+        }
+
+        // Session setup
+        let ext = MockEmbedderExtension::new(vec!["the", "cat", "sat", "on", "mat"]);
+        let mut session = Session::new();
+        add_extension(&mut session, ext, vec![NOT_USED_FOR_TRAINING]).await.unwrap();
+        assert_eq!(session.extensions.len(), 1);
+
+        // Initialize TestExtension
+        session.initialize_extension_with_multiple_instances::<TestExtension>(Default::default()).await.unwrap();
+        assert_eq!(session.extensions.len(), 3);
+        assert_eq!(session.extensions[1].item.name(), "test-extension");
+        assert_eq!(session.extensions[2].item.name(), "test-extension");
+
+        // One instance of Comp<dyn EmbeddingModel> is constructed, then each TestExtension 
+        // instance only requires cloning an Arc. Session has nothing further to track.
+        // Still OK
+        assert_eq!(session.extensions[1].permissions_granted(), vec![NOT_USED_FOR_TRAINING]);
+
+        // FAILS
+        // Session defaults to granting ON_DEVICE.
+        assert_eq!(session.extensions[2].permissions_granted(), vec![NOT_USED_FOR_TRAINING]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn provide_with_iteration_and_concurrent_cloning() {
+        #[derive(Provide)]
+        #[provide(crate = "crate")]
+        struct TestExtension {
+            #[provide(each, map = |api_key: ApiKey| clone_later(api_key))]
+            api_key: ApiKey,
+        }
+
+        impl Extension for TestExtension {
+            fn uri(&self) -> &str           { "markhor://test-extension" }
+            fn name(&self) -> &str          { "test-extension" }
+            fn description(&self) ->  &str  { self.api_key.project() }
+        }
+
+        // The basic idea here is simply that the `Provide` implementation spawns a task that
+        // clones an API key concurrently.
+        // TRIGGER is just an implementation detail used to reproduce the issue consistently
+        // during testing.
+        static TRIGGER: OnceLock<AtomicBool> = OnceLock::new();
+        TRIGGER.get_or_init(|| AtomicBool::new(false));
+
+        fn clone_later(api_key: ApiKey) -> ApiKey {
+            let trigger = TRIGGER.get().unwrap();
+            if api_key.project() == "project-a" {
+                let mut vec = vec![api_key.clone()];
+                task::spawn(async move {
+                    // Wait for signal to clone
+                    while !trigger.load(Ordering::Acquire) {
+                        task::yield_now().await;
+                    }
+                    vec.push(vec[0].clone());
+                    // Indicate that cloning is done
+                    trigger.store(false, Ordering::Release);
+                });
+            } else {
+                // Send signal to clone
+                trigger.store(true, Ordering::Release);
+                // Wait for cloning to finish
+                while trigger.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+            }
+            api_key
+        }
+
+        // Session setup
+        let mut session = Session::new();
+        session.add_api_key(ApiKey::new(
+            "1234567890abcdef".to_string(),
+            "TestProvider".to_string(),
+            "project-a".to_string(),
+        ), vec![NOT_USED_FOR_TRAINING]);
+        session.add_api_key(ApiKey::new(
+            "abcdef1234567890".to_string(),
+            "TestProvider".to_string(),
+            "project-b".to_string(),
+        ), vec![GDPR]);
+
+        // Initialize TestExtension
+        session.initialize_extension_with_multiple_instances::<TestExtension>(Default::default()).await.unwrap();
+        assert_eq!(session.extensions.len(), 2);
+        assert_eq!(session.extensions[0].item.description(), "project-a");
+        assert_eq!(session.extensions[1].item.description(), "project-b");
+
+        // Permissions should be tracked correctly, even though the first API key was cloned
+        // concurrently during the resolution of the second instance of `TextExtension`.
+        assert_eq!(session.extensions[0].permissions_granted(), vec![NOT_USED_FOR_TRAINING]);
+        // FAILS (only granted permission PUBLIC)
+        assert_eq!(session.extensions[1].permissions_granted(), vec![GDPR]);
+    }
+
 }
