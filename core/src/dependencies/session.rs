@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::{dependencies::{Provide, ResolveDependencyError, api_key::ApiKey, dependency_slot::DependencySlot}, extension::{Extension, ExtensionConfig, InitExtensionError}, library::{Document, Scope, Workspace}, permissions::{self, Authorized, Permission, Restricted}};
+use crate::{dependencies::{BuildFrom, Provide, ResolveDependencyError, api_key::ApiKey, dependency_slot::DependencySlot}, extension::{Extension, ExtensionConfig, InitExtensionError}, library::{Document, Scope, Workspace}, permissions::{self, Authorized, Permission, Restricted}};
 
 use std::sync::Arc;
 
@@ -174,6 +174,70 @@ impl Session {
 
         r
     }
+
+    pub async fn add_extension<T, E>(&mut self, value: T, config: ExtensionConfig) -> Result<(), InitExtensionError> 
+    where
+        T: Clone,
+        E: Extension + BuildFrom<T> + 'static,
+        E::Requirements: Provide,
+    {
+        self.add_extension_with::<T, _, E>(move || value.clone(), config).await
+    }
+
+    pub async fn add_extension_with<T, F, E>(&mut self, mut f: F, config: ExtensionConfig) -> Result<(), InitExtensionError> 
+    where
+        F: FnMut() -> T,
+        E: Extension + BuildFrom<T> + 'static,
+        E::Requirements: Provide,
+    {
+        // Provide API keys during dependency resolution since extensions may depend on them
+        self.provides_api_keys = true;
+
+        // Disallow library access during dependency resolution
+        self.provides_library_access = false;
+
+        // Begin dependency tracking for API keys and extensions
+        for slot in &mut self.api_keys {
+            slot.replace_tracker();
+        }
+        for slot in &mut self.extensions {
+            slot.replace_tracker();
+        }
+        let tracker = PermissionTracker { session: &self };
+
+        let mut requirements_by_instances = vec![];
+        let r = match E::Requirements::iter(&self) {
+            Ok(iter) => {
+                for item in iter {
+                    let permissions = tracker.permissions_granted(config.permissions.clone());
+                    tracker.reset_tracking_count();
+                    requirements_by_instances.push((item, permissions));
+                }
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        };
+
+        // Stop dependency tracking
+        for slot in &mut self.api_keys {
+            slot.replace_tracker();
+        }
+        for slot in &mut self.extensions {
+            slot.replace_tracker();
+        }
+
+        // Reset session state
+        self.provides_api_keys = false;
+        self.provides_library_access = true;
+
+        for (requirements, permissions) in requirements_by_instances {
+            let mut extension = E::build_from(f(), requirements);
+            extension.initialize().await?;
+            self.extensions.push(DependencySlot::new(Arc::new(extension), permissions));
+        }
+
+        r
+    }    
 
     pub(crate) fn api_keys(&self) -> &[DependencySlot<ApiKey>] {
         if self.provides_api_keys {
@@ -1011,5 +1075,4 @@ mod tests {
         // FAILS (only granted permission PUBLIC)
         assert_eq!(session.extensions[1].permissions_granted(), vec![GDPR]);
     }
-
 }
