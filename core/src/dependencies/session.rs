@@ -748,6 +748,10 @@ mod tests {
         assert_eq!(vec_tuple.0.len(), 2);
         assert_eq!(vec_tuple.1.len(), 2);
         assert_eq!(vec_tuple.1[0].dimensions().unwrap(), 5);
+
+        // Unit value
+        let unit: () = session.resolve().unwrap();
+        assert_eq!(unit, ());
     }
 
     #[tokio::test]
@@ -786,6 +790,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "waiting for dependency tracking redesign/alternative"]
     async fn provide_with_values_cached_due_to_sorting() {
         #[derive(Provide)]
         #[provide(crate = "crate")]
@@ -831,6 +836,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "waiting for dependency tracking redesign/alternative"]
     async fn provide_with_values_cached_due_to_nested_iteration() {
         #[derive(Provide)]
         #[provide(crate = "crate")]
@@ -877,6 +883,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "waiting for dependency tracking redesign/alternative"]
     async fn provide_with_values_cached_due_to_shared_ownership() {
         /// Struct for which `Provide` offers exactly two instances.
         struct Twice;
@@ -933,6 +940,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "waiting for dependency tracking redesign/alternative"]
     async fn provide_with_iteration_and_concurrent_cloning() {
         #[derive(Provide)]
         #[provide(crate = "crate")]

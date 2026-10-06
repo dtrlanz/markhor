@@ -172,10 +172,11 @@ where
 }
 
 macro_rules! impl_provide_for_tuple {
-    ($($name:ident),+) => {
-        impl<$($name: Provide),+> Provide for ($($name,)+) {
-            type Item = ($($name,)+);
+    ($($name:ident),*) => {
+        impl<$($name: Provide),*> Provide for ($($name,)*) {
+            type Item = ($($name,)*);
 
+            #[allow(unused_variables)]
             fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
             {
                 // Only resolving a single tuple instance here because it's simpler.
@@ -188,8 +189,8 @@ macro_rules! impl_provide_for_tuple {
                 $( 
                     #[allow(non_snake_case)]
                     let $name = $name::first(session)?; 
-                )+
-                Self::iter_from_items(std::iter::once(($($name,)+)))
+                )*
+                Self::iter_from_items(std::iter::once(($($name,)*)))
             }
 
             fn iter_from_items<__I>(items: __I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
@@ -202,6 +203,7 @@ macro_rules! impl_provide_for_tuple {
     };
 }
 
+impl_provide_for_tuple!();
 impl_provide_for_tuple!(A);
 impl_provide_for_tuple!(A, B);
 impl_provide_for_tuple!(A, B, C);
