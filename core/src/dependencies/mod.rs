@@ -21,10 +21,15 @@
 //!
 
 mod api_key;
+mod build_from;
 mod dependency_slot;
 mod provide;
 mod session;
 
+pub use build_from::BuildFrom;
 pub use provide::{Provide, ResolveDependencyError};
 pub use session::Session;
 pub(crate) use dependency_slot::TrackingGuard;
+
+use crate::extension::Extension;
+
