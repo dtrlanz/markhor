@@ -47,134 +47,6 @@ impl Session {
         );
     }
 
-    pub async fn initialize_extension<F: FnOnce(&Session) -> Result<E, InitExtensionError>, E: Extension + 'static>(&mut self, config: ExtensionConfig, f: F) -> Result<(), InitExtensionError> {
-        let default_permissions = config.permissions;
-        let (extension, permissions) = self.track_permissions(
-            default_permissions, 
-            async |s: &Session| f(s)
-        ).await;
-        let mut extension = extension?;
-        extension.initialize().await?;
-        for p in &permissions {
-            // TODO: avoid cloning when permission is already present (`ToOwned` etc.)
-            Permission::insert(&mut self.permissions_required, p.clone());
-        }
-        self.extensions.push(DependencySlot::new(Arc::new(extension), permissions));
-        Ok(())
-    }
-
-    /// Executes a function while tracking its dependencies and the permissions entailed by those
-    /// dependencies.
-    /// Returns the result of the function and a list of permissions to be granted based on the 
-    /// dependencies used by the function.
-    /// 
-    /// This is used when resolving the dependencies of an extension, so that the extension can be
-    /// added to the session with the correct permissions. When an extension uses dependencies,
-    /// the permissions granted to the extension are limited by those granted to the dependencies.
-    /// For example, if an extension uses an API key that is only allowed to be used for 
-    /// non-training purposes, then the extension itself will also be limited to non-training 
-    /// purposes.
-    /// 
-    /// The resulting permissions are the *intersection* of the permissions granted to each 
-    /// dependency and of a default set of permissions.
-    /// 
-    /// While executing the function, the [`Session`] disallows access to [`Restricted`] assets 
-    /// (e.g., documents). The reason is that it is not yet known what permissions the extension 
-    /// will have, so it should not be allowed to access any assets that require permissions.
-    // 
-    // *Note*: This may become trickier to implement as the variety and complexity of assets 
-    // increases. Extensions used as dependencies may themselves be restricted; tools offered by 
-    // extensions may offer access to documents; etc. A possible solution might be to limit 
-    // functionality during dependency resolution (e.g., no tool calls, enforced by `Comp`).
-    async fn track_permissions<T, F: AsyncFnOnce(&Session) -> T>(&mut self, default: Vec<Permission>, f: F) -> (T, Vec<Permission>) {
-        // Provide API keys during dependency resolution since extensions may depend on them
-        self.provides_api_keys = true;
-
-        // Disallow library access during dependency resolution
-        self.provides_library_access = false;
-
-        // Begin dependency tracking for API keys and extensions
-        for slot in &mut self.api_keys {
-            slot.replace_tracker();
-        }
-        for slot in &mut self.extensions {
-            slot.replace_tracker();
-        }
-        let tracker = PermissionTracker { session: &self };
-
-        // Execute the function
-        let result = f(&self).await;
-
-        // Get permissions granted
-        let permissions = tracker.permissions_granted(default);
-
-        // Stop dependency tracking
-        for slot in &mut self.api_keys {
-            slot.replace_tracker();
-        }
-        for slot in &mut self.extensions {
-            slot.replace_tracker();
-        }
-
-        // Reset session state
-        self.provides_api_keys = false;
-        self.provides_library_access = true;
-
-        (result, permissions)
-    }
-
-    // Will eventually replace `initialize_extension`
-    //
-    // Currently limited to extensions that `impl Provide`. That may change.
-    pub async fn initialize_extension_with_multiple_instances<E: Extension + Provide + 'static>(&mut self, config: ExtensionConfig) -> Result<(), InitExtensionError> {
-        // Provide API keys during dependency resolution since extensions may depend on them
-        self.provides_api_keys = true;
-
-        // Disallow library access during dependency resolution
-        self.provides_library_access = false;
-
-        // Begin dependency tracking for API keys and extensions
-        for slot in &mut self.api_keys {
-            slot.replace_tracker();
-        }
-        for slot in &mut self.extensions {
-            slot.replace_tracker();
-        }
-        let tracker = PermissionTracker { session: &self };
-
-        let mut instances = vec![];
-        let r = match E::iter(&self) {
-            Ok(iter) => {
-                for item in iter {
-                    let permissions = tracker.permissions_granted(config.permissions.clone());
-                    tracker.reset_tracking_count();
-                    instances.push((item, permissions));
-                }
-                Ok(())
-            }
-            Err(e) => Err(e.into()),
-        };
-
-        // Stop dependency tracking
-        for slot in &mut self.api_keys {
-            slot.replace_tracker();
-        }
-        for slot in &mut self.extensions {
-            slot.replace_tracker();
-        }
-
-        // Reset session state
-        self.provides_api_keys = false;
-        self.provides_library_access = true;
-
-        for (mut extension, permissions) in instances {
-            extension.initialize().await?;
-            self.extensions.push(DependencySlot::new(Arc::new(extension), permissions));
-        }
-
-        r
-    }
-
     pub async fn add_extension<T, E>(&mut self, value: T, config: ExtensionConfig) -> Result<(), InitExtensionError> 
     where
         T: Clone,
@@ -351,145 +223,13 @@ mod tests {
         extension: E,
         permissions: Vec<Permission>,
     ) -> Result<(), InitExtensionError> {
-        session.initialize_extension(
-            ExtensionConfig { permissions }, 
-            |_| Ok(extension)
+        let mut iter = std::iter::once(extension);
+        session.add_extension_with::<E, _, E>(
+            // Will never be called more than once because <E as BuildFrom<E>>::Requirements = (),
+            // which only has one value.
+            move || iter.next().unwrap(),
+            ExtensionConfig { permissions },            
         ).await
-    }
-
-
-    #[tokio::test]
-    async fn track_permissions_for_extensions() {
-        let ext0 = FixedSizeChunkerExtension::new(10);
-        let ext1 = FixedSizeChunkerExtension::new(20);
-        let ext2 = FixedSizeChunkerExtension::new(30);
-        let ext3 = FixedSizeChunkerExtension::new(40);
-
-        let mut session = Session::new();
-        assert!(Actor(vec![]).may_access(&session));
-
-        add_extension(&mut session, ext0, vec![PUBLIC]).await.unwrap();
-        assert!(!Actor(vec![]).may_access(&session));
-        assert!(Actor(vec![PUBLIC]).may_access(&session));
-
-        add_extension(&mut session, ext1, vec![NOT_USED_FOR_TRAINING]).await.unwrap();
-        assert!(!Actor(vec![]).may_access(&session));
-        assert!(!Actor(vec![PUBLIC]).may_access(&session));
-        assert!(Actor(vec![NOT_USED_FOR_TRAINING]).may_access(&session));
-
-        add_extension(&mut session, ext2, vec![GDPR]).await.unwrap();
-        assert!(!Actor(vec![]).may_access(&session));
-        assert!(!Actor(vec![NOT_USED_FOR_TRAINING]).may_access(&session));
-        assert!(!Actor(vec![GDPR]).may_access(&session));
-        assert!(Actor(vec![NOT_USED_FOR_TRAINING, GDPR]).may_access(&session));
-        assert_eq!(session.extensions.len(), 3);
-
-        add_extension(&mut session, ext3, vec![ON_DEVICE]).await.unwrap();
-        assert!(!Actor(vec![NOT_USED_FOR_TRAINING, GDPR]).may_access(&session));
-        assert_eq!(session.extensions.len(), 4);
-
-        let default = permissions::all_permissions();
-
-        let (_, perm) = session.track_permissions(default.clone(), async |sess| {
-            // Use ext0
-            Comp::<dyn Chunker>::first(sess).unwrap()
-        }).await;
-        assert_eq!(perm, vec![PUBLIC]);
-
-        let (_, perm) = session.track_permissions(default.clone(), async |sess| {
-            // Use all four extensions
-            Vec::<Comp<dyn Chunker>>::first(sess).unwrap()
-        }).await;
-        assert_eq!(perm, vec![PUBLIC]);
-
-        let (_, perm) = session.track_permissions(default.clone(), async |sess| {
-            // Use ext0 and ext1
-            let mut chunkers = Vec::<Comp<dyn Chunker>>::first(sess).unwrap();
-            chunkers.truncate(2);
-            chunkers
-        }).await;
-        assert_eq!(perm, vec![PUBLIC]);
-
-        let (_, perm) = session.track_permissions(default.clone(), async |sess| {
-            // Use ext1 and ext2
-            let mut chunkers = Vec::<Comp<dyn Chunker>>::first(sess).unwrap();
-            chunkers.remove(0);
-            chunkers.pop();
-            chunkers
-        }).await;
-        assert_eq!(perm, vec![PUBLIC]);
-
-        let (_, perm) = session.track_permissions(default.clone(), async |sess| {
-            // Use ext1 and ext3
-            let mut chunkers = Vec::<Comp<dyn Chunker>>::first(sess).unwrap();
-            chunkers.remove(2);
-            chunkers.remove(0);
-            chunkers
-        }).await;
-        assert_eq!(perm, vec![NOT_USED_FOR_TRAINING]);
-
-        let (_, perm) = session.track_permissions(default.clone(), async |sess| {
-            // Use ext3
-            let mut chunkers = Vec::<Comp<dyn Chunker>>::first(sess).unwrap();
-            let c = chunkers.pop().unwrap();
-            c
-        }).await;
-        assert_eq!(perm, vec![ON_DEVICE]);
-    }
-
-    #[tokio::test]
-    async fn track_permissions_for_api_keys() {
-        let mut session = Session::new();
-        session.add_api_key(
-            ApiKey::new(
-                "1234567890abcdef".to_string(),
-                "TestProvider".to_string(),
-                "TestProject".to_string(),
-            ),
-            vec![NOT_USED_FOR_TRAINING],
-        );
-        session.add_api_key(
-            ApiKey::new(
-                "abcdef1234567890".to_string(),
-                "AnotherProvider".to_string(),
-                "AnotherProject".to_string(),
-            ),
-            vec![GDPR],
-        );
-
-        let default = permissions::all_permissions();
-
-        session.provide_api_keys();
-        let (_, perm) = session.track_permissions(default.clone(), async |sess| {
-            // Use no API keys
-            let _api_keys = Vec::<ApiKey>::first(sess).unwrap();
-        }).await;
-        assert_eq!(perm, default);
-
-        session.provide_api_keys();
-        let (_, perm) = session.track_permissions(default.clone(), async |sess| {
-            // Use only the first API key
-            let api_keys = Vec::<ApiKey>::first(sess).unwrap();
-            api_keys[0].key();
-        }).await;
-        assert_eq!(perm, vec![NOT_USED_FOR_TRAINING]);
-
-        session.provide_api_keys();
-        let (_, perm) = session.track_permissions(default.clone(), async |sess| {
-            // Use only the second API key
-            let api_keys = Vec::<ApiKey>::first(sess).unwrap();
-            api_keys[1].key();
-        }).await;
-        assert_eq!(perm, vec![GDPR]);
-
-        session.provide_api_keys();
-        let (_, perm) = session.track_permissions(default.clone(), async |sess| {
-            // Use both API keys
-            let api_keys = Vec::<ApiKey>::first(sess).unwrap();
-            api_keys[0].key();
-            api_keys[1].key();
-        }).await;
-        assert_eq!(perm, vec![PUBLIC]);
     }
 
     #[tokio::test]
@@ -529,17 +269,13 @@ mod tests {
         assert_eq!(session.extensions.len(), 2);
 
         // Initialize TestExtension0, which should be granted permission NOT_USED_FOR_TRAINING
-        session.initialize_extension(Default::default(), |s| {
-            Ok(TestExtension0::first(s)?)
-        }).await.unwrap();
+        session.add_extension::<_, TestExtension0>((), Default::default()).await.unwrap();
         assert_eq!(session.extensions.len(), 3);
         assert_eq!(session.extensions[2].item.name(), "test-extension-0");
         assert_eq!(session.extensions[2].permissions_granted(), vec![NOT_USED_FOR_TRAINING]);
 
         // Initialize TestExtension1, which should be granted only permission PUBLIC
-        session.initialize_extension(Default::default(), |s| {
-            Ok(TestExtension1::first(s)?)
-        }).await.unwrap();
+        session.add_extension::<_, TestExtension1>((), Default::default()).await.unwrap();
         assert_eq!(session.extensions.len(), 4);
         assert_eq!(session.extensions[3].item.name(), "test-extension-1");
         assert_eq!(session.extensions[3].permissions_granted(), vec![PUBLIC]);
@@ -644,35 +380,27 @@ mod tests {
         );
 
         // Initialize TestExtension0, which should be granted only permission GDPR
-        session.initialize_extension(Default::default(), |s| {
-            Ok(TestExtension0::first(s)?)
-        }).await.unwrap();
+        session.add_extension::<_, TestExtension0>((), Default::default()).await.unwrap();
         assert_eq!(session.extensions.len(), 1);
         assert_eq!(session.extensions[0].item.name(), "test-extension-0");
         assert_eq!(session.extensions[0].permissions_granted(), vec![GDPR]);
 
         // Initialize TestExtension1, which should be granted only permission PUBLIC
-        session.initialize_extension(Default::default(), |s| {
-            Ok(TestExtension1::first(s)?)
-        }).await.unwrap();
+        session.add_extension::<_, TestExtension1>((), Default::default()).await.unwrap();
         assert_eq!(session.extensions.len(), 2);
         assert_eq!(session.extensions[1].item.name(), "test-extension-1");
         assert_eq!(session.extensions[1].permissions_granted(), vec![PUBLIC]);
         
         // Initialize TestExtension2, which should be granted permission GDPR
         // even though the extension doesn't store the key
-        session.initialize_extension(Default::default(), |s| {
-            Ok(TestExtension2::first(s)?)
-        }).await.unwrap();
+        session.add_extension::<_, TestExtension2>((), Default::default()).await.unwrap();
         assert_eq!(session.extensions.len(), 3);
         assert_eq!(session.extensions[2].item.name(), "test-extension-2");
         assert_eq!(session.extensions[2].permissions_granted(), vec![GDPR]);
 
         // Initialize TestExtension3, which should be granted only permission NOT_USED_FOR_TRAINING
         // as per API key "AnotherProvider"
-        session.initialize_extension(Default::default(), |s| {
-            Ok(TestExtension3::first(s)?)
-        }).await.unwrap();
+        session.add_extension::<_, TestExtension3>((), Default::default()).await.unwrap();
         assert_eq!(session.extensions.len(), 4);
         assert_eq!(session.extensions[3].item.name(), "test-extension-3");
         assert_eq!(session.extensions[3].permissions_granted(), vec![NOT_USED_FOR_TRAINING]);
@@ -737,9 +465,7 @@ mod tests {
         // Initialize TestExtension0, which should be granted only permission NOT_USED_FOR_TRAINING
         // However, the existing `Comp` referencing the same `FixedSizeChunkerExtension` will be
         // dropped *while* `TestExtension0` is initialized.
-        session.initialize_extension(Default::default(), |s| {
-            Ok(TestExtension0::first(s)?)
-        }).await.unwrap();
+        session.add_extension::<_, TestExtension0>((), Default::default()).await.unwrap();
 
         // Nevertheless, if permissions are tracked correctly, `TestExtension0` should end up
         // with the same requirements as `FixedSizeChunkerExtension`.
@@ -774,7 +500,7 @@ mod tests {
         assert_eq!(session.extensions.len(), 2);
 
         // Initialize TestExtension
-        session.initialize_extension_with_multiple_instances::<TestExtension>(Default::default()).await.unwrap();
+        session.add_extension::<_, TestExtension>((), Default::default()).await.unwrap();
         assert_eq!(session.extensions.len(), 4);
         assert_eq!(session.extensions[2].item.name(), "test-extension");
         assert_eq!(session.extensions[3].item.name(), "test-extension");
@@ -881,7 +607,7 @@ mod tests {
         assert_eq!(session.extensions.len(), 2);
 
         // Initialize TestExtension
-        session.initialize_extension_with_multiple_instances::<TestExtension>(Default::default()).await.unwrap();
+        session.add_extension::<_, TestExtension>((), Default::default()).await.unwrap();
         assert_eq!(session.extensions.len(), 4);
         assert_eq!(session.extensions[2].item.name(), "test-extension");
         assert_eq!(session.extensions[3].item.name(), "test-extension");
@@ -926,7 +652,7 @@ mod tests {
         assert_eq!(session.extensions.len(), 2);
 
         // Initialize TestExtension
-        session.initialize_extension_with_multiple_instances::<TestExtension>(Default::default()).await.unwrap();
+        session.add_extension::<_, TestExtension>((), Default::default()).await.unwrap();
         assert_eq!(session.extensions.len(), 6);
 
         // NOT_USED_FOR_TRAINING & NOT_USED_FOR_TRAINING = NOT_USED_FOR_TRAINING
@@ -988,7 +714,7 @@ mod tests {
         assert_eq!(session.extensions.len(), 1);
 
         // Initialize TestExtension
-        session.initialize_extension_with_multiple_instances::<TestExtension>(Default::default()).await.unwrap();
+        session.add_extension::<_, TestExtension>((), Default::default()).await.unwrap();
         assert_eq!(session.extensions.len(), 3);
         assert_eq!(session.extensions[1].item.name(), "test-extension");
         assert_eq!(session.extensions[2].item.name(), "test-extension");
@@ -1064,7 +790,7 @@ mod tests {
         ), vec![GDPR]);
 
         // Initialize TestExtension
-        session.initialize_extension_with_multiple_instances::<TestExtension>(Default::default()).await.unwrap();
+        session.add_extension::<_, TestExtension>((), Default::default()).await.unwrap();
         assert_eq!(session.extensions.len(), 2);
         assert_eq!(session.extensions[0].item.description(), "project-a");
         assert_eq!(session.extensions[1].item.description(), "project-b");

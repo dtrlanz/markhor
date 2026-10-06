@@ -198,13 +198,12 @@ mod tests {
     #[tokio::test]
     async fn provide() {
         let mut session = Session::new();
-        let chunker_ext_5 = FixedSizeChunkerExtension::new(5);
-        let chunker_ext_10 = FixedSizeChunkerExtension::new(10);
-        let embedder_ext = MockEmbedderExtension::new(vec!["the", "cat", "sat", "on", "mat"]);
-        session.initialize_extension(Default::default(), |_| Ok(chunker_ext_5)).await.unwrap();
-        session.initialize_extension(Default::default(), |_| Ok(chunker_ext_10)).await.unwrap();
-        session.initialize_extension(Default::default(), |_| Ok(embedder_ext)).await.unwrap();
-        
+        session.add_extension::<_, FixedSizeChunkerExtension>(FixedSizeChunkerExtension::new(5), Default::default()).await.unwrap();
+        session.add_extension::<_, FixedSizeChunkerExtension>(FixedSizeChunkerExtension::new(10), Default::default()).await.unwrap();
+        session.add_extension::<_, MockEmbedderExtension>(
+            MockEmbedderExtension::new(vec!["the", "cat", "sat", "on", "mat"]), 
+            Default::default()
+        ).await.unwrap();
 
         // Test providing single components
         let chunker: Comp<dyn Chunker> = Provide::first(&session).unwrap();

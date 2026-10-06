@@ -167,6 +167,7 @@ pub(crate) mod test_chunker {
         }
     }
 
+    #[derive(Debug, Clone)]
     pub struct FixedSizeChunkerExtension {
         chunk_size: usize,
     }

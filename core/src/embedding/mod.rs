@@ -146,6 +146,7 @@ pub(crate) mod test_utils {
         }
     }
 
+    #[derive(Debug, Clone)]
     pub struct MockEmbedderExtension {
         vocabulary: Vec<&'static str>,
     }
