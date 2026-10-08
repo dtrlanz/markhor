@@ -2,18 +2,18 @@ use std::{any::type_name, hash::Hash, sync::Arc};
 use thiserror::Error;
 use tracing::warn;
 
-use crate::dependencies::Session;
+use crate::dependencies::{Session, session::Assets};
 
 pub use derive_provide::Provide;
 
 pub trait Provide {
     type Item;
 
-    fn first(session: &Session) -> Result<Self, ResolveDependencyError> 
+    fn first(assets: &Assets) -> Result<Self, ResolveDependencyError> 
     where 
         Self: Sized
     {
-        Self::iter(session)?
+        Self::iter(assets)?
             .next()
             .ok_or_else(|| {
                 // Get name of the missing struct
@@ -22,7 +22,7 @@ pub trait Provide {
             })
     }
 
-    fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>;
+    fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>;
 
     fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
     where
@@ -32,7 +32,7 @@ pub trait Provide {
 impl<T> Provide for std::marker::PhantomData<T> {
     type Item = Self;
 
-    fn iter(_session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+    fn iter(_assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
     {
         Ok(std::iter::once(std::marker::PhantomData))
     }
@@ -49,9 +49,9 @@ impl<T> Provide for std::marker::PhantomData<T> {
 impl<T: Provide> Provide for Box<T> {
     type Item = T;
 
-    fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+    fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
     {
-        let items = T::iter(session)?;
+        let items = T::iter(assets)?;
         Self::iter_from_items(items)
     }
 
@@ -67,9 +67,9 @@ impl<T: Provide> Provide for Box<T> {
 impl<T: Provide> Provide for Arc<T> {
     type Item = T;
 
-    fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+    fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
     {
-        let items = T::iter(session)?;
+        let items = T::iter(assets)?;
         Self::iter_from_items(items)
     }
 
@@ -85,9 +85,9 @@ impl<T: Provide> Provide for Arc<T> {
 impl<T: Provide> Provide for Option<T> {
     type Item = T;
 
-    fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+    fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
     {
-        let items = T::iter(session)?;
+        let items = T::iter(assets)?;
         Self::iter_from_items(items)
     }
 
@@ -131,9 +131,9 @@ impl<T, I: Iterator<Item = T>> Iterator for OnceOrMore<T, I> {
 impl<T: Provide> Provide for Vec<T> {
     type Item = T;
 
-    fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+    fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
     {
-        let items = T::iter(session)?;
+        let items = T::iter(assets)?;
         Self::iter_from_items(items)
     }
 
@@ -152,7 +152,7 @@ where
 {
     type Item = (K, V);
 
-    fn iter(_session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+    fn iter(_assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
     {
         // TODO: It would probably be better to introduce a specific error variant to be returned
         // in such cases. Or we could panic.
@@ -177,7 +177,7 @@ macro_rules! impl_provide_for_tuple {
             type Item = ($($name,)*);
 
             #[allow(unused_variables)]
-            fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+            fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
             {
                 // Only resolving a single tuple instance here because it's simpler.
                 // Tuples need to `impl Provide` primarily for their use with `Session::resolve`, 
@@ -188,7 +188,7 @@ macro_rules! impl_provide_for_tuple {
                 // case for it.
                 $( 
                     #[allow(non_snake_case)]
-                    let $name = $name::first(session)?; 
+                    let $name = $name::first(assets)?; 
                 )*
                 Self::iter_from_items(std::iter::once(($($name,)*)))
             }
@@ -224,9 +224,9 @@ impl_provide_for_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P);
 impl<T: Provide> Provide for std::sync::Mutex<T> {
     type Item = T;
 
-    fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+    fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
     {
-        let items = T::iter(session)?;
+        let items = T::iter(assets)?;
         Self::iter_from_items(items)
     }
 
@@ -278,25 +278,26 @@ use super::*;
     #[test]
     fn derive_provide() {
         let session = Session::new();
+        let assets = Assets::new_for_resolve_call(&session);
 
         // --- Classic struct ---
 
-        let foo = simple::Foo::first(&session).unwrap();
+        let foo = simple::Foo::first(&assets).unwrap();
         assert_eq!(foo.bar, simple::Bar);
         assert_eq!(foo.baz, simple::Baz);
 
-        let vec = simple::Foo::iter(&session).unwrap().collect::<Vec<_>>();
+        let vec = simple::Foo::iter(&assets).unwrap().collect::<Vec<_>>();
         assert_eq!(vec.len(), 1);
         assert_eq!(vec[0].bar, simple::Bar);
         assert_eq!(vec[0].baz, simple::Baz);
 
         // --- Tuple struct ---
         
-        let foo_tuple = simple::FooTuple::first(&session).unwrap();
+        let foo_tuple = simple::FooTuple::first(&assets).unwrap();
         assert_eq!(foo_tuple.0, simple::Bar);
         assert_eq!(foo_tuple.1, simple::Baz);
 
-        let vec = simple::FooTuple::iter(&session).unwrap().collect::<Vec<_>>();
+        let vec = simple::FooTuple::iter(&assets).unwrap().collect::<Vec<_>>();
         assert_eq!(vec.len(), 1);
         assert_eq!(vec[0].0, simple::Bar);
         assert_eq!(vec[0].1, simple::Baz);
@@ -326,10 +327,10 @@ use super::*;
         impl Provide for Foo {
             type Item = Self;
 
-            fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+            fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
             {
                 let items = (0..5).map(|idx| {
-                    let bar = Bar::first(session).unwrap();
+                    let bar = Bar::first(assets).unwrap();
                     Self { idx, bar }
                 });
                 Self::iter_from_items(items)
@@ -353,7 +354,7 @@ use super::*;
         impl Provide for Blank {
             type Item = Self;
 
-            fn iter(_assets: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+            fn iter(_assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
             {
                 Ok(std::iter::empty())
             }
@@ -380,7 +381,8 @@ use super::*;
         }
 
         let session = Session::new();
-        let result = TestNoFilter0::first(&session).expect("Failed to build TestNoFilter0");
+        let assets = Assets::new_for_resolve_call(&session);
+        let result = TestNoFilter0::first(&assets).expect("Failed to build TestNoFilter0");
 
         // Vec should collect all 5 Foos
         assert_eq!(result.all_foos.len(), 5);
@@ -401,7 +403,7 @@ use super::*;
             Option<enumerated::Blank>,
         );
         
-        let result = TestNoFilter1::first(&session).expect("Failed to build TestNoFilter1");
+        let result = TestNoFilter1::first(&assets).expect("Failed to build TestNoFilter1");
 
         // Same assertions as above
         assert_eq!(result.0.len(), 5);
@@ -429,11 +431,12 @@ use super::*;
         let session = Session::new();
         
         // Success case
-        let result = TestBareFilter::first(&session).expect("Failed to build TestBareFilter");
+        let assets = Assets::new_for_resolve_call(&session);
+        let result = TestBareFilter::first(&assets).expect("Failed to build TestBareFilter");
         assert_eq!(result.target_foo.idx, 2);
 
         // Failure case (predicate matches nothing)
-        let fail_result = TestBareFilterFail::first(&session);
+        let fail_result = TestBareFilterFail::first(&assets);
         assert!(fail_result.is_err(), "Expected an error because no Foo has idx 99");
         
         if let Err(ResolveDependencyError::DependencyNotAvailable(name)) = fail_result {
@@ -456,7 +459,8 @@ use super::*;
         }
 
         let session = Session::new();
-        let result = TestOptionFilter::first(&session).expect("Failed to build TestOptionFilter");
+        let assets = Assets::new_for_resolve_call(&session);
+        let result = TestOptionFilter::first(&assets).expect("Failed to build TestOptionFilter");
 
         // Should find the specific target
         assert_eq!(result.target_foo.unwrap().idx, 3);
@@ -475,7 +479,8 @@ use super::*;
         }
 
         let session = Session::new();
-        let result = TestVecFilter::first(&session).expect("Failed to build TestVecFilter");
+        let assets = Assets::new_for_resolve_call(&session);
+        let result = TestVecFilter::first(&assets).expect("Failed to build TestVecFilter");
 
         // Should only collect Foos with even indices
         assert_eq!(result.even_foos.len(), 3);
@@ -498,7 +503,8 @@ use super::*;
         }
 
         let session = Session::new();
-        let result = TestVecMap0::first(&session).expect("Failed to build TestVecMap0");
+        let assets = Assets::new_for_resolve_call(&session);
+        let result = TestVecMap0::first(&assets).expect("Failed to build TestVecMap0");
 
         // Indices should be doubled
         assert_eq!(result.doubled_foos.len(), 5);
@@ -523,7 +529,7 @@ use super::*;
             bazes: Vec<Baz>,
         }
 
-        let result = TestVecMap1::first(&session).expect("Failed to build TestVecMap1");
+        let result = TestVecMap1::first(&assets).expect("Failed to build TestVecMap1");
 
         // Foos should be wrapped in Baz structs
         assert_eq!(result.bazes.len(), 5);
@@ -546,7 +552,8 @@ use super::*;
         }
 
         let session = Session::new();
-        let result = TestMapMap::first(&session).expect("Failed to build TestMapMap");
+        let assets = Assets::new_for_resolve_call(&session);
+        let result = TestMapMap::first(&assets).expect("Failed to build TestMapMap");
 
         // Should produce a HashMap mapping indices to Foos
         assert_eq!(result.foo_map.len(), 5);
@@ -570,7 +577,8 @@ use super::*;
         }
 
         let session = Session::new();
-        let result = TestMapMap0::first(&session).expect("Failed to build TestMapMap0");
+        let assets = Assets::new_for_resolve_call(&session);
+        let result = TestMapMap0::first(&assets).expect("Failed to build TestMapMap0");
 
         // Should produce a HashMap mapping indices to Foos
         assert_eq!(result.foo_map.len(), 5);
@@ -586,8 +594,7 @@ use super::*;
             foo_map: std::collections::HashMap<usize, Foo>,
         }
 
-        let session = Session::new();
-        let result = TestMapMap1::first(&session).expect("Failed to build TestMapMap1");
+        let result = TestMapMap1::first(&assets).expect("Failed to build TestMapMap1");
 
         // Same assertions as above
         assert_eq!(result.foo_map.len(), 5);
@@ -604,7 +611,7 @@ use super::*;
             std::collections::HashMap<usize, Foo>,
         );
 
-        let result = TestMapMap2::first(&session).expect("Failed to build TestMapMap2");
+        let result = TestMapMap2::first(&assets).expect("Failed to build TestMapMap2");
 
         // Same assertions as above
         assert_eq!(result.0.len(), 5);
@@ -626,7 +633,8 @@ use super::*;
         }
 
         let session = Session::new();
-        let result = TestSortBy::first(&session).expect("Failed to build TestSortBy");
+        let assets = Assets::new_for_resolve_call(&session);
+        let result = TestSortBy::first(&assets).expect("Failed to build TestSortBy");
 
         // Indices should be sorted in descending order
         assert_eq!(result.sorted_foos.len(), 5);
@@ -642,7 +650,7 @@ use super::*;
     impl Provide for Letter {
         type Item = Self;
 
-        fn iter(_assets: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+        fn iter(_assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
         {
             // Yields exactly two letters
             let letters = vec![
@@ -675,9 +683,10 @@ use super::*;
 
 
         let session = Session::new();
+        let assets = Assets::new_for_resolve_call(&session);
         
         // Provide iterator should yield multiple items
-        let results: Vec<_> = SingleEach::iter(&session)
+        let results: Vec<_> = SingleEach::iter(&assets)
             .expect("Failed to build SingleEach")
             .collect();
 
@@ -708,8 +717,9 @@ use super::*;
 
 
         let session = Session::new();
-        
-        let results: Vec<_> = CartesianEach::iter(&session)
+        let assets = Assets::new_for_resolve_call(&session);
+
+        let results: Vec<_> = CartesianEach::iter(&assets)
             .expect("Failed to build CartesianEach")
             .collect();
 
@@ -746,8 +756,9 @@ use super::*;
         }
 
         let session = Session::new();
+        let assets = Assets::new_for_resolve_call(&session);
         
-        let results: Vec<_> = FilteredEach::iter(&session)
+        let results: Vec<_> = FilteredEach::iter(&assets)
             .expect("Failed to build FilteredEach")
             .collect();
 

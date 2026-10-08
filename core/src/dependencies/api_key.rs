@@ -64,8 +64,8 @@ impl Debug for ApiKey {
 impl Provide for ApiKey {
     type Item = Self;
 
-    fn iter(session: &super::Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
-        Ok(session.api_keys().into_iter().map(|slot| slot.item.tracked(slot.track_one())))
+    fn iter(assets: &super::Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
+        Ok(assets.api_keys().into_iter().map(|slot| slot.item.tracked(slot.track_one())))
     }
 
     fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
@@ -79,7 +79,7 @@ impl Provide for ApiKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dependencies::Session;
+    use crate::dependencies::{Assets, Session};
 
     #[test]
     fn new_api_key() {
@@ -143,8 +143,8 @@ mod tests {
             vec![],
         );
 
-        session.provide_api_keys();
-        let provided_keys: Vec<ApiKey> = ApiKey::iter(&session).unwrap().collect();
+        let assets = Assets::new_for_extension_dependencies(&session);
+        let provided_keys: Vec<ApiKey> = ApiKey::iter(&assets).unwrap().collect();
         assert_eq!(provided_keys.len(), 2);
         assert!(provided_keys.iter().any(|k| k.key() == "1234567890abcdef"));
         assert!(provided_keys.iter().any(|k| k.key() == "abcdef1234567890"));

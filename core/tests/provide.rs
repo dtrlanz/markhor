@@ -1,4 +1,4 @@
-use markhor_core::dependencies::{Session, Provide, ResolveDependencyError};
+use markhor_core::dependencies::{Assets, Provide, ResolveDependencyError, Session};
 
 
 #[test]
@@ -11,8 +11,8 @@ fn provide_simple_struct() {
     #[derive(Debug, PartialEq, Eq, Provide)]
     struct Bar;
 
-    let assets = Session::new();
-    let foo = Foo::first(&assets).unwrap();
+    let session = Session::new();
+    let foo: Foo = session.resolve().unwrap();
     assert_eq!(foo.bar, Bar);
 }
 
@@ -30,7 +30,7 @@ mod hygiene_tests {
     impl Provide for Dummy {
         type Item = Dummy;
 
-        fn iter(_session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
+        fn iter(_assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
             Ok(std::iter::once(Dummy { value: 42 }))
         }
 

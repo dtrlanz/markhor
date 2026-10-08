@@ -180,7 +180,7 @@ fn find_hygiene_prefix(generics: &syn::Generics) -> String {
 ///
 /// This macro automatically implements dependency resolution for named structs, 
 /// tuple structs, and unit structs. By default, it eagerly provides exactly 
-/// one instance of each field using `<FieldType as Provide>::first(session)`.
+/// one instance of each field using `<FieldType as Provide>::first(assets)`.
 ///
 /// You can customize how fields are iterated, filtered, mapped, and sorted 
 /// using the `#[provide(...)]` attribute.
@@ -307,7 +307,7 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
                     // 1. Determine base iterator call and any map transformations
                     let (base_iter_call, map_step) = if let Some((map_expr, src_ty)) = &attrs.map {
                         (
-                            quote! { <#src_ty as #crate_path::dependencies::Provide>::iter(__session)? }, 
+                            quote! { <#src_ty as #crate_path::dependencies::Provide>::iter(__assets)? }, 
                             quote! { let __iter = ::std::iter::Iterator::map(__iter, #map_expr); }
                         )
                     } else if let Some((_filter_map_expr, _src_ty)) = &attrs.filter_map {
@@ -320,7 +320,7 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
                                     // Local scoped trait to peel the inner 'Value' type out of the target KV type
                                     trait __ProvideKeyTupleExtractor { type Value; }
                                     impl<__K, __V> __ProvideKeyTupleExtractor for (__K, __V) { type Value = __V; }
-                                    < <<#ty as #crate_path::dependencies::Provide>::Item as __ProvideKeyTupleExtractor>::Value as #crate_path::dependencies::Provide >::iter(__session)?
+                                    < <<#ty as #crate_path::dependencies::Provide>::Item as __ProvideKeyTupleExtractor>::Value as #crate_path::dependencies::Provide >::iter(__assets)?
                                 }
                             },
                             quote! { 
@@ -345,7 +345,7 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
                         )
                     } else {
                         (
-                            quote! { <<#ty as #crate_path::dependencies::Provide>::Item as #crate_path::dependencies::Provide>::iter(__session)? }, 
+                            quote! { <<#ty as #crate_path::dependencies::Provide>::Item as #crate_path::dependencies::Provide>::iter(__assets)? }, 
                             quote! {}
                         )
                     };
@@ -390,7 +390,7 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
                             }
                         }
                     } else {
-                        quote! { <#ty as #crate_path::dependencies::Provide>::iter(__session)? }
+                        quote! { <#ty as #crate_path::dependencies::Provide>::iter(__assets)? }
                     };
 
                     if attrs.each {
@@ -408,7 +408,7 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
                                 }
                             }
                         } else {
-                            quote! { <#ty as #crate_path::dependencies::Provide>::first(__session)? }
+                            quote! { <#ty as #crate_path::dependencies::Provide>::first(__assets)? }
                         };
 
                         non_each_inits.push(quote! { let #var_ident = #init_tokens; });
@@ -527,8 +527,8 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
         impl #impl_generics #crate_path::dependencies::Provide for #name #ty_generics #where_clause {
             type Item = Self;
 
-            // Parameter named `__session` to avoid collisions with struct fields named `session`
-            fn iter(__session: &#crate_path::dependencies::Session) -> ::std::result::Result<impl ::std::iter::Iterator<Item = Self>, #crate_path::dependencies::ResolveDependencyError> {
+            // Parameter named `__assets` to avoid collisions with struct fields named `assets`
+            fn iter(__assets: &#crate_path::dependencies::Assets) -> ::std::result::Result<impl ::std::iter::Iterator<Item = Self>, #crate_path::dependencies::ResolveDependencyError> {
                 #provide_body
             }
 

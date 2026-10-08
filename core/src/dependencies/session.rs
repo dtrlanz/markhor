@@ -10,8 +10,6 @@ pub struct Session {
     api_keys: Vec<DependencySlot<ApiKey>>,
     extensions: Vec<DependencySlot<Arc<dyn Extension>>>,
     permissions_required: Vec<Permission>,
-    provides_api_keys: bool,
-    provides_library_access: bool,
 }
 
 impl Session {
@@ -20,25 +18,14 @@ impl Session {
             workspace: None,
             documents: vec![],
             api_keys: vec![],
-            provides_api_keys: false,
-            provides_library_access: true,
             extensions: vec![], 
             permissions_required: vec![] 
         }
     }
 
-    // Currently, this method is just a wrapper for `Provide::first`, similar to the
-    // relationship between `String::parse` and `FromStr::from_str`. 
-    // I suspect that additional functionality may be added in the future. It might turn
-    // out to be desirable to track asset usage or permissions here, or we might want to
-    // load/initialize assets lazily when they are first resolved (though that would require
-    // async).
-    // In any case, this method is the recommended way of resolving dependencies, rather than 
-    // calling `Provide::first` directly, if only for the sake of readability (as readers
-    // should not have to understand the `Provide` trait to make sense of code using 
-    // `Session`).
     pub fn resolve<T: Provide>(&self) -> Result<T, ResolveDependencyError> {
-        T::first(self)
+        let assets = Assets::new_for_resolve_call(self);
+        T::first(&assets)
     }
 
     pub(crate) fn add_api_key(&mut self, api_key: ApiKey, permissions: Vec<Permission>) {
@@ -62,12 +49,6 @@ impl Session {
         E: Extension + BuildFrom<T> + 'static,
         E::Requirements: Provide,
     {
-        // Provide API keys during dependency resolution since extensions may depend on them
-        self.provides_api_keys = true;
-
-        // Disallow library access during dependency resolution
-        self.provides_library_access = false;
-
         // Begin dependency tracking for API keys and extensions
         for slot in &mut self.api_keys {
             slot.replace_tracker();
@@ -77,8 +58,9 @@ impl Session {
         }
         let tracker = PermissionTracker { session: &self };
 
+        let assets = Assets::new_for_extension_dependencies(&self);
         let mut requirements_by_instances = vec![];
-        let r = match E::Requirements::iter(&self) {
+        let r = match E::Requirements::iter(&assets) {
             Ok(iter) => {
                 for item in iter {
                     let permissions = tracker.permissions_granted(config.permissions.clone());
@@ -98,10 +80,6 @@ impl Session {
             slot.replace_tracker();
         }
 
-        // Reset session state
-        self.provides_api_keys = false;
-        self.provides_library_access = true;
-
         for (requirements, permissions) in requirements_by_instances {
             let mut extension = E::build_from(f(), requirements);
             extension.initialize().await?;
@@ -110,23 +88,6 @@ impl Session {
 
         r
     }    
-
-    pub(crate) fn api_keys(&self) -> &[DependencySlot<ApiKey>] {
-        if self.provides_api_keys {
-            &self.api_keys
-        } else {
-            &[]
-        }
-    }
-
-    pub(crate) fn extensions(&self) -> &[DependencySlot<Arc<dyn Extension>>] {
-        &self.extensions
-    }
-
-    #[cfg(test)]
-    pub(crate) fn provide_api_keys(&mut self) {
-        self.provides_api_keys = true;
-    }
 }
 
 impl Restricted for Session {
@@ -143,9 +104,57 @@ impl From<Workspace> for Session {
             api_keys: vec![],
             extensions: vec![],
             permissions_required: vec![],
-            provides_api_keys: false,
-            provides_library_access: true,
         }
+    }
+}
+
+pub struct Assets<'a> {
+    session: &'a Session,
+    context: AssetCx,
+}
+
+impl<'a> Assets<'a> {
+    pub(crate) fn new_for_extension_dependencies(session: &'a Session) -> Self {
+        Self { session, context: AssetCx::ExtensionDependencies }
+    }
+
+    pub(crate) fn new_for_resolve_call(session: &'a Session) -> Self {
+        Self { session, context: AssetCx::ResolveCall }
+    }
+
+    pub(crate) fn api_keys(&self) -> &[DependencySlot<ApiKey>] {
+        if self.context.api_keys() {
+            &self.session.api_keys
+        } else {
+            &[]
+        }
+    }
+
+    pub(crate) fn extensions(&self) -> &[DependencySlot<Arc<dyn Extension>>] {
+        if self.context.extensions() {
+            &self.session.extensions
+        } else {
+            &[]
+        }
+    }
+}
+
+enum AssetCx {
+    ExtensionDependencies,
+    ResolveCall,
+}
+
+impl AssetCx {
+    fn api_keys(&self) -> bool {
+        matches!(self, AssetCx::ExtensionDependencies)
+    }
+
+    fn extensions(&self) -> bool {
+        true
+    }
+
+    fn library(&self) -> bool {
+        matches!(self, AssetCx::ResolveCall)
     }
 }
 
@@ -323,9 +332,9 @@ mod tests {
         impl Provide for TestExtension2 {
             type Item = TestExtension2;
 
-            fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
+            fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
                 // Get API key during resolution, convert to string, then drop `ApiKey`
-                let api_key = ApiKey::first(session)?;
+                let api_key = ApiKey::first(assets)?;
                 Ok(std::iter::once(TestExtension2 {
                     _api_key: api_key.key().to_string(),
                 }))
@@ -419,8 +428,8 @@ mod tests {
         impl Provide for TestExtension0 {
             type Item = TestExtension0;
 
-            fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
-                let mut chunker = Some(Comp::<dyn Chunker>::first(session)?);
+            fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
+                let mut chunker = Some(Comp::<dyn Chunker>::first(assets)?);
                 Ok(std::iter::from_fn(move || {
                     chunker.take().map(|c| {
                         BARRIER.get().unwrap().wait();
@@ -452,10 +461,11 @@ mod tests {
         let mut session = Session::new();
         add_extension(&mut session, ext0, vec![NOT_USED_FOR_TRAINING]).await.unwrap();
         assert_eq!(session.extensions.len(), 1);
+        let assets = Assets::new_for_resolve_call(&session);
 
         // Simulate that `FixedSizeChunkerExtension` is already in use and its pointer dropped at
         // an inopportune time.
-        let chunker0 = Some(Comp::<dyn Chunker>::first(&session).unwrap());
+        let chunker0 = Some(Comp::<dyn Chunker>::first(&assets).unwrap());
         tokio::spawn(async move {
             BARRIER.get().unwrap().wait();
             mem::drop(chunker0);
@@ -681,7 +691,7 @@ mod tests {
         impl Provide for Twice {
             type Item = Self;
 
-            fn iter(_session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
+            fn iter(_assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
                 Ok(std::iter::once(Twice).chain(std::iter::once(Twice)))
             }
 

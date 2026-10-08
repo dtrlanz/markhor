@@ -69,8 +69,8 @@ macro_rules! impl_provide_comp {
             impl Provide for Comp<dyn $trait> {
                 type Item = Self;
 
-                fn iter(session: &Session) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
-                    let comps = session.extensions().into_iter()
+                fn iter(assets: &crate::dependencies::Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
+                    let comps = assets.extensions().into_iter()
                         .flat_map(|slot| slot.item.$method().into_iter().map(|comp| Self {
                             extension: slot.item.clone(),
                             component: comp,
@@ -177,7 +177,7 @@ impl<E: Extension + 'static> TryFrom<TryIntoComp<E>> for Comp<dyn Chunker> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{chunking::test_chunker::FixedSizeChunkerExtension, embedding::test_utils::MockEmbedderExtension};
+    use crate::{chunking::test_chunker::FixedSizeChunkerExtension, dependencies::Assets, embedding::test_utils::MockEmbedderExtension};
 
     #[test]
     fn comp() {
@@ -204,18 +204,19 @@ mod tests {
             MockEmbedderExtension::new(vec!["the", "cat", "sat", "on", "mat"]), 
             Default::default()
         ).await.unwrap();
+        let assets = Assets::new_for_resolve_call(&session);
 
         // Test providing single components
-        let chunker: Comp<dyn Chunker> = Provide::first(&session).unwrap();
+        let chunker: Comp<dyn Chunker> = Provide::first(&assets).unwrap();
         assert_eq!(chunker.component_type(), ComponentType::Chunker);
         assert_eq!(chunker.metadata_id(), "markhorchunkerfixed-size chunker");
 
-        let embedder: Comp<dyn EmbeddingModel> = Provide::first(&session).unwrap();
+        let embedder: Comp<dyn EmbeddingModel> = Provide::first(&assets).unwrap();
         assert_eq!(embedder.component_type(), ComponentType::EmbeddingModel);
         assert_eq!(embedder.metadata_id(), "markhorembeddermock embedding-model");
 
         // Test resolving multiple components of the same type
-        let chunkers: Vec<Comp<dyn Chunker>> = Provide::first(&session).unwrap();
+        let chunkers: Vec<Comp<dyn Chunker>> = Provide::first(&assets).unwrap();
         assert_eq!(chunkers.len(), 2);
         assert_eq!(chunkers[0].component_type(), ComponentType::Chunker);
         assert_eq!(chunkers[1].component_type(), ComponentType::Chunker);

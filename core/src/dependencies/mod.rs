@@ -28,7 +28,7 @@ mod session;
 
 pub use build_from::BuildFrom;
 pub use provide::{Provide, ResolveDependencyError};
-pub use session::Session;
+pub use session::{Assets, Session};
 pub(crate) use dependency_slot::TrackingGuard;
 
 use crate::extension::Extension;
