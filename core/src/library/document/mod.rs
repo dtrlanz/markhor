@@ -7,7 +7,7 @@ use tokio::fs::{self, OpenOptions};
 use tracing::{debug, error, info, instrument, trace, warn};
 use std::{collections::{HashMap, hash_map::Entry}, ffi::OsStr, path::{Path, PathBuf}};
 
-use crate::{chunking::{Chunker, ChunkerError}, extension::Comp, library::{ATTACHMENTS_DIR, AccessLibraryError, HashValue, METADATA_EXTENSION, Tag, Workspace}, markdown::{ToMarkdown, WITH_MILESTONES}};
+use crate::{chunking::{Chunker, ChunkerError}, extension::Comp, library::{ATTACHMENTS_DIR, AccessLibraryError, HashValue, METADATA_EXTENSION, Tag, Workspace}, markdown::{ToMarkdown, WITH_MILESTONES}, permissions::Restricted};
 
 pub mod chunks;
 pub mod text;
@@ -587,6 +587,19 @@ impl Document {
         } else {
             Some(file_name)
         }
+    }
+}
+
+// TODO: Besides adding permissions to document metadata and then completing this implementation,
+// a bit more thought should go into what exactly these permissions apply to. You'll want an agent
+// to be able to search through documents in its scope and read at least some metadata before
+// accessing the document content and thus incurring any restrictions attached to that document.
+// But you could also leak sensitive information via metadata. We'll probably start with a fairly
+// pragmatic approach that's explictly not watertight. Permissions could become more finegrained
+// later on.
+impl Restricted for Document {
+    fn permissions_required(&self) -> &[crate::permissions::Permission] {
+        todo!("Implement permissions for Document");
     }
 }
 

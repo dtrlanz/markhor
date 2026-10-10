@@ -1,7 +1,5 @@
 use crate::permissions::{Authorized, Permission};
 
-
-
 pub trait Restricted {
     fn permissions_required(&self) -> &[Permission];
 
@@ -10,26 +8,23 @@ pub trait Restricted {
     }
 }
 
+/// Wrapper for using methods of the `Restricted` trait on any type that does not implement it
+/// directly, so long as it implements `AsRef<[Permission]>`.
+/// 
+/// This can be useful if you have a `Vec<Permission>` and need a convenient way to check whether
+/// that set of permissions could be accessed to a type implementing `Authorized`.
+pub struct Resource<T: AsRef<[Permission]>>(pub T);
+
+impl<T: AsRef<[Permission]>> Restricted for Resource<T> {
+    fn permissions_required(&self) -> &[Permission] {
+        self.0.as_ref()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::permissions::{ON_DEVICE, NOT_USED_FOR_TRAINING, PUBLIC};
-
-    struct Actor(Vec<Permission>);
-
-    impl Authorized for Actor {
-        fn permissions_granted(&self) -> &[Permission] {
-            &self.0
-        }
-    }
-
-    struct Resource(Vec<Permission>);
-
-    impl Restricted for Resource {
-        fn permissions_required(&self) -> &[Permission] {
-            &self.0
-        }
-    }
+    use crate::permissions::{Actor, NOT_USED_FOR_TRAINING, ON_DEVICE, PUBLIC};
 
     #[test]
     fn access_control() {

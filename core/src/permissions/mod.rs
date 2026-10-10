@@ -24,8 +24,8 @@ mod permission;
 mod restricted;
 
 pub use permission::{Permission, ON_DEVICE, NOT_USED_FOR_TRAINING, PUBLIC};
-pub use authorized::Authorized;
-pub use restricted::Restricted;
+pub use authorized::{Authorized, Actor};
+pub use restricted::{Restricted, Resource};
 
 pub(crate) use permission::all_permissions;
 #[cfg(test)]

@@ -1,6 +1,7 @@
 use thiserror::Error;
+use tracing::warn;
 
-use crate::{dependencies::{BuildFrom, Provide, ResolveDependencyError, api_key::ApiKey, dependency_slot::DependencySlot}, extension::{Extension, ExtensionConfig, InitExtensionError}, library::{Document, Scope, Workspace}, permissions::{self, Authorized, Permission, Restricted}};
+use crate::{dependencies::{BuildFrom, Provide, ResolveDependencyError, api_key::ApiKey, dependency_slot::DependencySlot}, extension::{Extension, ExtensionConfig, InitExtensionError}, library::{Document, Scope, Workspace}, permissions::{self, Actor, Authorized, Permission, Resource, Restricted}};
 
 use std::sync::Arc;
 
@@ -9,6 +10,14 @@ pub struct Session {
     documents: Vec<Document>,
     api_keys: Vec<DependencySlot<ApiKey>>,
     extensions: Vec<DependencySlot<Arc<dyn Extension>>>,
+    // Acts as an upper bound for what the session may access (imposed externally downstream, all
+    // permissions by default). Not totally sure yet if this is helpful or confusing (consider
+    // renaming field to avoid parallel with `permissions_required` and/or remove `Authorized` 
+    // implementation).
+    permissions_granted: Vec<Permission>,
+    // Represents the permissions required to access any documents (and other resources) used by
+    // the session. Extensions used by the session must meet this threshold as well as any outside
+    // actors with access to the session.
     permissions_required: Vec<Permission>,
 }
 
@@ -19,6 +28,7 @@ impl Session {
             documents: vec![],
             api_keys: vec![],
             extensions: vec![], 
+            permissions_granted: vec![],
             permissions_required: vec![] 
         }
     }
@@ -65,7 +75,16 @@ impl Session {
                 for item in iter {
                     let permissions = tracker.permissions_granted(config.permissions.clone());
                     tracker.reset_tracking_count();
-                    requirements_by_instances.push((item, permissions));
+                    if Actor(&permissions).may_access(self) {
+                        requirements_by_instances.push((item, permissions));
+                    } else {
+                        // TODO: More information would be nice here, at least via a parent span,
+                        // if not directly
+                        warn!("Extension instance has insufficient permissions: {:?}", permissions);
+                    }
+                }
+                if requirements_by_instances.is_empty() {
+                    return Err(InitExtensionError::Permission(self.permissions_required().to_vec()));
                 }
                 Ok(())
             }
@@ -87,24 +106,78 @@ impl Session {
         }
 
         r
-    }    
+    }
+
+    // This method will probably not be the only (or even the primary) way to add documents to a
+    // session. Still, this implementation outlines how document permissions relate to session 
+    // permissions. Other ways of adding documents should conform to the same constraints.
+    pub async fn add_document(&mut self, document: Document) -> Result<(), AddDocumentError> {
+        // This session must have been granted permission to access the document
+        if !self.may_access(&document) {
+            return Err(AddDocumentError::NotAuthorized(document.permissions_required().to_vec()));
+        }
+
+        // Anything with access to this session must have permission to access the document
+        // This includes the session's own extensions
+        if !Actor(&self.permissions_required).may_access(&document) {
+            return Err(AddDocumentError::ElevationRequired(self.permissions_granted.clone()));
+        }
+
+        self.documents.push(document);
+        Ok(())
+    }
+
+    // TODO: Bikeshed method name and error type
+    // The thing that's being restricted is access to documents (and any other `Restricted` 
+    // resources) in the session. The things whose access is being restricted are extensions, API
+    // keys (and any other `Authorized` assets within the session or outside actors with accesss 
+    // to the session).
+    // The use case is that you might want to add a protected document to a session (e.g., data
+    // that must not leave the device). To do that, you first have to remove any extensions etc.
+    // that lack the necessary permission, which is what this method is for. As a result, you're
+    // actually elevating the session's authorization in the sense that the restricted document
+    // can now be added. But you're also removing access from certain actors. So you're granting
+    // or restricting access depending on what you're talking about.
+    // The method name doesn't commnicate any of that very well, which could be confusing.
+    pub fn restrict_access(&mut self, permissions: Vec<Permission>) -> Result<(), RestrictAccessError> {
+        let dry_run = Resource(Permission::intersection(&self.permissions_required, &permissions));
+
+        if !self.may_access(&dry_run) {
+            // Would entail removing all extensions (& other actors), which is unlikely to be what
+            // is desired
+            return Err(RestrictAccessError::PermissionDenied(self.permissions_granted.to_vec()))
+        }
+
+        for slot in &self.api_keys {
+            if !slot.may_access(&dry_run) {
+                // Remove api key if unused or return error
+                todo!("Handle API key permission elevation failure");
+                // Also, we should probably check all assets first so as not to change the session
+                // state if elevation is going to fail anyway.
+            }
+        }
+
+        for slot in &self.extensions {
+            if !slot.may_access(&dry_run) {
+                // Remove extension if unused or return error
+                todo!("Handle extension permission elevation failure");
+            }
+        }
+
+        self.permissions_required = dry_run.0;
+        Ok(())
+    }
+}
+
+impl Authorized for Session {
+    fn permissions_granted(&self) -> &[Permission] {
+        &self.permissions_granted
+    }
 }
 
 impl Restricted for Session {
     fn permissions_required(&self) -> &[Permission] {
         &self.permissions_required
-    }
-}
-
-impl From<Workspace> for Session {
-    fn from(workspace: Workspace) -> Self {
-        Self {
-            workspace: Some(workspace),
-            documents: vec![],
-            api_keys: vec![],
-            extensions: vec![],
-            permissions_required: vec![],
-        }
     }
 }
 
@@ -194,14 +267,28 @@ impl<'a> PermissionTracker<'a> {
 }
 
 #[derive(Debug, Error)]
+pub enum AddDocumentError {
+    #[error("Session lacks required permissions: {}", 
+        .0.iter().map(|p| p.name()).collect::<Vec<_>>().join(", "))]
+    NotAuthorized(Vec<Permission>),
+
+    #[error("Session restrictions must be elevated to required permissions: {}", 
+        .0.iter().map(|p| p.name()).collect::<Vec<_>>().join(", "))]
+    ElevationRequired(Vec<Permission>),
+}
+
+#[derive(Debug, Error)]
 pub enum RestrictAccessError {
     #[error("API keys lack required permissions: {}", .0.join(", "))]
     ApiKeyNotAuthorized(Vec<String>),
 
     #[error("Extensions lack required permissions: {}", .0.join(", "))]
     ExtensionNotAuthorized(Vec<String>),
-}
 
+    #[error("Target permissions exceed those granted to extension: {}", 
+        .0.iter().map(|p| p.name()).collect::<Vec<_>>().join(", "))]
+    PermissionDenied(Vec<Permission>),
+}
 
 #[cfg(test)]
 mod tests {
