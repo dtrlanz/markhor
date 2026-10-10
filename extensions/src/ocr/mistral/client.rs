@@ -632,7 +632,7 @@ impl Extension for MistralClient {
         DESCRIPTION
     }
 
-    fn converter(&self) -> Option<Box<dyn Converter>> {
-        Some(Box::new(MistralOcr(Arc::clone(&self.inner))))
+    fn converters(&self) -> Vec<Box<dyn Converter>> {
+        vec![Box::new(MistralOcr(Arc::clone(&self.inner)))]
     }
 }

@@ -5,7 +5,7 @@ mod embedder;
 use std::ops::Deref;
 
 pub use error::{EmbeddingError};
-pub use embedder::{Embedder, EmbeddingUseCase};
+pub use embedder::{EmbeddingModel, EmbeddingUseCase};
 // pub use vector_store::{VectorStore, ChunkDataResult};
 
 use serde::{Deserialize, Serialize};
@@ -91,7 +91,7 @@ pub(crate) mod test_utils {
     }
 
     #[async_trait]
-    impl Embedder for MockEmbedder {
+    impl EmbeddingModel for MockEmbedder {
         async fn embed(&self, texts: &[&str]) -> Result<Vec<Embedding>, EmbeddingError> {
             let mut results = Vec::with_capacity(texts.len());
 
@@ -146,6 +146,7 @@ pub(crate) mod test_utils {
         }
     }
 
+    #[derive(Debug, Clone)]
     pub struct MockEmbedderExtension {
         vocabulary: Vec<&'static str>,
     }
@@ -171,8 +172,8 @@ pub(crate) mod test_utils {
             "A simple embedder that creates normalized term frequency vectors based on a fixed vocabulary."
         }
 
-        fn embedding_model(&self) -> Option<Box<dyn Embedder>> {
-            Some(Box::new(MockEmbedder::new(self.vocabulary.clone())))
+        fn embedding_models(&self) -> Vec<Box<dyn EmbeddingModel>> {
+            vec![Box::new(MockEmbedder::new(self.vocabulary.clone()))]
         }
     }
 }

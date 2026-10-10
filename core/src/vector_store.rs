@@ -256,7 +256,7 @@ mod tests {
     use std::mem;
 
     use crate::embedding::test_utils::MockEmbedder;
-    use crate::embedding::Embedder;
+    use crate::embedding::EmbeddingModel;
 
     use super::*;
 

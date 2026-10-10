@@ -3,7 +3,7 @@ use std::{collections::HashMap, ops::{Deref, DerefMut}, sync::OnceLock};
 
 use tracing::{debug, info, instrument, trace, warn};
 
-use crate::{chunking::{Chunker, ChunkerError}, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES, WITHOUT_XML}, library::{HashValue, document::chunks::ChunkCache}};
+use crate::{chunking::{Chunker, ChunkerError}, extension::Comp, library::{HashValue, document::chunks::ChunkCache}, markdown::{ToMarkdown, WITH_MILESTONES, WITHOUT_XML}};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Text {
@@ -133,7 +133,7 @@ impl Part {
     }
 
     #[instrument(skip(self, chunker, cached_chunks))]
-    pub(crate) fn validate_cached_chunks(&self, chunker: &F11y<dyn Chunker>, cached_chunks: &mut Vec<ChunkCache>) -> Result<(), ChunkerError> {
+    pub(crate) fn validate_cached_chunks(&self, chunker: &Comp<dyn Chunker>, cached_chunks: &mut Vec<ChunkCache>) -> Result<(), ChunkerError> {
         let chunks = chunker.chunk(&self.content)?;
         debug!("Generated {} chunks for text part '{}'", chunks.len(), self.id);
         cached_chunks.truncate(chunks.len());

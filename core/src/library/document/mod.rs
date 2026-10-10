@@ -7,7 +7,7 @@ use tokio::fs::{self, OpenOptions};
 use tracing::{debug, error, info, instrument, trace, warn};
 use std::{collections::{HashMap, hash_map::Entry}, ffi::OsStr, path::{Path, PathBuf}};
 
-use crate::{chunking::{Chunker, ChunkerError}, extension::F11y, markdown::{ToMarkdown, WITH_MILESTONES}, library::{ATTACHMENTS_DIR, AccessLibraryError, HashValue, METADATA_EXTENSION, Tag, Workspace}};
+use crate::{chunking::{Chunker, ChunkerError}, extension::Comp, library::{ATTACHMENTS_DIR, AccessLibraryError, HashValue, METADATA_EXTENSION, Tag, Workspace}, markdown::{ToMarkdown, WITH_MILESTONES}, permissions::Restricted};
 
 pub mod chunks;
 pub mod text;
@@ -92,7 +92,7 @@ impl Document {
     // to `chunks_mut`, but it still takes `&mut self` because we may need to create/update chunks
     // before iterating.
     /// Returns an iterator over all chunks in the document for the given chunker.
-    async fn chunks(&mut self, chunker: &F11y<dyn Chunker>) -> Result<Chunks<'_>, ChunkerError> {
+    async fn chunks(&mut self, chunker: &Comp<dyn Chunker>) -> Result<Chunks<'_>, ChunkerError> {
         let chunker_id = chunker.metadata_id();
         // Get reference to text with lifetime tied to `self.text` only, not to `self` as a whole
         if let Err(e) = self.text().await {
@@ -151,7 +151,7 @@ impl Document {
 
     /// Returns a mutable iterator over all chunks in the document for the given chunker.
     #[instrument(skip(self, chunker))]
-    pub async fn chunks_mut(&mut self, chunker: &F11y<dyn Chunker>) -> Result<impl Iterator<Item = ChunkMut<'_>>, ChunkerError> {
+    pub async fn chunks_mut(&mut self, chunker: &Comp<dyn Chunker>) -> Result<impl Iterator<Item = ChunkMut<'_>>, ChunkerError> {
         // Ensure chunk cache is valid
         let chunker_id = chunker.metadata_id();
         self.chunks(chunker).await?;
@@ -590,6 +590,19 @@ impl Document {
     }
 }
 
+// TODO: Besides adding permissions to document metadata and then completing this implementation,
+// a bit more thought should go into what exactly these permissions apply to. You'll want an agent
+// to be able to search through documents in its scope and read at least some metadata before
+// accessing the document content and thus incurring any restrictions attached to that document.
+// But you could also leak sensitive information via metadata. We'll probably start with a fairly
+// pragmatic approach that's explictly not watertight. Permissions could become more finegrained
+// later on.
+impl Restricted for Document {
+    fn permissions_required(&self) -> &[crate::permissions::Permission] {
+        todo!("Implement permissions for Document");
+    }
+}
+
 async fn read_markdown_file<T: DeserializeOwned>(path: &Path) -> Result<(String, Result<T, serde_yaml_ng::Error>), std::io::Error> {
     let content = fs::read_to_string(path).await?;
     let markdown = content.to_markdown(WITH_MILESTONES);
@@ -730,8 +743,9 @@ pub(crate) struct ExtensionCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::document::text::Part;
-    use crate::{chunking::test_chunker::FixedSizeChunkerExtension, embedding::Embedding, extension::ActiveExtension};
+    use crate::extension::TryIntoComp;
+use crate::library::document::text::Part;
+    use crate::{chunking::test_chunker::FixedSizeChunkerExtension, embedding::Embedding};
     use crate::library::fs_test_utils::{TempTree, fs_tree};
 
     #[tokio::test]
@@ -794,8 +808,7 @@ extensions:
 
         assert_eq!(doc.text().await.unwrap().export(&mut None).as_deref(), Some("hello world"));
 
-        let chunker = ActiveExtension::new(FixedSizeChunkerExtension::new(5), Default::default())
-            .chunkers().next().unwrap();
+        let chunker = TryIntoComp(FixedSizeChunkerExtension::new(5)).try_into().unwrap();
         let mut chunks: Vec<_> = doc.chunks_mut(&chunker).await.unwrap().collect();
         
         let chunk_texts: Vec<&str> = chunks.iter().map(|chunk| chunk.text()).collect();

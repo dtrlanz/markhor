@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use markhor_core::embedding::{Embedder, Embedding, EmbeddingError, EmbeddingUseCase};
+use markhor_core::embedding::{EmbeddingModel, Embedding, EmbeddingError, EmbeddingUseCase};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, instrument, trace, warn};
@@ -111,7 +111,7 @@ pub fn map_task_type_to_use_case(task_type: Option<&str>) -> EmbeddingUseCase {
 const BATCH_LIMIT: usize = 100;
 
 #[async_trait]
-impl Embedder for GeminiEmbedder {
+impl EmbeddingModel for GeminiEmbedder {
     #[instrument(skip(self, texts), fields(model=%self.model_name(), num_texts=texts.len()))]
     async fn embed(&self, texts: &[&str]) -> Result<Vec<Embedding>, EmbeddingError> {
         // Inner async block returning Result<..., GeminiError>
@@ -232,7 +232,7 @@ impl Embedder for GeminiEmbedder {
 
     fn dimensions(&self) -> Option<usize> {
         match self.model_name() {
-            "embedding-001" => Some(768),
+            "gemini-embedding-001" => Some(3072),
             "text-embedding-004" => Some(768),
             _ => {
                 warn!(model = %self.model_name(), "Unknown Gemini embedding model, dimensions not set.");

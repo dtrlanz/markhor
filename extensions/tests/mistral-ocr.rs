@@ -514,7 +514,7 @@ async fn test_image_ocr_helper(test_file: &str, expected_text: &str) {
 
 
 #[tokio::test]
-//#[ignore]
+#[ignore]
 async fn pdf_via_file_to_markdown() {
     delay_test().await; // Delay to avoid rate limits
 
@@ -522,7 +522,7 @@ async fn pdf_via_file_to_markdown() {
 }
 
 #[tokio::test]
-//#[ignore]
+#[ignore]
 async fn png_via_file_to_markdown() {
     delay_test().await; // Delay to avoid rate limits
 
