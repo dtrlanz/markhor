@@ -14,76 +14,39 @@ use std::{
 use crate::chat::chat::{ContentPart, ToolCallRequest};
 
 #[derive(Debug)]
-pub struct Conversation {
-    history: Arc<List>,
+pub struct Group {
     participants: DashMap<Arc<str>, Participant>,
 }
 
-impl Conversation {
+impl Group {
     fn new() -> Self {
         Self {
-            history: Arc::new(List::new()),
             participants: DashMap::new(),
         }
     }
+}
 
-    fn add_participant(&self, name: &str, is_human: bool) {
-        let participant = Participant {
-            id: name.into(),
-            human: is_human,
-            context: self.history.clone(),
-        };
-        self.participants.insert(name.into(), participant);
-    }
+#[derive(Debug, Clone)]
+struct Participant {
+    id: Arc<str>,
+    human: bool,
+    context: Arc<Thread>,
+}
 
-    fn fork(&self) -> Self {
-        Self {
-            history: self.history.fork(),
-            participants: self.participants.clone(),
-        }
-    }
-
+impl Participant {
     fn append(&self, message: Msg) {
-        match &message {
-            Msg::Platform(_) | Msg::Developer(_) => {
-                // something cleverer here?
-                // any constraints etc.?
-                self.history.append(message);
-            }
-            Msg::User { sender, .. } | Msg::Agent { sender, .. } => {
-                self.history.append(message);
-            }
-            Msg::Direct { recipients, .. }
-            | Msg::ToolResult { recipients, .. }
-            | Msg::Event { recipients, .. } => {
-                for recp in recipients {
-                    if let Some(ptcp) = self.participants.get(recp) {
-                        // TODO: deduplicate where multiple agents share context
-                        // Also, consider cloning less
-                        ptcp.append(message.clone());
-                    }
-                }
-            }
-            Msg::ControlSignal {
-                recipients,
-                compaction_start,
-                content,
-            } => {
-                // same as above?
-                unimplemented!()
-            }
-        }
+        self.context.append(message);
     }
 }
 
-struct List {
+struct Thread {
     items: SkipMap<usize, Msg>,
     len: AtomicUsize,
-    previous: Option<(Arc<List>, usize)>,
-    forks: Mutex<Vec<Weak<List>>>,
+    previous: Option<(Arc<Thread>, usize)>,
+    forks: Mutex<Vec<Weak<Thread>>>,
 }
 
-impl List {
+impl Thread {
     fn new() -> Self {
         Self {
             items: SkipMap::new(),
@@ -118,7 +81,6 @@ impl List {
             stack.push((list.items.iter(), stop));
             current = list.previous.as_ref().map(|(arc, s)| (&**arc, *s));
         }
-        dbg!(&stack);
         // Start at beginning
         stack
             .into_iter()
@@ -127,7 +89,7 @@ impl List {
     }
 }
 
-impl Debug for List {
+impl Debug for Thread {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         struct Items<'a>(&'a SkipMap<usize, Msg>);
         impl<'a> Debug for Items<'a> {
@@ -194,19 +156,6 @@ struct Name {
     inner: Arc<(u8, str)>,
 }
 
-#[derive(Debug, Clone)]
-struct Participant {
-    id: Arc<str>,
-    human: bool,
-    context: Arc<List>,
-}
-
-impl Participant {
-    fn append(&self, message: Msg) {
-        self.context.append(message);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{fmt::Debug, time::Duration};
@@ -216,40 +165,40 @@ mod tests {
     use super::*;
 
     #[derive(Debug)]
-    struct ConvBuilder {
-        conv: Conversation,
+    struct ThreadBuilder {
+        thread: Arc<Thread>,
         time: Option<SystemTime>,
     }
 
-    impl ConvBuilder {
+    impl ThreadBuilder {
         fn new() -> Self {
             Self {
-                conv: Conversation::new(),
+                thread: Arc::new(Thread::new()),
                 time: None,
             }
         }
 
         fn with_time(time: SystemTime) -> Self {
             Self {
-                conv: Conversation::new(),
+                thread: Arc::new(Thread::new()),
                 time: Some(time),
             }
         }
 
         fn fork(&self) -> Self {
             Self {
-                conv: self.conv.fork(),
+                thread: self.thread.fork(),
                 time: self.time.clone(),
             }
         }
 
         fn platform(self, text: &str) -> Self {
-            self.conv.append(Msg::Platform(text.into()));
+            self.thread.append(Msg::Platform(text.into()));
             self
         }
 
         fn developer(self, text: &str) -> Self {
-            self.conv.append(Msg::Developer(text.into()));
+            self.thread.append(Msg::Developer(text.into()));
             self
         }
 
@@ -258,7 +207,7 @@ mod tests {
                 .time
                 .map(|t| t.checked_add(Duration::from_secs(1)).unwrap());
             std::mem::swap(&mut self.time, &mut next_time);
-            self.conv.append(Msg::User {
+            self.thread.append(Msg::User {
                 sender: name.into(),
                 timestamp: next_time,
                 content: vec![ContentPart::Text(text.into())],
@@ -271,7 +220,7 @@ mod tests {
                 .time
                 .map(|t| t.checked_add(Duration::from_secs(1)).unwrap());
             std::mem::swap(&mut self.time, &mut next_time);
-            self.conv.append(Msg::Agent {
+            self.thread.append(Msg::Agent {
                 sender: name.into(),
                 timestamp: next_time,
                 content: vec![ContentPart::Text(text.into())],
@@ -281,25 +230,25 @@ mod tests {
         }
     }
 
-    impl AsRef<Conversation> for ConvBuilder {
-        fn as_ref(&self) -> &Conversation {
-            &self.conv
+    impl AsRef<Thread> for ThreadBuilder {
+        fn as_ref(&self) -> &Thread {
+            &self.thread
         }
     }
 
-    impl From<ConvBuilder> for Conversation {
-        fn from(value: ConvBuilder) -> Self {
-            value.conv
+    impl From<ThreadBuilder> for Arc<Thread> {
+        fn from(value: ThreadBuilder) -> Self {
+            value.thread
         }
     }
 
     // Wrapper type for comparing the histories of conversations
-    struct History<'a>(&'a Conversation);
+    struct History<'a>(&'a Thread);
 
     impl<'a> PartialEq for History<'a> {
         fn eq(&self, other: &Self) -> bool {
-            let mut lhs = self.0.history.iter();
-            let mut rhs = other.0.history.iter();
+            let mut lhs = self.0.iter();
+            let mut rhs = other.0.iter();
             loop {
                 match (lhs.next(), rhs.next()) {
                     (Some(l), Some(r)) => {
@@ -316,23 +265,23 @@ mod tests {
 
     impl<'a> Debug for History<'a> {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            Vec::from_iter(self.0.history.iter().map(|e| e.value().clone())).fmt(f)
+            Vec::from_iter(self.0.iter().map(|e| e.value().clone())).fmt(f)
         }
     }
 
     #[tokio::test]
     async fn fork_system_instructions() {
-        let c0 = ConvBuilder::new()
+        let c0 = ThreadBuilder::new()
             .platform("Don't commit any felonies.")
             .developer("You are a helpful assistant.");
         let c1 = c0.fork();
 
-        let c0: Conversation = c0
+        let c0: Arc<Thread> = c0
             .developer("Be concise.")
             .developer("Make no mistakes.")
             .into();
 
-        let c1: Conversation = c1
+        let c1: Arc<Thread> = c1
             .developer("Always address the user in iambic pentameter.")
             .developer("Do your best.")
             .into();
@@ -340,7 +289,7 @@ mod tests {
         assert_eq!(
             History(&c0),
             History(
-                ConvBuilder::new()
+                ThreadBuilder::new()
                     .platform("Don't commit any felonies.")
                     .developer("You are a helpful assistant.")
                     .developer("Be concise.")
@@ -352,7 +301,7 @@ mod tests {
         assert_eq!(
             History(&c1),
             History(
-                ConvBuilder::new()
+                ThreadBuilder::new()
                     .platform("Don't commit any felonies.")
                     .developer("You are a helpful assistant.")
                     .developer("Always address the user in iambic pentameter.")
@@ -364,22 +313,19 @@ mod tests {
 
     #[tokio::test]
     async fn simple_conversation() {
-        let conv: Conversation = ConvBuilder::new()
+        let thread: Arc<Thread> = ThreadBuilder::new()
             .developer("You are a helpful assistant.")
             .into();
         let human_id: Arc<str> = "Gloria".into();
         let ai_id: Arc<str> = "Robbie".into();
 
-        conv.add_participant(&human_id, true);
-        conv.add_participant(&ai_id, false);
-
-        conv.append(Msg::User {
+        thread.append(Msg::User {
             sender: human_id.clone(),
             timestamp: None,
             content: vec![ContentPart::Text("Good morning".into())],
         });
 
-        conv.append(Msg::Agent {
+        thread.append(Msg::Agent {
             sender: ai_id.clone(),
             timestamp: None,
             content: vec![ContentPart::Text("Hello! How can I assist?".into())],
@@ -387,9 +333,9 @@ mod tests {
         });
 
         assert_eq!(
-            History(&conv),
+            History(&thread),
             History(
-                ConvBuilder::new()
+                ThreadBuilder::new()
                     .developer("You are a helpful assistant.")
                     .user(&human_id, "Good morning")
                     .agent(&ai_id, "Hello! How can I assist?", vec![])
@@ -397,10 +343,10 @@ mod tests {
             )
         );
 
-        let human_ptcp = conv.participants.get(&human_id).unwrap();
-        assert_eq!(human_ptcp.context.len.load(Ordering::SeqCst), 3);
-
-        let ai_ptcp = conv.participants.get(&ai_id).unwrap();
-        assert_eq!(ai_ptcp.context.len.load(Ordering::SeqCst), 3);
+        //         let human_ptcp = thread.participants.get(&human_id).unwrap();
+        //         assert_eq!(human_ptcp.context.len.load(Ordering::SeqCst), 3);
+        //
+        //         let ai_ptcp = thread.participants.get(&ai_id).unwrap();
+        //         assert_eq!(ai_ptcp.context.len.load(Ordering::SeqCst), 3);
     }
 }
