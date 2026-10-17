@@ -27,6 +27,15 @@ impl Conversation {
         }
     }
 
+    fn add_participant(&self, name: &str, is_human: bool) {
+        let participant = Participant {
+            id: name.into(),
+            human: is_human,
+            context: self.history.clone(),
+        };
+        self.participants.insert(name.into(), participant);
+    }
+
     fn fork(&self) -> Self {
         Self {
             history: self.history.fork(),
@@ -42,9 +51,7 @@ impl Conversation {
                 self.history.append(message);
             }
             Msg::User { sender, .. } | Msg::Agent { sender, .. } => {
-                if let Some(ptcp) = self.participants.get(sender) {
-                    ptcp.append(message);
-                }
+                self.history.append(message);
             }
             Msg::Direct { recipients, .. }
             | Msg::ToolResult { recipients, .. }
@@ -190,6 +197,7 @@ struct Name {
 #[derive(Debug, Clone)]
 struct Participant {
     id: Arc<str>,
+    human: bool,
     context: Arc<List>,
 }
 
@@ -202,6 +210,8 @@ impl Participant {
 #[cfg(test)]
 mod tests {
     use std::{fmt::Debug, time::Duration};
+
+    use crate::tool::Tool;
 
     use super::*;
 
@@ -252,6 +262,20 @@ mod tests {
                 sender: name.into(),
                 timestamp: next_time,
                 content: vec![ContentPart::Text(text.into())],
+            });
+            self
+        }
+
+        fn agent(mut self, name: &str, text: &str, tool_calls: Vec<ToolCallRequest>) -> Self {
+            let mut next_time = self
+                .time
+                .map(|t| t.checked_add(Duration::from_secs(1)).unwrap());
+            std::mem::swap(&mut self.time, &mut next_time);
+            self.conv.append(Msg::Agent {
+                sender: name.into(),
+                timestamp: next_time,
+                content: vec![ContentPart::Text(text.into())],
+                tool_calls,
             });
             self
         }
@@ -336,5 +360,47 @@ mod tests {
                     .as_ref()
             )
         )
+    }
+
+    #[tokio::test]
+    async fn simple_conversation() {
+        let conv: Conversation = ConvBuilder::new()
+            .developer("You are a helpful assistant.")
+            .into();
+        let human_id: Arc<str> = "Gloria".into();
+        let ai_id: Arc<str> = "Robbie".into();
+
+        conv.add_participant(&human_id, true);
+        conv.add_participant(&ai_id, false);
+
+        conv.append(Msg::User {
+            sender: human_id.clone(),
+            timestamp: None,
+            content: vec![ContentPart::Text("Good morning".into())],
+        });
+
+        conv.append(Msg::Agent {
+            sender: ai_id.clone(),
+            timestamp: None,
+            content: vec![ContentPart::Text("Hello! How can I assist?".into())],
+            tool_calls: vec![],
+        });
+
+        assert_eq!(
+            History(&conv),
+            History(
+                ConvBuilder::new()
+                    .developer("You are a helpful assistant.")
+                    .user(&human_id, "Good morning")
+                    .agent(&ai_id, "Hello! How can I assist?", vec![])
+                    .as_ref()
+            )
+        );
+
+        let human_ptcp = conv.participants.get(&human_id).unwrap();
+        assert_eq!(human_ptcp.context.len.load(Ordering::SeqCst), 3);
+
+        let ai_ptcp = conv.participants.get(&ai_id).unwrap();
+        assert_eq!(ai_ptcp.context.len.load(Ordering::SeqCst), 3);
     }
 }
