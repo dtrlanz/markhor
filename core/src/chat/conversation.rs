@@ -1,8 +1,8 @@
 use crossbeam_skiplist::{SkipMap, map::Entry};
-use dashmap::DashMap;
 use serde_json::Value;
 use smallvec::SmallVec;
 use std::{
+    collections::HashMap,
     fmt::Debug,
     sync::{
         Arc, Mutex, Weak,
@@ -15,28 +15,133 @@ use crate::chat::chat::{ContentPart, ToolCallRequest};
 
 #[derive(Debug)]
 pub struct Group {
-    participants: DashMap<Arc<str>, Participant>,
+    participants: Mutex<HashMap<Arc<str>, Participant>>,
+    primary: Arc<Thread>,
+    secondary: Mutex<Vec<Weak<Thread>>>,
 }
 
 impl Group {
     fn new() -> Self {
         Self {
-            participants: DashMap::new(),
+            participants: Default::default(),
+            primary: Arc::new(Thread::new()),
+            secondary: Default::default(),
+        }
+    }
+
+    pub fn add_participant(
+        &self,
+        name: &str,
+        human: bool,
+    ) -> Result<Participant, AddParticipantError> {
+        let mut inserted = false;
+        let ptcp = self
+            .participants
+            .lock()
+            .unwrap()
+            .entry(name.into())
+            .or_insert_with(|| {
+                inserted = true;
+                Participant {
+                    id: name.into(),
+                    human,
+                    context: Arc::clone(&self.primary),
+                }
+            })
+            .clone();
+        if inserted {
+            Ok(ptcp)
+        } else {
+            Err(AddParticipantError::AlreadyExists(ptcp))
+        }
+    }
+
+    fn append(&self, message: Msg) -> Result<&Self, AppendMessageError> {
+        match &message {
+            Msg::Platform(_) | Msg::Developer(_) => {
+                self.primary.append(message);
+                // // Or allow appending to secondary threads, too?
+                // // I don't see a use case right now.
+                // let mut threads = vec![self.primary.clone()];
+                // {
+                //     let mut guard = self.secondary.lock().unwrap();
+                //     let mut idx = 0;
+                //     while idx < guard.len() {
+                //         if let Some(t) = Weak::upgrade(&guard[idx]) {
+                //             threads.push(t);
+                //             idx += 1;
+                //         } else {
+                //             guard.remove(idx);
+                //         }
+                //     }
+                // }
+                // for t in threads {
+                //     t.append(message.clone());
+                // }
+                Ok(self)
+            }
+            Msg::User { sender, .. } | Msg::Agent { sender, .. } => {
+                let ptcp = self
+                    .participants
+                    .lock()
+                    .unwrap()
+                    .get(sender)
+                    .map(|p| p.context.clone())
+                    .ok_or(AppendMessageError::UnknownSender(sender.to_string()))?;
+                ptcp.append(message.clone());
+                Ok(self)
+            }
+            Msg::Direct { recipients, .. }
+            | Msg::ToolResult { recipients, .. }
+            | Msg::Event { recipients, .. } => {
+                // Use HashMap for efficient deduplication
+                let mut threads = HashMap::new();
+                {
+                    let guard = self.participants.lock().unwrap();
+                    for recp in recipients {
+                        if let Some(Participant { context, .. }) = guard.get(recp) {
+                            threads
+                                .entry(Arc::as_ptr(context))
+                                .or_insert_with(|| Arc::clone(context));
+                        } else {
+                            return Err(AppendMessageError::UnknownRecipient(recp.to_string()));
+                        }
+                    }
+                }
+                // Append message to each thread with at least one recipient represented
+                for t in threads.values() {
+                    t.append(message.clone());
+                }
+                Ok(self)
+            }
+            Msg::ControlSignal {
+                recipients,
+                compaction_start,
+                content,
+            } => {
+                // same as above?
+                unimplemented!()
+            }
         }
     }
 }
 
+#[derive(Debug)]
+pub enum AddParticipantError {
+    AlreadyExists(Participant),
+}
+
+#[derive(Debug)]
+pub enum AppendMessageError {
+    UnknownSender(String),
+    UnknownRecipient(String),
+}
+
 #[derive(Debug, Clone)]
-struct Participant {
+pub struct Participant {
     id: Arc<str>,
     human: bool,
     context: Arc<Thread>,
-}
-
-impl Participant {
-    fn append(&self, message: Msg) {
-        self.context.append(message);
-    }
 }
 
 struct Thread {
@@ -112,7 +217,7 @@ impl Debug for Thread {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Msg {
+pub enum Msg {
     Platform(String),
     Developer(String),
     User {
@@ -313,40 +418,41 @@ mod tests {
 
     #[tokio::test]
     async fn simple_conversation() {
-        let thread: Arc<Thread> = ThreadBuilder::new()
-            .developer("You are a helpful assistant.")
-            .into();
-        let human_id: Arc<str> = "Gloria".into();
-        let ai_id: Arc<str> = "Robbie".into();
+        let group = Group::new();
+        let human = group.add_participant("Gloria", true).unwrap();
+        let ai = group.add_participant("Robbie", false).unwrap();
 
-        thread.append(Msg::User {
-            sender: human_id.clone(),
-            timestamp: None,
-            content: vec![ContentPart::Text("Good morning".into())],
-        });
+        group.append(Msg::Developer("You are a helpful assistant.".into()));
 
-        thread.append(Msg::Agent {
-            sender: ai_id.clone(),
-            timestamp: None,
-            content: vec![ContentPart::Text("Hello! How can I assist?".into())],
-            tool_calls: vec![],
-        });
+        group
+            .append(Msg::User {
+                sender: human.id.clone(),
+                timestamp: None,
+                content: vec![ContentPart::Text("Good morning".into())],
+            })
+            .unwrap()
+            .append(Msg::Agent {
+                sender: ai.id.clone(),
+                timestamp: None,
+                content: vec![ContentPart::Text("Hello! How can I help you today?".into())],
+                tool_calls: vec![],
+            })
+            .unwrap();
+
+        dbg!(&group);
 
         assert_eq!(
-            History(&thread),
+            History(&group.primary),
             History(
                 ThreadBuilder::new()
                     .developer("You are a helpful assistant.")
-                    .user(&human_id, "Good morning")
-                    .agent(&ai_id, "Hello! How can I assist?", vec![])
+                    .user(&human.id, "Good morning")
+                    .agent(&ai.id, "Hello! How can I help you today?", vec![])
                     .as_ref()
             )
         );
 
-        //         let human_ptcp = thread.participants.get(&human_id).unwrap();
-        //         assert_eq!(human_ptcp.context.len.load(Ordering::SeqCst), 3);
-        //
-        //         let ai_ptcp = thread.participants.get(&ai_id).unwrap();
-        //         assert_eq!(ai_ptcp.context.len.load(Ordering::SeqCst), 3);
+        assert_eq!(human.context.len.load(Ordering::SeqCst), 3);
+        assert_eq!(ai.context.len.load(Ordering::SeqCst), 3);
     }
 }
