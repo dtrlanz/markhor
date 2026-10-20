@@ -33,22 +33,31 @@ impl Group {
     }
 
     pub fn add_member(self: &Arc<Self>, name: &str, human: bool) -> Result<Member, AddMemberError> {
+        self.add_member_with_thread(name, human, &self.primary)
+    }
+
+    fn add_member_with_thread(
+        self: &Arc<Self>,
+        name: &str,
+        human: bool,
+        thread: &Arc<Thread>,
+    ) -> Result<Member, AddMemberError> {
         let mut inserted = false;
-        let thread = self
+        let new_or_existing_thread = self
             .members
             .lock()
             .unwrap()
             .entry(name.into())
             .or_insert_with(|| {
                 inserted = true;
-                Arc::clone(&self.primary)
+                Arc::clone(thread)
             })
             .clone();
         let ptcp = Member {
             id: name.into(),
             human,
             group: Arc::clone(self),
-            context: thread,
+            context: new_or_existing_thread,
         };
         if inserted {
             Ok(ptcp)
@@ -57,28 +66,10 @@ impl Group {
         }
     }
 
-    fn append(&self, message: Msg) -> Result<&Self, AppendMessageError> {
+    pub fn append(&self, message: Msg) -> Result<&Self, AppendMessageError> {
         match &message {
             Msg::Platform(_) | Msg::Developer(_) => {
                 self.primary.append(message);
-                // // Or allow appending to secondary threads, too?
-                // // I don't see a use case right now.
-                // let mut threads = vec![self.primary.clone()];
-                // {
-                //     let mut guard = self.secondary.lock().unwrap();
-                //     let mut idx = 0;
-                //     while idx < guard.len() {
-                //         if let Some(t) = Weak::upgrade(&guard[idx]) {
-                //             threads.push(t);
-                //             idx += 1;
-                //         } else {
-                //             guard.remove(idx);
-                //         }
-                //     }
-                // }
-                // for t in threads {
-                //     t.append(message.clone());
-                // }
                 Ok(self)
             }
             Msg::User { sender, .. } | Msg::Agent { sender, .. } => {
@@ -144,6 +135,33 @@ pub struct Member {
     human: bool,
     group: Arc<Group>,
     context: Arc<Thread>,
+}
+
+impl Member {
+    pub fn add_peer(&self, name: &str, human: bool) -> Result<Member, AddMemberError> {
+        self.group
+            .add_member_with_thread(name, human, &self.context)
+    }
+
+    pub fn add_worker(&self, name: &str, context: InitContext) -> Result<Member, AddMemberError> {
+        let thread = match context {
+            InitContext::None => Arc::new(Thread::new()),
+            InitContext::Fork => self.context.fork(),
+        };
+        let result = self.group.add_member_with_thread(name, false, &thread);
+        self.group.secondary.lock().unwrap().push(thread);
+        result
+    }
+
+    pub fn group(&self) -> &Arc<Group> {
+        &self.group
+    }
+}
+
+#[derive(Debug)]
+pub enum InitContext {
+    None,
+    Fork,
 }
 
 struct Thread {
