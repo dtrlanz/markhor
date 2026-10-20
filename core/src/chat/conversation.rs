@@ -15,40 +15,42 @@ use crate::chat::chat::{ContentPart, ToolCallRequest};
 
 #[derive(Debug)]
 pub struct Group {
-    participants: Mutex<HashMap<Arc<str>, Participant>>,
+    participants: Mutex<HashMap<Arc<str>, Arc<Thread>>>,
     primary: Arc<Thread>,
-    secondary: Mutex<Vec<Weak<Thread>>>,
+    secondary: Mutex<Vec<Arc<Thread>>>,
 }
 
 impl Group {
-    fn new() -> Self {
-        Self {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
             participants: Default::default(),
             primary: Arc::new(Thread::new()),
             secondary: Default::default(),
-        }
+        })
     }
 
     pub fn add_participant(
-        &self,
+        self: &Arc<Self>,
         name: &str,
         human: bool,
     ) -> Result<Participant, AddParticipantError> {
         let mut inserted = false;
-        let ptcp = self
+        let thread = self
             .participants
             .lock()
             .unwrap()
             .entry(name.into())
             .or_insert_with(|| {
                 inserted = true;
-                Participant {
-                    id: name.into(),
-                    human,
-                    context: Arc::clone(&self.primary),
-                }
+                Arc::clone(&self.primary)
             })
             .clone();
+        let ptcp = Participant {
+            id: name.into(),
+            human,
+            group: Arc::clone(self),
+            context: thread,
+        };
         if inserted {
             Ok(ptcp)
         } else {
@@ -86,7 +88,7 @@ impl Group {
                     .lock()
                     .unwrap()
                     .get(sender)
-                    .map(|p| p.context.clone())
+                    .map(|t| Arc::clone(t))
                     .ok_or(AppendMessageError::UnknownSender(sender.to_string()))?;
                 ptcp.append(message.clone());
                 Ok(self)
@@ -99,7 +101,7 @@ impl Group {
                 {
                     let guard = self.participants.lock().unwrap();
                     for recp in recipients {
-                        if let Some(Participant { context, .. }) = guard.get(recp) {
+                        if let Some(context) = guard.get(recp) {
                             threads
                                 .entry(Arc::as_ptr(context))
                                 .or_insert_with(|| Arc::clone(context));
@@ -141,6 +143,7 @@ pub enum AppendMessageError {
 pub struct Participant {
     id: Arc<str>,
     human: bool,
+    group: Arc<Group>,
     context: Arc<Thread>,
 }
 
