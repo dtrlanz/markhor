@@ -5,5 +5,5 @@ mod msg;
 pub mod prompter;
 
 pub use error::ChatError;
-pub use group::{AddMemberError, AppendMessageError, Group, Member};
+pub use group::{AddMemberError, AppendMessageError, Group, Member, MemberId};
 pub use msg::Msg;
