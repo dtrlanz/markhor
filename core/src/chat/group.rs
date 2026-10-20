@@ -18,7 +18,7 @@ use crate::chat::{
 
 #[derive(Debug)]
 pub struct Group {
-    participants: Mutex<HashMap<Arc<str>, Arc<Thread>>>,
+    members: Mutex<HashMap<Arc<str>, Arc<Thread>>>,
     primary: Arc<Thread>,
     secondary: Mutex<Vec<Arc<Thread>>>,
 }
@@ -26,20 +26,16 @@ pub struct Group {
 impl Group {
     fn new() -> Arc<Self> {
         Arc::new(Self {
-            participants: Default::default(),
+            members: Default::default(),
             primary: Arc::new(Thread::new()),
             secondary: Default::default(),
         })
     }
 
-    pub fn add_participant(
-        self: &Arc<Self>,
-        name: &str,
-        human: bool,
-    ) -> Result<Participant, AddParticipantError> {
+    pub fn add_member(self: &Arc<Self>, name: &str, human: bool) -> Result<Member, AddMemberError> {
         let mut inserted = false;
         let thread = self
-            .participants
+            .members
             .lock()
             .unwrap()
             .entry(name.into())
@@ -48,7 +44,7 @@ impl Group {
                 Arc::clone(&self.primary)
             })
             .clone();
-        let ptcp = Participant {
+        let ptcp = Member {
             id: name.into(),
             human,
             group: Arc::clone(self),
@@ -57,7 +53,7 @@ impl Group {
         if inserted {
             Ok(ptcp)
         } else {
-            Err(AddParticipantError::AlreadyExists(ptcp))
+            Err(AddMemberError::AlreadyExists(ptcp))
         }
     }
 
@@ -87,7 +83,7 @@ impl Group {
             }
             Msg::User { sender, .. } | Msg::Agent { sender, .. } => {
                 let ptcp = self
-                    .participants
+                    .members
                     .lock()
                     .unwrap()
                     .get(sender)
@@ -102,7 +98,7 @@ impl Group {
                 // Use HashMap for efficient deduplication
                 let mut threads = HashMap::new();
                 {
-                    let guard = self.participants.lock().unwrap();
+                    let guard = self.members.lock().unwrap();
                     for recp in recipients {
                         if let Some(context) = guard.get(recp) {
                             threads
@@ -132,8 +128,8 @@ impl Group {
 }
 
 #[derive(Debug)]
-pub enum AddParticipantError {
-    AlreadyExists(Participant),
+pub enum AddMemberError {
+    AlreadyExists(Member),
 }
 
 #[derive(Debug)]
@@ -143,7 +139,7 @@ pub enum AppendMessageError {
 }
 
 #[derive(Debug, Clone)]
-pub struct Participant {
+pub struct Member {
     id: Arc<str>,
     human: bool,
     group: Arc<Group>,
@@ -384,8 +380,8 @@ mod tests {
     #[tokio::test]
     async fn simple_conversation() {
         let group = Group::new();
-        let human = group.add_participant("Gloria", true).unwrap();
-        let ai = group.add_participant("Robbie", false).unwrap();
+        let human = group.add_member("Gloria", true).unwrap();
+        let ai = group.add_member("Robbie", false).unwrap();
 
         group.append(Msg::Developer("You are a helpful assistant.".into()));
 
