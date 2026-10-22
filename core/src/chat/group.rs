@@ -330,23 +330,40 @@ impl Debug for Thread {
 /// Identifies a member within a [`Group`].
 #[derive(Clone)]
 pub struct MemberId {
-    inner: Arc<[u8]>,
+    repr: Repr,
 }
 
-// To keep `MemberId` the size of a single fat pointer (16 bytes on 64-bit
-// platforms), every field -- the name/id split point, flags, and the
-// combined name+id text -- is packed into a single `Arc<[u8]>` allocation
-// rather than stored as separate struct fields.
+#[derive(Clone)]
+enum Repr {
+    Inline {
+        text: [u8; INLINE_CAP],
+        meta: NonZero<u8>,
+    },
+    Boxed(Box<BoxedText>),
+}
+
+#[derive(Clone)]
+struct BoxedText {
+    split: usize,
+    flags: u8,
+    text: Box<str>,
+}
+
+// Text (name+id, or id alone when the name is a prefix of the id) is stored
+// inline when it fits in `INLINE_CAP` bytes. The inline text is zero-padded,
+// and inline text never contains a NUL byte, so its length is the position of
+// the first NUL (or `INLINE_CAP` if there is none).
 //
-// Byte layout: `[0]` = split (byte offset, within the text that follows,
-// where the name ends and the id begins; `0` means there is no name),
-// `[1]` = flags (bit `0` = human, remaining bits reserved/unused),
-// `[2..]` = UTF-8 encoded `name` followed immediately by `id`.
-const SPLIT_BYTE: usize = 0;
-const FLAGS_BYTE: usize = 1;
-const HEADER_LEN: usize = 2;
+// `meta` packs the split position and flags into one nonzero byte, which also
+// lets the enum use a niche to fit in 16 bytes.
+const INLINE_CAP: usize = 15;
+const SENTINEL_BIT: u8 = 0b1000_0000;
+const OVERLAP_FLAG: u8 = 0b0100_0000;
+const SPLIT_SHIFT: u32 = 2;
+const SPLIT_MASK: u8 = 0b1111;
 const HUMAN_FLAG: u8 = 0b01;
 const FIRST_PERSON_FLAG: u8 = 0b10;
+const FLAGS_MASK: u8 = HUMAN_FLAG | FIRST_PERSON_FLAG | OVERLAP_FLAG;
 
 impl MemberId {
     pub fn new(id: &str, human: bool) -> Self {
@@ -358,43 +375,75 @@ impl MemberId {
     }
 
     fn new_internal(id: &str, name: Option<&str>, human: bool, first_person: bool) -> Self {
-        let split = name.map(|n| n.len()).unwrap_or(0);
-        let mut bytes = Vec::with_capacity(HEADER_LEN + split + id.len());
-        bytes.push(split as u8);
-        bytes.push(
-            if human { HUMAN_FLAG } else { 0 } | if first_person { FIRST_PERSON_FLAG } else { 0 },
-        );
-        if let Some(name) = name {
-            bytes.extend_from_slice(name.as_bytes());
-        }
-        bytes.extend_from_slice(id.as_bytes());
-        Self {
-            inner: bytes.into(),
-        }
+        let flags = (if human { HUMAN_FLAG } else { 0 })
+            | (if first_person { FIRST_PERSON_FLAG } else { 0 });
+        let split = name.map_or(0, str::len);
+        let overlap = name.is_some_and(|n| id.starts_with(n));
+        let flags = flags | if overlap { OVERLAP_FLAG } else { 0 };
+        // Parts of the stored text. When the name is a prefix of the id, only
+        // the id is stored, and the name shares its bytes.
+        let parts: [&str; 2] = match name {
+            Some(n) if !overlap => [n, id],
+            _ => ["", id],
+        };
+        let total = parts[0].len() + parts[1].len();
+        let has_nul = parts.iter().any(|p| p.as_bytes().contains(&0));
+
+        let repr = if split <= SPLIT_MASK as usize && total <= INLINE_CAP && !has_nul {
+            let mut text = [0u8; INLINE_CAP];
+            let mid = parts[0].len();
+            text[..mid].copy_from_slice(parts[0].as_bytes());
+            text[mid..total].copy_from_slice(parts[1].as_bytes());
+            let meta = SENTINEL_BIT | ((split as u8) << SPLIT_SHIFT) | flags;
+            Repr::Inline {
+                text,
+                meta: NonZero::new(meta).expect("sentinel bit is always set"),
+            }
+        } else {
+            let mut text = String::with_capacity(total);
+            text.push_str(parts[0]);
+            text.push_str(parts[1]);
+            Repr::Boxed(Box::new(BoxedText {
+                split,
+                flags,
+                text: text.into_boxed_str(),
+            }))
+        };
+        Self { repr }
     }
 
-    fn split(&self) -> usize {
-        self.inner[SPLIT_BYTE] as usize
-    }
-
-    fn text(&self) -> &str {
-        str::from_utf8(&self.inner[HEADER_LEN..])
-            .expect("MemberId text is valid UTF-8 by construction")
+    /// Returns the stored text, the split position, and the flag bits.
+    fn parts(&self) -> (&str, usize, u8) {
+        match &self.repr {
+            Repr::Inline { text, meta } => {
+                let len = text.iter().position(|&b| b == 0).unwrap_or(INLINE_CAP);
+                let s = str::from_utf8(&text[..len])
+                    .expect("MemberId text is valid UTF-8 by construction");
+                let split = ((meta.get() >> SPLIT_SHIFT) & SPLIT_MASK) as usize;
+                (s, split, meta.get() & FLAGS_MASK)
+            }
+            Repr::Boxed(b) => (&b.text, b.split, b.flags),
+        }
     }
 
     /// The display name, if one was given when this id was created.
     pub fn display_name(&self) -> Option<&str> {
-        let split = self.split();
+        let (text, split, _) = self.parts();
         if split == 0 {
             None
         } else {
-            Some(&self.text()[..split])
+            Some(&text[..split])
         }
     }
 
     /// The id portion. If no name was given, this is the entire text.
     pub fn id(&self) -> &str {
-        &self.text()[self.split()..]
+        let (text, split, flags) = self.parts();
+        if flags & OVERLAP_FLAG != 0 {
+            text
+        } else {
+            &text[split..]
+        }
     }
 
     /// Whether this member represents a human, as opposed to an AI agent or
@@ -404,7 +453,7 @@ impl MemberId {
     /// contain multiple members with the same id but different `human` flags
     /// (e.g. a human and an AI agent both named "Alice").
     pub fn human(&self) -> bool {
-        self.inner[FLAGS_BYTE] & HUMAN_FLAG != 0
+        self.parts().2 & HUMAN_FLAG != 0
     }
 
     /// Value used to flag the first-person subject in a specific context.
@@ -413,7 +462,7 @@ impl MemberId {
     ///
     /// This value does not affect equality or hashing.
     pub fn is_first_person(&self) -> bool {
-        self.inner[FLAGS_BYTE] & FIRST_PERSON_FLAG != 0
+        self.parts().2 & FIRST_PERSON_FLAG != 0
     }
 }
 
@@ -630,6 +679,74 @@ mod tests {
         map.insert(a.clone(), "first");
         assert_eq!(map.get(&b), Some(&"first"));
         assert_eq!(map.get(&c), None);
+    }
+
+    #[test]
+    fn member_id_inline_or_boxed() {
+        assert_eq!(std::mem::size_of::<MemberId>(), 16);
+        let is_inline = |id: &MemberId| matches!(id.repr, Repr::Inline { .. });
+
+        // Up to 15 bytes of stored text is inline.
+        assert!(is_inline(&MemberId::new("abcdefghijklmno", true)));
+        assert!(!is_inline(&MemberId::new("abcdefghijklmnop", true)));
+
+        // Stored text is name + id, unless the name is a prefix of the id.
+        assert!(is_inline(&MemberId::with_name("Alice123", "Alice", true)));
+        assert!(is_inline(&MemberId::with_name(
+            "Alice1234567890",
+            "Alice",
+            true
+        )));
+        assert!(!is_inline(&MemberId::with_name(
+            "Alice123456789",
+            "Bobbyyy",
+            true
+        )));
+
+        // Split position must fit in 4 bits, so a longer name is boxed.
+        assert!(!is_inline(&MemberId::with_name(
+            "Alice",
+            "abcdefghijklmnop",
+            true
+        )));
+
+        // NUL bytes would clash with the zero padding used for inline text.
+        let nul = MemberId::new("a\0b", true);
+        assert!(!is_inline(&nul));
+        assert_eq!(nul.id(), "a\0b");
+    }
+
+    #[test]
+    fn member_id_name_prefix_shares_storage() {
+        let addr = |s: &str| s.as_ptr() as usize;
+        let within = |inner: &str, outer: &str| {
+            addr(inner) >= addr(outer) && addr(inner) + inner.len() <= addr(outer) + outer.len()
+        };
+
+        // Name is a prefix of the id: the display name borrows from the id.
+        let overlap = MemberId::with_name("Alice1234567890", "Alice", true);
+        assert_eq!(overlap.id(), "Alice1234567890");
+        assert_eq!(overlap.display_name(), Some("Alice"));
+        assert_eq!(addr(overlap.display_name().unwrap()), addr(overlap.id()));
+        assert!(within(overlap.display_name().unwrap(), overlap.id()));
+
+        // Name is not a prefix: the name and id occupy separate bytes.
+        let separate = MemberId::with_name("Alice123", "Bob", true);
+        assert_eq!(separate.id(), "Alice123");
+        assert_eq!(separate.display_name(), Some("Bob"));
+        assert!(!within(separate.display_name().unwrap(), separate.id()));
+        assert!(!within(separate.id(), separate.display_name().unwrap()));
+
+        // The same holds for boxed text.
+        let long = MemberId::with_name(
+            "abcdefghijklmnopqrstuvwxyz",
+            "abcdefghijklmnopqrstuvw",
+            false,
+        );
+        assert_eq!(long.id(), "abcdefghijklmnopqrstuvwxyz");
+        assert_eq!(long.display_name(), Some("abcdefghijklmnopqrstuvw"));
+        assert!(within(long.display_name().unwrap(), long.id()));
+        assert!(!long.human());
     }
 
     #[tokio::test]
