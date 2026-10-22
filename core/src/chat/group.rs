@@ -4,6 +4,7 @@ use smallvec::SmallVec;
 use std::{
     collections::HashMap,
     fmt::Debug,
+    num::NonZero,
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicUsize, Ordering},
@@ -152,16 +153,101 @@ impl Member {
         result
     }
 
+    /// Returns an iterator over the messages in this member's context.
+    ///
+    /// Unlike the underlying thread of messages, the resulting context is
+    /// relative to this member. Even when two members are sharing the same
+    /// chat, the context returned by this method will be different for each
+    /// member. Specifically:
+    ///
+    /// - Messages are filtered to include only those visible to this member.
+    /// - Agents only see their own tool calls.
+    /// - For messages belonging to this member, `Msg::belongs_to_first_person`
+    ///   will return true, so that downstream code can format the context in
+    ///   first-person perspective as needed.
+    // It would be nice to iterate over references instead of cloning, but
+    // that's tricky with `SkipMap`, and besides, we need to modify some
+    // messages anyway. If performance matters (and it might not), the
+    // lowest-hanging fruit is probably in the `Msg` enum rather than here
+    // (minimize cloning of content fields, maybe with shared ownership &
+    // clone-on-write logic).
+    pub fn context(&self) -> impl Iterator<Item = Msg> + '_ {
+        let first_person = MemberId::new_internal(self.id.id(), self.id.human(), true);
+        self.context
+            .iter()
+            .filter_map(move |entry| match entry.value() {
+                // Messages with specific recipients are only visible to those
+                // recipients; all other messages are visible to everyone.
+                Msg::Direct { recipients, .. }
+                | Msg::ToolResult { recipients, .. }
+                | Msg::Event { recipients, .. }
+                | Msg::ControlSignal { recipients, .. } => {
+                    if recipients.iter().any(|r| r == &self.id) {
+                        Some(entry.value().clone())
+                    } else {
+                        None
+                    }
+                }
+                // For user and agent messages, set the first-person flag for
+                // messages sent by this member.
+                Msg::User {
+                    sender,
+                    timestamp,
+                    content,
+                } => {
+                    if sender == &self.id {
+                        Some(Msg::User {
+                            sender: first_person.clone(),
+                            timestamp: timestamp.clone(),
+                            content: content.clone(),
+                        })
+                    } else {
+                        Some(entry.value().clone())
+                    }
+                }
+                Msg::Agent {
+                    sender,
+                    timestamp,
+                    content,
+                    tool_calls,
+                } => {
+                    if sender == &self.id {
+                        Some(Msg::Agent {
+                            sender: first_person.clone(),
+                            timestamp: timestamp.clone(),
+                            content: content.clone(),
+                            tool_calls: tool_calls.clone(),
+                        })
+                    } else {
+                        Some(Msg::Agent {
+                            sender: sender.clone(),
+                            timestamp: timestamp.clone(),
+                            content: content.clone(),
+                            tool_calls: if !self.human() {
+                                // Hide tool calls from other agents
+                                Vec::new()
+                            } else {
+                                // But not from humans
+                                tool_calls.clone()
+                            },
+                        })
+                    }
+                }
+                // General instructions are yielded as-is.
+                _ => Some(entry.value().clone()),
+            })
+    }
+
     pub fn group(&self) -> &Arc<Group> {
         &self.group
     }
 
-    pub fn id(&self) -> &MemberId {
-        &self.id
-    }
-
     pub fn human(&self) -> bool {
         self.id.human()
+    }
+
+    pub fn id(&self) -> &MemberId {
+        &self.id
     }
 }
 
@@ -244,31 +330,37 @@ impl Debug for Thread {
 }
 
 /// Identifies a member within a [`Group`].
-///
-/// To keep `MemberId` the size of a single fat pointer (16 bytes on 64-bit
-/// platforms), every field -- the name/id split point, flags, and the
-/// combined name+id text -- is packed into a single `Arc<[u8]>` allocation
-/// rather than stored as separate struct fields.
-///
-/// Byte layout: `[0]` = split (byte offset, within the text that follows,
-/// where the name ends and the id begins; `0` means there is no name),
-/// `[1]` = flags (bit `0` = human, remaining bits reserved/unused),
-/// `[2..]` = UTF-8 encoded `name` followed immediately by `id`.
 #[derive(Clone)]
 pub struct MemberId {
     inner: Arc<[u8]>,
 }
 
+// To keep `MemberId` the size of a single fat pointer (16 bytes on 64-bit
+// platforms), every field -- the name/id split point, flags, and the
+// combined name+id text -- is packed into a single `Arc<[u8]>` allocation
+// rather than stored as separate struct fields.
+//
+// Byte layout: `[0]` = split (byte offset, within the text that follows,
+// where the name ends and the id begins; `0` means there is no name),
+// `[1]` = flags (bit `0` = human, remaining bits reserved/unused),
+// `[2..]` = UTF-8 encoded `name` followed immediately by `id`.
 const SPLIT_BYTE: usize = 0;
 const FLAGS_BYTE: usize = 1;
 const HEADER_LEN: usize = 2;
 const HUMAN_FLAG: u8 = 0b01;
+const FIRST_PERSON_FLAG: u8 = 0b10;
 
 impl MemberId {
-    fn new(id: &str, human: bool) -> Self {
+    pub fn new(id: &str, human: bool) -> Self {
+        Self::new_internal(id, human, false)
+    }
+
+    fn new_internal(id: &str, human: bool, first_person: bool) -> Self {
         let mut bytes = Vec::with_capacity(HEADER_LEN + id.len());
         bytes.push(0); // split: no name for now
-        bytes.push(if human { HUMAN_FLAG } else { 0 });
+        bytes.push(
+            if human { HUMAN_FLAG } else { 0 } | if first_person { FIRST_PERSON_FLAG } else { 0 },
+        );
         bytes.extend_from_slice(id.as_bytes());
         Self {
             inner: bytes.into(),
@@ -303,8 +395,21 @@ impl MemberId {
 
     /// Whether this member represents a human, as opposed to an AI agent or
     /// other automated participant.
+    ///
+    /// This value does not affect equality or hashing since groups may not
+    /// contain multiple members with the same id but different `human` flags
+    /// (e.g. a human and an AI agent both named "Alice").
     pub fn human(&self) -> bool {
         self.inner[FLAGS_BYTE] & HUMAN_FLAG != 0
+    }
+
+    /// Value used to flag the first-person subject in a specific context.
+    /// This is only relevant within a chat context, and even then it is
+    /// typically not used directly but via `Msg::belongs_to_context_owner()`.
+    ///
+    /// This value does not affect equality or hashing.
+    pub fn is_first_person(&self) -> bool {
+        self.inner[FLAGS_BYTE] & FIRST_PERSON_FLAG != 0
     }
 }
 
@@ -355,17 +460,8 @@ impl std::hash::Hash for MemberId {
 
 #[cfg(test)]
 mod tests {
-    use std::{fmt::Debug, time::Duration};
-
-    // Builds a `MemberId` with `human = false`, for tests that don't care
-    // about the flag.
-    fn member_id(id: &str) -> MemberId {
-        MemberId::new(id, false)
-    }
-
-    use crate::tool::Tool;
-
     use super::*;
+    use std::{fmt::Debug, time::Duration};
 
     #[derive(Debug)]
     struct ThreadBuilder {
@@ -411,7 +507,7 @@ mod tests {
                 .map(|t| t.checked_add(Duration::from_secs(1)).unwrap());
             std::mem::swap(&mut self.time, &mut next_time);
             self.thread.append(Msg::User {
-                sender: member_id(name),
+                sender: MemberId::new(name, true),
                 timestamp: next_time,
                 content: vec![ContentPart::Text(text.into())],
             });
@@ -424,10 +520,24 @@ mod tests {
                 .map(|t| t.checked_add(Duration::from_secs(1)).unwrap());
             std::mem::swap(&mut self.time, &mut next_time);
             self.thread.append(Msg::Agent {
-                sender: member_id(name),
+                sender: MemberId::new(name, false),
                 timestamp: next_time,
                 content: vec![ContentPart::Text(text.into())],
                 tool_calls,
+            });
+            self
+        }
+
+        fn tool_result(mut self, recipient: &str, call_id: &str, content: &str) -> Self {
+            let mut next_time = self
+                .time
+                .map(|t| t.checked_add(Duration::from_secs(1)).unwrap());
+            std::mem::swap(&mut self.time, &mut next_time);
+            self.thread.append(Msg::ToolResult {
+                recipients: SmallVec::from_elem(MemberId::new(recipient, true), 1),
+                timestamp: next_time,
+                tool_call_id: call_id.into(),
+                content: vec![ContentPart::Text(content.into())],
             });
             self
         }
@@ -479,16 +589,30 @@ mod tests {
         assert_eq!(id.name(), None);
         assert!(id.human());
 
-        let ai_id = MemberId::new("Robbie", false);
+        let ai_id = MemberId::new_internal("Robbie", false, true);
         assert!(!ai_id.human());
+        assert!(ai_id.is_first_person());
+
+        let non_ascii_id = MemberId::new("葛飾", true);
+        assert_eq!(non_ascii_id.id(), "葛飾");
+
+        // a few multi-char glyphs, in case we want to test for those
+        // 👨‍👩‍👦‍👦
+        // 🧑‍🚒
+        // 👩🏼‍🚒
+        // 👩🏾‍⚕️
     }
 
     #[test]
     fn member_id_equality_depends_only_on_id() {
-        // Same id, different `human` flag: still equal.
+        // Same id, different flags: still equal.
         let a = MemberId::new("Alice123", true);
         let b = MemberId::new("Alice123", false);
+        let c = MemberId::new("Alice123", true);
+        let d = MemberId::new("Alice123", false);
         assert_eq!(a, b);
+        assert_eq!(a, c);
+        assert_eq!(a, d);
 
         // Different ids must never compare equal, even if they'd produce the
         // same combined name+id text once `name` is implemented.
@@ -550,9 +674,9 @@ mod tests {
         let human = group.add_member("Gloria", true).unwrap();
         let ai = group.add_member("Robbie", false).unwrap();
 
-        group.append(Msg::Developer("You are a helpful assistant.".into()));
-
         group
+            .append(Msg::Developer("You are a helpful assistant.".into()))
+            .unwrap()
             .append(Msg::User {
                 sender: human.id.clone(),
                 timestamp: None,
@@ -567,8 +691,6 @@ mod tests {
             })
             .unwrap();
 
-        dbg!(&group);
-
         assert_eq!(
             History(&group.primary),
             History(
@@ -582,5 +704,57 @@ mod tests {
 
         assert_eq!(human.context.len.load(Ordering::SeqCst), 3);
         assert_eq!(ai.context.len.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn member_context() {
+        let group = Group::new();
+        let human = group.add_member("Gloria", true).unwrap();
+        let ai = group.add_member("Robbie", false).unwrap();
+
+        let msg_vec = ThreadBuilder::new()
+            .developer("You are a Gloria's personal assistant. She lives in Paris.")
+            .user(&human.id, "Will it rain today?")
+            .agent(
+                &ai.id,
+                "Let me check the weather for you.",
+                vec![ToolCallRequest {
+                    id: "call_1".into(),
+                    name: "get_weather".into(),
+                    arguments: serde_json::json!({"location": "Paris"}),
+                }],
+            )
+            .tool_result(
+                &ai.id,
+                "call_1".into(),
+                "Temperature: 18°C, Chance of rain: 20%",
+            )
+            .as_ref()
+            .iter()
+            .map(|e| e.value().clone())
+            .collect::<Vec<_>>();
+
+        group
+            .append(msg_vec[0].clone())
+            .unwrap()
+            .append(msg_vec[1].clone())
+            .unwrap()
+            .append(msg_vec[2].clone())
+            .unwrap()
+            .append(msg_vec[3].clone())
+            .unwrap();
+
+        let human_cx = human.context().collect::<Vec<_>>();
+        assert_eq!(human_cx, msg_vec[0..3]);
+        assert!(!human_cx[0].belongs_to_first_person());
+        assert!(human_cx[1].belongs_to_first_person());
+        assert!(!human_cx[2].belongs_to_first_person());
+
+        let ai_cx = ai.context().collect::<Vec<_>>();
+        assert_eq!(ai_cx, msg_vec);
+        assert!(!ai_cx[0].belongs_to_first_person());
+        assert!(!ai_cx[1].belongs_to_first_person());
+        assert!(ai_cx[2].belongs_to_first_person());
+        assert!(!ai_cx[3].belongs_to_first_person());
     }
 }

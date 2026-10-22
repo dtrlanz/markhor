@@ -48,3 +48,17 @@ pub enum Msg {
         content: String,
     },
 }
+
+impl Msg {
+    /// Returns true if this message was sent by the first-person subject ("I")
+    /// in a given context, false otherwise.
+    ///
+    /// See [`Member::context`] for more information about the way context is
+    /// relative to a specific group member.
+    pub fn belongs_to_first_person(&self) -> bool {
+        match self {
+            Msg::User { sender, .. } | Msg::Agent { sender, .. } => sender.is_first_person(),
+            _ => false,
+        }
+    }
+}
