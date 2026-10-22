@@ -33,17 +33,15 @@ impl Group {
         })
     }
 
-    pub fn add_member(self: &Arc<Self>, name: &str, human: bool) -> Result<Member, AddMemberError> {
-        self.add_member_with_thread(name, human, &self.primary)
+    pub fn add_member(self: &Arc<Self>, id: MemberId) -> Result<Member, AddMemberError> {
+        self.add_member_with_thread(id, &self.primary)
     }
 
     fn add_member_with_thread(
         self: &Arc<Self>,
-        name: &str,
-        human: bool,
+        id: MemberId,
         thread: &Arc<Thread>,
     ) -> Result<Member, AddMemberError> {
-        let id = MemberId::new(name, human);
         let mut inserted = false;
         let new_or_existing_thread = self
             .members
@@ -138,17 +136,16 @@ pub struct Member {
 }
 
 impl Member {
-    pub fn add_peer(&self, name: &str, human: bool) -> Result<Member, AddMemberError> {
-        self.group
-            .add_member_with_thread(name, human, &self.context)
+    pub fn add_peer(&self, id: MemberId) -> Result<Member, AddMemberError> {
+        self.group.add_member_with_thread(id, &self.context)
     }
 
-    pub fn add_worker(&self, name: &str, context: InitContext) -> Result<Member, AddMemberError> {
+    pub fn add_worker(&self, id: MemberId, context: InitContext) -> Result<Member, AddMemberError> {
         let thread = match context {
             InitContext::None => Arc::new(Thread::new()),
             InitContext::Fork => self.context.fork(),
         };
-        let result = self.group.add_member_with_thread(name, false, &thread);
+        let result = self.group.add_member_with_thread(id, &thread);
         self.group.secondary.lock().unwrap().push(thread);
         result
     }
@@ -172,7 +169,8 @@ impl Member {
     // (minimize cloning of content fields, maybe with shared ownership &
     // clone-on-write logic).
     pub fn context(&self) -> impl Iterator<Item = Msg> + '_ {
-        let first_person = MemberId::new_internal(self.id.id(), self.id.human(), true);
+        let first_person =
+            MemberId::new_internal(self.id.id(), self.id.display_name(), self.id.human(), true);
         self.context
             .iter()
             .filter_map(move |entry| match entry.value() {
@@ -352,15 +350,23 @@ const FIRST_PERSON_FLAG: u8 = 0b10;
 
 impl MemberId {
     pub fn new(id: &str, human: bool) -> Self {
-        Self::new_internal(id, human, false)
+        Self::new_internal(id, None, human, false)
     }
 
-    fn new_internal(id: &str, human: bool, first_person: bool) -> Self {
-        let mut bytes = Vec::with_capacity(HEADER_LEN + id.len());
-        bytes.push(0); // split: no name for now
+    pub fn with_name(id: &str, name: &str, human: bool) -> Self {
+        Self::new_internal(id, Some(name), human, false)
+    }
+
+    fn new_internal(id: &str, name: Option<&str>, human: bool, first_person: bool) -> Self {
+        let split = name.map(|n| n.len()).unwrap_or(0);
+        let mut bytes = Vec::with_capacity(HEADER_LEN + split + id.len());
+        bytes.push(split as u8);
         bytes.push(
             if human { HUMAN_FLAG } else { 0 } | if first_person { FIRST_PERSON_FLAG } else { 0 },
         );
+        if let Some(name) = name {
+            bytes.extend_from_slice(name.as_bytes());
+        }
         bytes.extend_from_slice(id.as_bytes());
         Self {
             inner: bytes.into(),
@@ -377,9 +383,7 @@ impl MemberId {
     }
 
     /// The display name, if one was given when this id was created.
-    ///
-    /// Not used anywhere yet; reserved for future functionality.
-    pub fn name(&self) -> Option<&str> {
+    pub fn display_name(&self) -> Option<&str> {
         let split = self.split();
         if split == 0 {
             None
@@ -416,19 +420,16 @@ impl MemberId {
 impl std::fmt::Debug for MemberId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MemberId")
-            .field("name", &self.name())
+            .field("display_name", &self.display_name())
             .field("id", &self.id())
             .field("human", &self.human())
             .finish()
     }
 }
 
-impl std::ops::Deref for MemberId {
-    type Target = str;
-
-    fn deref(&self) -> &str {
-        // Name isn't used yet; fall back to id when there's no name.
-        self.name().unwrap_or_else(|| self.id())
+impl std::fmt::Display for MemberId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display_name().unwrap_or_else(|| self.id()))
     }
 }
 
@@ -501,26 +502,26 @@ mod tests {
             self
         }
 
-        fn user(mut self, name: &str, text: &str) -> Self {
+        fn user(mut self, id: &str, text: &str) -> Self {
             let mut next_time = self
                 .time
                 .map(|t| t.checked_add(Duration::from_secs(1)).unwrap());
             std::mem::swap(&mut self.time, &mut next_time);
             self.thread.append(Msg::User {
-                sender: MemberId::new(name, true),
+                sender: MemberId::new(id, true),
                 timestamp: next_time,
                 content: vec![ContentPart::Text(text.into())],
             });
             self
         }
 
-        fn agent(mut self, name: &str, text: &str, tool_calls: Vec<ToolCallRequest>) -> Self {
+        fn agent(mut self, id: &str, text: &str, tool_calls: Vec<ToolCallRequest>) -> Self {
             let mut next_time = self
                 .time
                 .map(|t| t.checked_add(Duration::from_secs(1)).unwrap());
             std::mem::swap(&mut self.time, &mut next_time);
             self.thread.append(Msg::Agent {
-                sender: MemberId::new(name, false),
+                sender: MemberId::new(id, false),
                 timestamp: next_time,
                 content: vec![ContentPart::Text(text.into())],
                 tool_calls,
@@ -586,10 +587,15 @@ mod tests {
     fn member_id_basics() {
         let id = MemberId::new("Alice123", true);
         assert_eq!(id.id(), "Alice123");
-        assert_eq!(id.name(), None);
+        assert_eq!(id.display_name(), None);
         assert!(id.human());
 
-        let ai_id = MemberId::new_internal("Robbie", false, true);
+        let with_name = MemberId::with_name("Alice123", "Alice", true);
+        assert_eq!(with_name.id(), "Alice123");
+        assert_eq!(with_name.display_name(), Some("Alice"));
+        assert!(with_name.human());
+
+        let ai_id = MemberId::new_internal("Robbie", None, false, true);
         assert!(!ai_id.human());
         assert!(ai_id.is_first_person());
 
@@ -671,8 +677,8 @@ mod tests {
     #[tokio::test]
     async fn simple_conversation() {
         let group = Group::new();
-        let human = group.add_member("Gloria", true).unwrap();
-        let ai = group.add_member("Robbie", false).unwrap();
+        let human = group.add_member(MemberId::new("Gloria", true)).unwrap();
+        let ai = group.add_member(MemberId::new("Robbie", false)).unwrap();
 
         group
             .append(Msg::Developer("You are a helpful assistant.".into()))
@@ -696,8 +702,8 @@ mod tests {
             History(
                 ThreadBuilder::new()
                     .developer("You are a helpful assistant.")
-                    .user(&human.id, "Good morning")
-                    .agent(&ai.id, "Hello! How can I help you today?", vec![])
+                    .user(human.id.id(), "Good morning")
+                    .agent(ai.id.id(), "Hello! How can I help you today?", vec![])
                     .as_ref()
             )
         );
@@ -709,14 +715,14 @@ mod tests {
     #[tokio::test]
     async fn member_context() {
         let group = Group::new();
-        let human = group.add_member("Gloria", true).unwrap();
-        let ai = group.add_member("Robbie", false).unwrap();
+        let human = group.add_member(MemberId::new("Gloria", true)).unwrap();
+        let ai = group.add_member(MemberId::new("Robbie", false)).unwrap();
 
         let msg_vec = ThreadBuilder::new()
             .developer("You are a Gloria's personal assistant. She lives in Paris.")
-            .user(&human.id, "Will it rain today?")
+            .user(human.id.id(), "Will it rain today?")
             .agent(
-                &ai.id,
+                ai.id.id(),
                 "Let me check the weather for you.",
                 vec![ToolCallRequest {
                     id: "call_1".into(),
@@ -725,7 +731,7 @@ mod tests {
                 }],
             )
             .tool_result(
-                &ai.id,
+                ai.id.id(),
                 "call_1".into(),
                 "Temperature: 18°C, Chance of rain: 20%",
             )
