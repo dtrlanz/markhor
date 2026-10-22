@@ -50,8 +50,7 @@ impl Member {
     // (minimize cloning of content fields, maybe with shared ownership &
     // clone-on-write logic).
     pub fn context(&self) -> impl Iterator<Item = Msg> + '_ {
-        let first_person =
-            MemberId::new_internal(self.id.id(), self.id.display_name(), self.id.human(), true);
+        let first_person = self.id.to_first_person();
         self.context
             .iter()
             .filter_map(move |entry| match entry.value() {
@@ -170,16 +169,15 @@ const FLAGS_MASK: u8 = HUMAN_FLAG | FIRST_PERSON_FLAG | OVERLAP_FLAG;
 
 impl MemberId {
     pub fn new(id: &str, human: bool) -> Self {
-        Self::new_internal(id, None, human, false)
+        Self::new_internal(id, None, human)
     }
 
     pub fn with_name(id: &str, name: &str, human: bool) -> Self {
-        Self::new_internal(id, Some(name), human, false)
+        Self::new_internal(id, Some(name), human)
     }
 
-    fn new_internal(id: &str, name: Option<&str>, human: bool, first_person: bool) -> Self {
-        let flags = (if human { HUMAN_FLAG } else { 0 })
-            | (if first_person { FIRST_PERSON_FLAG } else { 0 });
+    fn new_internal(id: &str, name: Option<&str>, human: bool) -> Self {
+        let flags = if human { HUMAN_FLAG } else { 0 };
         let split = name.map_or(0, str::len);
         let overlap = name.is_some_and(|n| id.starts_with(n));
         let flags = flags | if overlap { OVERLAP_FLAG } else { 0 };
@@ -227,6 +225,19 @@ impl MemberId {
             }
             Repr::Boxed(b) => (&b.text, b.split, b.flags),
         }
+    }
+
+    /// Returns a copy of this id flagged as the first-person subject.
+    fn to_first_person(&self) -> Self {
+        let mut out = self.clone();
+        match &mut out.repr {
+            Repr::Inline { meta, .. } => {
+                *meta = NonZero::new(meta.get() | FIRST_PERSON_FLAG)
+                    .expect("sentinel bit is always set");
+            }
+            Repr::Boxed(b) => b.flags |= FIRST_PERSON_FLAG,
+        }
+        out
     }
 
     /// The display name, if one was given when this id was created.
@@ -328,7 +339,7 @@ mod tests {
         assert_eq!(with_name.display_name(), Some("Alice"));
         assert!(with_name.human());
 
-        let ai_id = MemberId::new_internal("Robbie", None, false, true);
+        let ai_id = MemberId::new("Robbie", false).to_first_person();
         assert!(!ai_id.human());
         assert!(ai_id.is_first_person());
 
