@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 
 use crate::chat::{
     chat::{ContentPart, ToolCallRequest},
-    group::MemberId,
+    member::MemberId,
 };
 
 #[derive(Debug, Clone, PartialEq)]
