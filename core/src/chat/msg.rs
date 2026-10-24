@@ -66,14 +66,14 @@ impl Msg {
 pub trait IterMsg: Iterator<Item = Msg> + Sized {
     fn map_first_person<F>(self, f: F) -> MapFirstPerson<Self, F>
     where
-        F: FnOnce(&mut Msg),
+        F: FnMut(&mut Msg),
     {
         MapFirstPerson { iter: self, f }
     }
 
     fn map_others<F>(self, f: F) -> MapOthers<Self, F>
     where
-        F: FnOnce(&mut Msg),
+        F: FnMut(&mut Msg),
     {
         MapOthers { iter: self, f }
     }
@@ -220,6 +220,31 @@ pub trait IterMsg: Iterator<Item = Msg> + Sized {
     }
 }
 
+/// Applies prefix and suffix to the content of a message. Platform, developer,
+/// and control signal content is wrapped as a string; content parts are
+/// wrapped by inserting new text parts at the beginning and end.
+fn circumfix_msg(msg: &mut Msg, prefix: &str, suffix: &str) {
+    if prefix.is_empty() && suffix.is_empty() {
+        return;
+    }
+    match msg {
+        Msg::Platform(s) | Msg::Developer(s) => *s = format!("{prefix}{s}{suffix}"),
+        Msg::ControlSignal { content, .. } => *content = format!("{prefix}{content}{suffix}"),
+        Msg::User { content, .. }
+        | Msg::Agent { content, .. }
+        | Msg::Direct { content, .. }
+        | Msg::ToolResult { content, .. } => {
+            if !prefix.is_empty() {
+                content.insert(0, ContentPart::Text(prefix.into()));
+            }
+            if !suffix.is_empty() {
+                content.push(ContentPart::Text(suffix.into()));
+            }
+        }
+        Msg::Event { .. } => unimplemented!("circumfixing event messages"),
+    }
+}
+
 pub struct MapFirstPerson<I, F> {
     iter: I,
     f: F,
@@ -248,6 +273,118 @@ where
                 msg
             }
         })
+    }
+}
+
+impl<I, F> Iterator for MapFirstPerson<I, F>
+where
+    I: Iterator<Item = Msg>,
+    F: FnMut(&mut Msg),
+{
+    type Item = Msg;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut msg = self.iter.next()?;
+        if msg.belongs_to_first_person() {
+            (self.f)(&mut msg);
+        }
+        Some(msg)
+    }
+}
+
+impl<I, F> Iterator for MapOthers<I, F>
+where
+    I: Iterator<Item = Msg>,
+    F: FnMut(&mut Msg),
+{
+    type Item = Msg;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut msg = self.iter.next()?;
+        if !msg.belongs_to_first_person() {
+            (self.f)(&mut msg);
+        }
+        Some(msg)
+    }
+}
+
+impl<I> Iterator for CircumfixContent<I>
+where
+    I: Iterator<Item = Msg>,
+{
+    type Item = Msg;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut msg = self.iter.next()?;
+        circumfix_msg(&mut msg, &self.prefix, &self.suffix);
+        Some(msg)
+    }
+}
+
+impl<I, F> Iterator for CircumfixContentIf<I, F>
+where
+    I: Iterator<Item = Msg>,
+    F: FnMut(&mut Msg) -> bool,
+{
+    type Item = Msg;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut msg = self.iter.next()?;
+        if (self.predicate)(&mut msg) {
+            circumfix_msg(&mut msg, &self.prefix, &self.suffix);
+        }
+        Some(msg)
+    }
+}
+
+impl<I, F, P, S> Iterator for CircumfixContentWith<I, F>
+where
+    I: Iterator<Item = Msg>,
+    F: FnMut(&mut Msg) -> (P, S),
+    P: Into<String>,
+    S: Into<String>,
+{
+    type Item = Msg;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut msg = self.iter.next()?;
+        let (prefix, suffix) = (self.f)(&mut msg);
+        let prefix: String = prefix.into();
+        let suffix: String = suffix.into();
+        circumfix_msg(&mut msg, &prefix, &suffix);
+        Some(msg)
+    }
+}
+
+impl<I, F, P> Iterator for PrefixContentWith<I, F>
+where
+    I: Iterator<Item = Msg>,
+    F: FnMut(&mut Msg) -> P,
+    P: Into<String>,
+{
+    type Item = Msg;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut msg = self.iter.next()?;
+        let prefix: String = (self.f)(&mut msg).into();
+        circumfix_msg(&mut msg, &prefix, "");
+        Some(msg)
+    }
+}
+
+impl<I, F, S> Iterator for SuffixContentWith<I, F>
+where
+    I: Iterator<Item = Msg>,
+    F: FnMut(&mut Msg) -> S,
+    S: Into<String>,
+{
+    type Item = Msg;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut msg = self.iter.next()?;
+        let suffix: String = (self.f)(&mut msg).into();
+        circumfix_msg(&mut msg, "", &suffix);
+        Some(msg)
     }
 }
 
