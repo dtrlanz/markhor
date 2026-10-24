@@ -345,12 +345,23 @@ mod tests {
 
         let non_ascii_id = MemberId::new("葛飾", true);
         assert_eq!(non_ascii_id.id(), "葛飾");
+    }
 
-        // a few multi-char glyphs, in case we want to test for those
-        // 👨‍👩‍👦‍👦
-        // 🧑‍🚒
-        // 👩🏼‍🚒
-        // 👩🏾‍⚕️
+    #[test]
+    fn excessively_long_names() {
+        // > 16 bytes
+        let long_name = "Hippocrates of Kos";
+        assert_eq!(long_name.len(), 18);
+        let long = MemberId::with_name("h2", long_name, true);
+        assert_eq!(long.id(), "h2");
+        assert_eq!(long.display_name(), Some(long_name));
+
+        // > 256 bytes
+        let longer_name = "Hippocrates of Kos, the Father of Medicine 👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️";
+        assert_eq!(longer_name.len(), 264);
+        let longer = MemberId::with_name("h2", longer_name, true);
+        assert_eq!(longer.id(), "h2");
+        assert_eq!(longer.display_name(), Some(longer_name));
     }
 
     #[test]
