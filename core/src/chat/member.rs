@@ -208,8 +208,13 @@ impl MemberId {
 
     /// Creates an id with a display name, in addition to the id itself.
     ///
-    /// The display name is the value used for the `Display` trait.
-    /// It does not affect equality or hashing.
+    /// If `name` is an empty string, no name is added and
+    /// [`MemberId::display_name`] will return `None`.
+    ///
+    /// If a name is given, this value will be used for the `Display` trait
+    /// instead of [`MemberId::id`].
+    ///
+    /// This value does not affect equality or hashing.
     pub fn with_display_name(id: &str, name: &str, human: bool) -> Self {
         Self::new_internal(id, Some(name), human)
     }
@@ -469,6 +474,16 @@ mod tests {
         let nul = MemberId::new("a\0b", true);
         assert!(!is_inline(&nul));
         assert_eq!(nul.id(), "a\0b");
+    }
+
+    #[test]
+    fn empty_display_name_is_treated_as_no_name() {
+        let empty_name = MemberId::with_display_name("Alice123", "", true);
+        assert_eq!(empty_name.display_name(), None);
+        assert_eq!(empty_name.id(), "Alice123");
+        assert_eq!(empty_name.to_string(), "Alice123");
+        assert_eq!(empty_name, MemberId::new("Alice123", true));
+        assert!(empty_name.human());
     }
 
     #[test]
