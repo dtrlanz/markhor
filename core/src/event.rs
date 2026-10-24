@@ -208,6 +208,30 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 0);
     }
 
+    // Regression: dropping a subscription whose callback owns another subscription to the same
+    // event used to re-lock the (non-reentrant) mutex on the same thread and deadlock.
+    #[test]
+    fn dropping_subscription_whose_callback_owns_another_does_not_deadlock() {
+        let event: Event<AlienInfo> = Event::new();
+        let (count, callback) = counting_alien_listener();
+        let inner = event.add_listener(callback);
+        let holder = Mutex::new(Some(inner));
+        let outer = event.add_listener(move |_: &AlienInfo| {
+            let _ = &holder;
+        });
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(outer);
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("dropping the outer subscription deadlocked");
+
+        event.dispatch(&AlienInfo { id: 0 });
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
     #[test]
     fn listener_stays_active_while_subscription_is_held() {
         let event: Event<AlienInfo> = Event::new();
