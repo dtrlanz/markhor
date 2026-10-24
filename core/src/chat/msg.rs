@@ -86,7 +86,9 @@ pub trait IterMsg: Iterator<Item = Msg> + Sized {
     }
 
     fn chunk_by_role(self) -> ChunkByRole<Self> {
-        ChunkByRole { iter: self }
+        ChunkByRole {
+            iter: self.peekable(),
+        }
     }
 
     fn circumfix_content(
@@ -216,7 +218,11 @@ pub trait IterMsg: Iterator<Item = Msg> + Sized {
     where
         Self: Sized,
     {
-        SkipOrphanedInstructions { iter: self }
+        SkipOrphanedInstructions {
+            iter: self,
+            seen_developer: false,
+            seen_other: false,
+        }
     }
 }
 
@@ -392,17 +398,18 @@ impl<I> Iterator for ChunkByRole<I>
 where
     I: Iterator<Item = Msg>,
 {
-    type Item = Chunk<I>;
+    type Item = Vec<Msg>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        let first = self.iter.next()?;
+        let kind = std::mem::discriminant(&first);
+        let mut chunk = vec![first];
+        while let Some(msg) = self.iter.next_if(|m| std::mem::discriminant(m) == kind) {
+            chunk.push(msg);
+        }
+        Some(chunk)
     }
 }
-
-pub struct Chunk<I> {
-    iter: I,
-}
-
 pub struct CircumfixContent<I> {
     iter: I,
     prefix: String,
@@ -431,10 +438,44 @@ pub struct SuffixContentWith<I, F> {
     f: F,
 }
 
-pub struct ChunkByRole<I> {
-    iter: I,
+pub struct ChunkByRole<I: Iterator<Item = Msg>> {
+    iter: std::iter::Peekable<I>,
 }
 
 pub struct SkipOrphanedInstructions<I> {
     iter: I,
+    seen_developer: bool,
+    seen_other: bool,
+}
+
+impl<I> Iterator for SkipOrphanedInstructions<I>
+where
+    I: Iterator<Item = Msg>,
+{
+    type Item = Msg;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let msg = self.iter.next()?;
+            match msg {
+                Msg::Platform(_) => {
+                    let orphaned = self.seen_developer || self.seen_other;
+                    if !orphaned {
+                        return Some(msg);
+                    }
+                }
+                Msg::Developer(_) => {
+                    let orphaned = self.seen_other;
+                    self.seen_developer = true;
+                    if !orphaned {
+                        return Some(msg);
+                    }
+                }
+                _ => {
+                    self.seen_other = true;
+                    return Some(msg);
+                }
+            }
+        }
+    }
 }
