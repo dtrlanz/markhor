@@ -5,10 +5,18 @@ use crate::chat::{
     group::{AddMemberError, Group, InitContext, Thread},
 };
 
+/// A participant in a [`Group`].
+///
+/// Each `Member` has shared ownership of the messages that make up its
+/// context.
 #[derive(Debug, Clone)]
 pub struct Member {
+    /// Unique identifier of this member within its group.
     pub(super) id: MemberId,
+    /// The group this member belongs to.
     pub(super) group: Arc<Group>,
+    /// The thread this member reads context from. Shared with any peer added
+    /// via [`Member::add_peer`].
     pub(super) context: Arc<Thread>,
 }
 
@@ -17,10 +25,28 @@ impl Member {
         Self { id, group, context }
     }
 
+    /// Adds a peer to the group that shares this member's context thread, so
+    /// both members read the same messages.
+    ///
+    /// Returns [`AddMemberError::AlreadyExists`] if `id` is already a member of
+    /// the group. The error carries the already existing `Member`.
     pub fn add_peer(&self, id: MemberId) -> Result<Member, AddMemberError> {
         self.group.add_member_with_thread(id, &self.context)
     }
 
+    /// Adds a worker to the with its own separate thread, and returns it as a
+    /// new member.
+    ///
+    /// Unlike members addded via [`Member::add_peer`], this worker will not
+    /// see the same messages as this member, and vice versa. This is often
+    /// useful for spawning subagents.
+    ///
+    /// With [`InitContext::None`], the worker starts with an empty thread.
+    /// With [`InitContext::Fork`], it starts from a fork of this member's
+    /// current context.
+    ///
+    /// Returns [`AddMemberError::AlreadyExists`] if `id` is already a member of
+    /// the group. The error carries the already existing `Member`.
     pub fn add_worker(&self, id: MemberId, context: InitContext) -> Result<Member, AddMemberError> {
         let thread = match context {
             InitContext::None => Arc::new(Thread::new()),
@@ -33,6 +59,12 @@ impl Member {
         result
     }
 
+    // It would be nice to iterate over references instead of cloning, but
+    // that's tricky with `SkipMap`, and besides, we need to modify some
+    // messages anyway. If performance matters (and it might not), the
+    // lowest-hanging fruit is probably in the `Msg` enum rather than here
+    // (minimize cloning of content fields, maybe with shared ownership &
+    // clone-on-write logic).
     /// Returns an iterator over the messages in this member's context.
     ///
     /// Unlike the underlying thread of messages, the resulting context is
@@ -41,16 +73,10 @@ impl Member {
     /// member. Specifically:
     ///
     /// - Messages are filtered to include only those visible to this member.
-    /// - Agents only see their own tool calls.
+    /// - Agents see only their own tool calls.
     /// - For messages belonging to this member, `Msg::belongs_to_first_person`
     ///   will return true, so that downstream code can format the context in
     ///   first-person perspective as needed.
-    // It would be nice to iterate over references instead of cloning, but
-    // that's tricky with `SkipMap`, and besides, we need to modify some
-    // messages anyway. If performance matters (and it might not), the
-    // lowest-hanging fruit is probably in the `Msg` enum rather than here
-    // (minimize cloning of content fields, maybe with shared ownership &
-    // clone-on-write logic).
     pub fn context(&self) -> impl Iterator<Item = Msg> + '_ {
         let first_person = self.id.to_first_person();
         self.context
@@ -118,14 +144,17 @@ impl Member {
             })
     }
 
+    /// The group this member belongs to.
     pub fn group(&self) -> &Arc<Group> {
         &self.group
     }
 
+    /// Whether this member is a human. See [`MemberId::human`].
     pub fn human(&self) -> bool {
         self.id.human()
     }
 
+    /// The identifier of this member within its group.
     pub fn id(&self) -> &MemberId {
         &self.id
     }
@@ -170,11 +199,18 @@ const FIRST_PERSON_FLAG: u8 = 0b10;
 const FLAGS_MASK: u8 = HUMAN_FLAG | FIRST_PERSON_FLAG | OVERLAP_FLAG;
 
 impl MemberId {
+    /// Creates an id with no display name.
+    ///
+    /// `human` marks the member as a human rather than an AI agent.
     pub fn new(id: &str, human: bool) -> Self {
         Self::new_internal(id, None, human)
     }
 
-    pub fn with_name(id: &str, name: &str, human: bool) -> Self {
+    /// Creates an id with a display name, in addition to the id itself.
+    ///
+    /// The display name is the value used for the `Display` trait.
+    /// It does not affect equality or hashing.
+    pub fn with_display_name(id: &str, name: &str, human: bool) -> Self {
         Self::new_internal(id, Some(name), human)
     }
 
@@ -252,7 +288,9 @@ impl MemberId {
         }
     }
 
-    /// The id portion. If no name was given, this is the entire text.
+    /// The member identifier, which is unique within its group.
+    ///
+    /// This is the value used for equality and hashing.
     pub fn id(&self) -> &str {
         let (text, split, flags) = self.parts();
         if flags & OVERLAP_FLAG != 0 {
@@ -262,19 +300,18 @@ impl MemberId {
         }
     }
 
-    /// Whether this member represents a human, as opposed to an AI agent or
-    /// other automated participant.
+    /// Whether this member represents a human as opposed to an AI agent.
     ///
-    /// This value does not affect equality or hashing since groups may not
+    /// This value does not affect equality or hashing since groups cannot
     /// contain multiple members with the same id but different `human` flags
-    /// (e.g. a human and an AI agent both named "Alice").
+    /// (e.g. a human and an AI agent both named "Alice" would clash).
     pub fn human(&self) -> bool {
         self.parts().2 & HUMAN_FLAG != 0
     }
 
     /// Value used to flag the first-person subject in a specific context.
     /// This is only relevant within a chat context, and even then it is
-    /// typically not used directly but via `Msg::belongs_to_context_owner()`.
+    /// typically not used directly but via `Msg::is_first_person()`.
     ///
     /// This value does not affect equality or hashing.
     pub fn is_first_person(&self) -> bool {
@@ -336,7 +373,7 @@ mod tests {
         assert_eq!(id.display_name(), None);
         assert!(id.human());
 
-        let with_name = MemberId::with_name("Alice123", "Alice", true);
+        let with_name = MemberId::with_display_name("Alice123", "Alice", true);
         assert_eq!(with_name.id(), "Alice123");
         assert_eq!(with_name.display_name(), Some("Alice"));
         assert!(with_name.human());
@@ -354,14 +391,14 @@ mod tests {
         // > 16 bytes
         let long_name = "Hippocrates of Kos";
         assert_eq!(long_name.len(), 18);
-        let long = MemberId::with_name("h2", long_name, true);
+        let long = MemberId::with_display_name("h2", long_name, true);
         assert_eq!(long.id(), "h2");
         assert_eq!(long.display_name(), Some(long_name));
 
         // > 256 bytes
         let longer_name = "Hippocrates of Kos, the Father of Medicine 👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️👨🏽‍⚕️";
         assert_eq!(longer_name.len(), 264);
-        let longer = MemberId::with_name("h2", longer_name, true);
+        let longer = MemberId::with_display_name("h2", longer_name, true);
         assert_eq!(longer.id(), "h2");
         assert_eq!(longer.display_name(), Some(longer_name));
     }
@@ -399,20 +436,22 @@ mod tests {
         assert!(!is_inline(&MemberId::new("abcdefghijklmnop", true)));
 
         // Stored text is name + id, unless the name is a prefix of the id.
-        assert!(is_inline(&MemberId::with_name("Alice123", "Alice", true)));
-        assert!(is_inline(&MemberId::with_name(
+        assert!(is_inline(&MemberId::with_display_name(
+            "Alice123", "Alice", true
+        )));
+        assert!(is_inline(&MemberId::with_display_name(
             "Alice1234567890",
             "Alice",
             true
         )));
-        assert!(!is_inline(&MemberId::with_name(
+        assert!(!is_inline(&MemberId::with_display_name(
             "Alice123456789",
             "Bobbyyy",
             true
         )));
 
         // Split position must fit in 4 bits, so a longer name is boxed.
-        assert!(!is_inline(&MemberId::with_name(
+        assert!(!is_inline(&MemberId::with_display_name(
             "Alice",
             "abcdefghijklmnop",
             true
@@ -432,21 +471,21 @@ mod tests {
         };
 
         // Name is a prefix of the id: the display name borrows from the id.
-        let overlap = MemberId::with_name("Alice1234567890", "Alice", true);
+        let overlap = MemberId::with_display_name("Alice1234567890", "Alice", true);
         assert_eq!(overlap.id(), "Alice1234567890");
         assert_eq!(overlap.display_name(), Some("Alice"));
         assert_eq!(addr(overlap.display_name().unwrap()), addr(overlap.id()));
         assert!(within(overlap.display_name().unwrap(), overlap.id()));
 
         // Name is not a prefix: the name and id occupy separate bytes.
-        let separate = MemberId::with_name("Alice123", "Bob", true);
+        let separate = MemberId::with_display_name("Alice123", "Bob", true);
         assert_eq!(separate.id(), "Alice123");
         assert_eq!(separate.display_name(), Some("Bob"));
         assert!(!within(separate.display_name().unwrap(), separate.id()));
         assert!(!within(separate.id(), separate.display_name().unwrap()));
 
         // The same holds for boxed text.
-        let long = MemberId::with_name(
+        let long = MemberId::with_display_name(
             "abcdefghijklmnopqrstuvwxyz",
             "abcdefghijklmnopqrstuvw",
             false,
