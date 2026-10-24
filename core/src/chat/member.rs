@@ -414,8 +414,16 @@ mod tests {
         assert_eq!(a, c);
         assert_eq!(a, d);
 
-        // Different ids must never compare equal, even if they'd produce the
-        // same combined name+id text once `name` is implemented.
+        // Different ids must never compare equal, even when a name makes their
+        // stored text coincide: name "Al" + id "ice123" stores "Alice123".
+        let e = MemberId::with_display_name("ice123", "Al", true);
+        assert_eq!(e.id(), "ice123");
+        assert_ne!(e, a);
+
+        // Names do not affect equality.
+        let named = MemberId::with_display_name("Alice123", "Bob", false);
+        assert_eq!(named, a);
+
         let c = MemberId::new("Alice124", true);
         assert_ne!(a, c);
 
