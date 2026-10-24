@@ -33,6 +33,12 @@ pub struct Event<T> {
     listeners: Arc<Mutex<Listeners<T>>>,
 }
 
+impl<T: 'static> Default for Event<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: 'static> Event<T> {
     pub fn new() -> Self {
         Self {
@@ -91,6 +97,38 @@ impl Drop for Subscription {
     }
 }
 
+/// Generates a struct whose fields are `Event`s, with a `Default` impl.
+///
+/// ```ignore
+/// events! {
+///     pub struct FooEvents {
+///         alien_invasion: AlienInfo,
+///         zombie_apocalypse: ZombieInfo,
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! events {
+    (
+        $(#[$meta:meta])*
+        $vis:vis struct $name:ident {
+            $(
+                $(#[$field_meta:meta])*
+                $field:ident : $payload:ty
+            ),* $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Default)]
+        $vis struct $name {
+            $(
+                $(#[$field_meta])*
+                $vis $field: $crate::event::Event<$payload>,
+            )*
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,17 +147,10 @@ mod tests {
         pub id: u32,
     }
 
-    struct FooEvents {
-        alien_invasion: Event<AlienInfo>,
-        zombie_apocalypse: Event<ZombieInfo>,
-    }
-
-    impl FooEvents {
-        fn new() -> Self {
-            Self {
-                alien_invasion: Event::new(),
-                zombie_apocalypse: Event::new(),
-            }
+    events! {
+        struct FooEvents {
+            alien_invasion: AlienInfo,
+            zombie_apocalypse: ZombieInfo,
         }
     }
 
@@ -132,7 +163,7 @@ mod tests {
     impl Foo {
         fn new() -> Self {
             Self {
-                events: FooEvents::new(),
+                events: FooEvents::default(),
                 alien_invasion_active: false,
                 zombie_apocalypse_active: false,
             }
