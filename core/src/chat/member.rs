@@ -27,7 +27,9 @@ impl Member {
             InitContext::Fork => self.context.fork(),
         };
         let result = self.group.add_member_with_thread(id, &thread);
-        self.group.secondary.lock().unwrap().push(thread);
+        if result.is_ok() {
+            self.group.secondary.lock().unwrap().push(thread);
+        }
         result
     }
 
