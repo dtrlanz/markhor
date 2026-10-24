@@ -7,7 +7,7 @@ mod member;
 mod msg;
 pub mod prompter;
 
-pub use chat_ui::ChatUi;
+pub use chat_ui::{ChatUi, MsgEvent, MsgId, ReasoningEvent, ToolCallEvent, ToolCallId, WorkerEvent};
 pub use error::ChatError;
 pub use group::{AddMemberError, AppendMessageError, Group, InitContext};
 pub use member::{Member, MemberId};

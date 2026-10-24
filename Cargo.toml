@@ -3,6 +3,7 @@ members = [
     "core",
     "core_derive_provide",
     "cli",
+    "cli/sim",
     "extensions", "markhor",
     "gui", 
     "markhor", 

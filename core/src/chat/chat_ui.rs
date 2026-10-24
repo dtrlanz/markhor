@@ -182,7 +182,7 @@ pub enum WorkerEvent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MsgId(usize);
+pub struct MsgId(pub usize);
 
 impl Deref for MsgId {
     type Target = usize;
@@ -193,7 +193,7 @@ impl Deref for MsgId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ToolCallId(usize);
+pub struct ToolCallId(pub usize);
 
 impl Deref for ToolCallId {
     type Target = usize;
