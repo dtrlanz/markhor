@@ -1,13 +1,32 @@
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex, Weak},
-};
+use std::sync::{Arc, Mutex, Weak};
+
+use smallvec::SmallVec;
 
 type Callback<T> = Arc<dyn Fn(&T) + Send + Sync>;
 
+// Ids are assigned in increasing order and appended, so `callbacks` stays sorted by id.
+// Most events have 0 or 1 listeners, so one entry is stored inline without a heap allocation.
 struct Listeners<T> {
     next_id: u64,
-    callbacks: BTreeMap<u64, Callback<T>>,
+    callbacks: SmallVec<[(u64, Callback<T>); 1]>,
+}
+
+impl<T> Listeners<T> {
+    fn remove(&mut self, id: u64) -> Option<Callback<T>> {
+        let pos = self.callbacks.binary_search_by_key(&id, |(i, _)| *i).ok()?;
+        Some(self.callbacks.remove(pos).1)
+    }
+}
+
+trait Unsubscribe: Send + Sync {
+    fn unsubscribe(&self, id: u64);
+}
+
+impl<T: 'static> Unsubscribe for Mutex<Listeners<T>> {
+    fn unsubscribe(&self, id: u64) {
+        // Drop the removed callback after the lock is released, in case it owns a Subscription.
+        let _removed = self.lock().unwrap().remove(id);
+    }
 }
 
 pub struct Event<T> {
@@ -19,7 +38,7 @@ impl<T: 'static> Event<T> {
         Self {
             listeners: Arc::new(Mutex::new(Listeners {
                 next_id: 0,
-                callbacks: BTreeMap::new(),
+                callbacks: SmallVec::new(),
             })),
         }
     }
@@ -30,29 +49,26 @@ impl<T: 'static> Event<T> {
             let mut listeners = self.listeners.lock().unwrap();
             let id = listeners.next_id;
             listeners.next_id += 1;
-            listeners.callbacks.insert(id, callback);
+            listeners.callbacks.push((id, callback));
             id
         };
 
-        let weak: Weak<Mutex<Listeners<T>>> = Arc::downgrade(&self.listeners);
+        let weak = Arc::downgrade(&self.listeners);
+        let weak: Weak<dyn Unsubscribe> = weak;
         Subscription {
-            remove: Some(Box::new(move || {
-                if let Some(listeners) = weak.upgrade() {
-                    listeners.lock().unwrap().callbacks.remove(&id);
-                }
-            })),
+            target: Some((weak, id)),
         }
     }
 
     pub fn dispatch(&self, payload: &T) {
         // Clone the callbacks out so the lock is released before any callback runs.
-        let snapshot: Vec<Callback<T>> = self
+        let snapshot: SmallVec<[Callback<T>; 2]> = self
             .listeners
             .lock()
             .unwrap()
             .callbacks
-            .values()
-            .cloned()
+            .iter()
+            .map(|(_, callback)| callback.clone())
             .collect();
 
         for callback in snapshot {
@@ -62,13 +78,15 @@ impl<T: 'static> Event<T> {
 }
 
 pub struct Subscription {
-    remove: Option<Box<dyn FnOnce() + Send + Sync>>,
+    target: Option<(Weak<dyn Unsubscribe>, u64)>,
 }
 
 impl Drop for Subscription {
     fn drop(&mut self) {
-        if let Some(remove) = self.remove.take() {
-            remove();
+        if let Some((weak, id)) = self.target.take() {
+            if let Some(listeners) = weak.upgrade() {
+                listeners.unsubscribe(id);
+            }
         }
     }
 }
