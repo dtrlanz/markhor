@@ -1,360 +1,401 @@
-use std::{
-    fmt,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, Weak,
-    },
-};
-use crossbeam_skiplist::SkipSet;
+use std::sync::{Arc, Mutex, Weak};
 
-/// Represents an event that can be dispatched to listeners.
-pub trait Event: fmt::Debug + Send + Sync {
-    /// The return type of the event handler.
-    type HandlerReturnType: fmt::Debug;
+use smallvec::SmallVec;
 
-    /// Updates the event with the result of a listener's callback.
-    /// This method is called after each listener's callback returns.
-    ///
-    /// Override this method to modify the event based on the listener's return value.
-    /// The default implementation does nothing.
-    fn update(&mut self, _handler_result: Self::HandlerReturnType) {}
+type Callback<T> = Arc<dyn Fn(&T) + Send + Sync>;
+
+// Ids are assigned in increasing order and appended, so `callbacks` stays sorted by id.
+// Most events have 0 or 1 listeners, so one entry is stored inline without a heap allocation.
+struct Listeners<T> {
+    next_id: u64,
+    callbacks: SmallVec<[(u64, Callback<T>); 1]>,
 }
 
-#[derive(Debug)]
-struct ListenerEntry<E: Event> {
-    // Use Weak pointer to avoid cycles and allow listeners to be dropped automatically.
-    callback: Weak<dyn Fn(&E) -> E::HandlerReturnType + Send + Sync>,
-    // Use an atomic counter to ensure listeners are called in the order they were added.
-    order: usize,
-}
-
-// Implement comparison traits based solely on the insertion order.
-impl<E: Event> Eq for ListenerEntry<E> {}
-
-impl<E: Event> PartialEq for ListenerEntry<E> {
-    fn eq(&self, other: &Self) -> bool {
-        self.order == other.order
+impl<T> Listeners<T> {
+    fn remove(&mut self, id: u64) -> Option<Callback<T>> {
+        let pos = self.callbacks.binary_search_by_key(&id, |(i, _)| *i).ok()?;
+        Some(self.callbacks.remove(pos).1)
     }
 }
 
-impl<E: Event> Ord for ListenerEntry<E> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.order.cmp(&other.order)
+trait Unsubscribe: Send + Sync {
+    fn unsubscribe(&self, id: u64);
+}
+
+impl<T: 'static> Unsubscribe for Mutex<Listeners<T>> {
+    fn unsubscribe(&self, id: u64) {
+        // Drop the removed callback after the lock is released, in case it owns a Subscription.
+        let _removed = self.lock().unwrap().remove(id);
     }
 }
 
-impl<E: Event> PartialOrd for ListenerEntry<E> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
+pub struct Event<T> {
+    listeners: Arc<Mutex<Listeners<T>>>,
 }
 
-// Global atomic counter to assign a unique order to each listener upon creation.
-static LISTENER_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-/// A list of listeners for a specific event type `E`.
-///
-/// Listeners are stored in a `SkipSet` ordered by their insertion sequence,
-/// ensuring they are called in the order they were added.
-pub struct ListenerList<E: Event> {
-    // Using SkipSet for efficient, ordered insertion and iteration.
-    inner: SkipSet<ListenerEntry<E>>,
-}
-
-impl<E: Event + 'static> ListenerList<E> {
-    /// Creates a new, empty listener list.
-    pub fn new() -> Self {
-
-        ListenerList {
-            inner: SkipSet::new(),
-        }
-    }
-
-    /// Dispatches an event to all registered listeners in order.
-    ///
-    /// This method iterates through the listeners. For each listener:
-    /// 1. It attempts to upgrade the `Weak` pointer to the callback `Arc`.
-    /// 2. If successful, it calls the callback with the current event state.
-    /// 3. It calls the event's `update` method with the callback's return value.
-    /// 4. If the `Weak` pointer cannot be upgraded (meaning the `Listener` was dropped),
-    ///    the stale `ListenerEntry` is removed from the list.
-    ///
-    /// This method is `pub(crate)` to ensure that only code within the same crate
-    /// as this module can dispatch events, maintaining encapsulation for event emitters.
-    pub(crate) fn dispatch(&self, event: &mut E) {
-        let mut entries_to_remove = Vec::new();
-
-        for entry in self.inner.iter() {
-            if let Some(callback_arc) = entry.callback.upgrade() {
-                // Callback is still valid, execute it
-                let result = callback_arc(event);
-                event.update(result);
-            } else {
-                // Callback `Arc` was dropped, mark this entry for removal
-                // We collect orders because removing directly during iteration is problematic
-                // and ListenerEntry itself doesn't implement Clone/Copy easily.
-                entries_to_remove.push(entry.order);
-            }
-        }
-
-        let dummy_arc: Arc::<dyn Fn(&E) -> E::HandlerReturnType + Send + Sync> = Arc::new(Self::dummy_handler);
-        
-
-        // Remove stale entries outside the main iteration loop
-        // Note: Re-fetching the entry by order is needed because SkipSet::remove requires a borrowed value.
-        // This is less efficient than direct removal but necessary with the current structure.
-        // A potential optimization could involve altering ListenerEntry or using a different removal strategy.
-        for order in entries_to_remove {
-            // Create a temporary key just for removal lookup
-            let key = ListenerEntry {
-                callback: Arc::downgrade(&dummy_arc), // Callback content doesn't matter for comparison
-                order,
-            };
-            self.inner.remove(&key);
-        }
-    }
-
-    // Dummy handler function to satisfy the type requirements of the Weak pointer.
-    // This function is never called.
-    fn dummy_handler(_: &E) -> E::HandlerReturnType {
-        unreachable!()
-    }
-}
-
-impl<E: Event + 'static> Default for ListenerList<E> {
+impl<T: 'static> Default for Event<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<E: Event> fmt::Debug for ListenerList<E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Customize Debug output to maybe show the count or a hint of orders
-        f.debug_struct("ListenerList")
-         .field("listener_count", &self.inner.len())
-         .finish()
-    }
-}
-
-/// Represents an active listener registration.
-///
-/// When this struct is dropped, the listener is effectively deregistered,
-/// and its entry will be cleaned up from the `ListenerList` upon the next dispatch.
-/// It holds a strong reference (`Arc`) to the callback closure.
-pub struct Listener<E: Event> {
-    // Keep the Arc alive for the lifetime of the Listener struct.
-    // The ListenerList holds only a Weak reference.
-    #[allow(dead_code)] // Arc is kept for lifetime management, not direct use here
-    arc: Arc<dyn Fn(&E) -> E::HandlerReturnType + Send + Sync>,
-    // Store order to ensure listeners are called in the order they were added.
-    order: usize,
-}
-
-impl<E: Event + 'static> Listener<E> {
-    /// Creates a new listener and registers it with the given `ListenerList`.
-    ///
-    /// # Arguments
-    /// * `listeners`: The `ListenerList` to register with.
-    /// * `callback`: The closure to execute when the event is dispatched.
-    ///
-    /// # Returns
-    /// A `Listener` instance. Keep this instance alive for as long as you want the
-    /// listener to be active. When it's dropped, the listener becomes inactive.
-    pub fn new<F>(listeners: &ListenerList<E>, callback: F) -> Self
-    where
-        F: Fn(&E) -> E::HandlerReturnType + Send + Sync + 'static,
-    {
-        let order = LISTENER_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let arc: Arc<dyn Fn(&E) -> E::HandlerReturnType + Send + Sync> = Arc::new(callback);
-        let entry = ListenerEntry {
-            callback: Arc::downgrade(&arc),
-            order,
-        };
-        listeners.inner.insert(entry);
-
-        Listener { arc, order }
-    }
-}
-
-impl<E: Event> fmt::Debug for Listener<E> {
-    /// Formats the `Listener` for debugging.
-    /// This includes a number reflecting the order of the listener in the list.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Listener")
-            .field("order", &self.order)
-            .finish()
-    }
-}
-
-/// Macro to define a struct holding named `ListenerList` fields for various event types.
-///
-/// This macro generates a struct with the specified name, containing public fields
-/// for each event listener list.
-//#[macro_export]
-macro_rules! define_event_listeners {
-    ($struct_name:ident { $($field_name:ident: $event_type:ty),* $(,)? }) => {
-        /// Holds listener lists for various events.
-        #[derive(Debug, Default)]
-        pub struct $struct_name {
-            $(
-                pub $field_name: $crate::event::ListenerList<$event_type>,
-            )*
+impl<T: 'static> Event<T> {
+    pub fn new() -> Self {
+        Self {
+            listeners: Arc::new(Mutex::new(Listeners {
+                next_id: 0,
+                callbacks: SmallVec::new(),
+            })),
         }
+    }
 
-        impl $struct_name {
-            /// Creates a new instance with empty listener lists.
-            pub fn new() -> Self {
-                Self {
-                    $(
-                        $field_name: $crate::event::ListenerList::new(),
-                    )*
-                }
+    pub fn add_listener(&self, callback: impl Fn(&T) + Send + Sync + 'static) -> Subscription {
+        let callback: Callback<T> = Arc::new(callback);
+        let id = {
+            let mut listeners = self.listeners.lock().unwrap();
+            let id = listeners.next_id;
+            listeners.next_id += 1;
+            listeners.callbacks.push((id, callback));
+            id
+        };
+
+        let weak = Arc::downgrade(&self.listeners);
+        let weak: Weak<dyn Unsubscribe> = weak;
+        Subscription {
+            target: Some((weak, id)),
+        }
+    }
+
+    pub fn dispatch(&self, payload: &T) {
+        // Clone the callbacks out so the lock is released before any callback runs.
+        let snapshot: SmallVec<[Callback<T>; 2]> = self
+            .listeners
+            .lock()
+            .unwrap()
+            .callbacks
+            .iter()
+            .map(|(_, callback)| callback.clone())
+            .collect();
+
+        for callback in snapshot {
+            callback(payload);
+        }
+    }
+}
+
+pub struct Subscription {
+    target: Option<(Weak<dyn Unsubscribe>, u64)>,
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        if let Some((weak, id)) = self.target.take() {
+            if let Some(listeners) = weak.upgrade() {
+                listeners.unsubscribe(id);
             }
+        }
+    }
+}
+
+/// Generates a struct whose fields are `Event`s, with a `Default` impl.
+///
+/// ```ignore
+/// events! {
+///     pub struct FooEvents {
+///         alien_invasion: AlienInfo,
+///         zombie_apocalypse: ZombieInfo,
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! events {
+    (
+        $(#[$meta:meta])*
+        $vis:vis struct $name:ident {
+            $(
+                $(#[$field_meta:meta])*
+                $field:ident : $payload:ty
+            ),* $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Default)]
+        $vis struct $name {
+            $(
+                $(#[$field_meta])*
+                $vis $field: $crate::event::Event<$payload>,
+            )*
         }
     };
 }
 
-pub(crate) use define_event_listeners;
-
-
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, sync::Mutex};
-
-    // Import necessary items from the parent module (containing the event system)
     use super::*;
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
 
-    // --- Define Sample Event Structs ---
-    #[derive(Debug, Clone)]
-    pub struct Event1(i32);
-    impl Event for Event1 {
-        type HandlerReturnType = i32;
+    #[derive(Debug, PartialEq)]
+    pub struct AlienInfo {
+        pub id: u32,
+    }
 
-        fn update(&mut self, value: i32) {
-            self.0 += value;
-            println!("Event1 updated: current value = {}", self.0); // Added logging
+    #[derive(Debug, PartialEq)]
+    pub struct ZombieInfo {
+        pub id: u32,
+    }
+
+    events! {
+        struct FooEvents {
+            alien_invasion: AlienInfo,
+            zombie_apocalypse: ZombieInfo,
         }
     }
 
-    #[derive(Debug, Clone)]
-    pub struct Event2(i32);
-    impl Event for Event2 {
-        type HandlerReturnType = i32;
-        fn update(&mut self, value: i32) {
-            self.0 *= value; // Changed logic for variety
-             println!("Event2 updated: current value = {}", self.0); // Added logging
+    struct Foo {
+        events: FooEvents,
+        alien_invasion_active: bool,
+        zombie_apocalypse_active: bool,
+    }
+
+    impl Foo {
+        fn new() -> Self {
+            Self {
+                events: FooEvents::default(),
+                alien_invasion_active: false,
+                zombie_apocalypse_active: false,
+            }
+        }
+
+        fn on_alien_invasion(
+            &mut self,
+            callback: impl Fn(&AlienInfo) + Send + Sync + 'static,
+        ) -> Subscription {
+            self.events.alien_invasion.add_listener(callback)
+        }
+
+        fn on_zombie_apocalypse(
+            &mut self,
+            callback: impl Fn(&ZombieInfo) + Send + Sync + 'static,
+        ) -> Subscription {
+            self.events.zombie_apocalypse.add_listener(callback)
+        }
+
+        fn check_weather(&mut self) {
+            if self.alien_invasion_active {
+                self.events.alien_invasion.dispatch(&AlienInfo { id: 1 });
+            }
+            if self.zombie_apocalypse_active {
+                self.events
+                    .zombie_apocalypse
+                    .dispatch(&ZombieInfo { id: 2 });
+            }
         }
     }
 
-    // --- Use the Macro ---
-    // Define a struct `TestEvents` that will hold the listener lists for Event1 and Event2
-    define_event_listeners!(TestEvents {
-        on_event1: Event1,
-        on_event2: Event2,
-    });
+    fn counting_alien_listener() -> (
+        Arc<AtomicUsize>,
+        impl Fn(&AlienInfo) + Send + Sync + 'static,
+    ) {
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        (count, move |_: &AlienInfo| {
+            c.fetch_add(1, Ordering::SeqCst);
+        })
+    }
+
+    fn assert_send<T: Send>(_: &T) {}
 
     #[test]
-    fn test_listener_registration_and_dispatch() {
-        // Create an instance of the generated struct
-        let listeners = TestEvents::new();
-
-        // Register listeners using Listener::new
-        let _listener1_handle = Listener::new(&listeners.on_event1, |event| {
-            println!("Listener 1 for Event1 called with event: {:?}", event);
-            10 // Return value for Event1::update
-        });
-        let _listener2_handle = Listener::new(&listeners.on_event1, |event| {
-             println!("Listener 2 for Event1 called with event: {:?}", event);
-            5 // Return value for Event1::update
-        });
-        let _listener3_handle = Listener::new(&listeners.on_event2, |event| {
-             println!("Listener 1 for Event2 called with event: {:?}", event);
-            3 // Return value for Event2::update
+    fn dispatch_passes_payload_to_listener() {
+        let event: Event<AlienInfo> = Event::new();
+        let received = Arc::new(Mutex::new(None));
+        let r = received.clone();
+        let _sub = event.add_listener(move |info: &AlienInfo| {
+            *r.lock().unwrap() = Some(info.id);
         });
 
-        // --- Dispatch Event1 ---
-        let mut event1 = Event1(100); // Initial value
-        println!("Dispatching Event1...");
-        // Call dispatch directly on the ListenerList (possible because tests are in the same crate)
-        listeners.on_event1.dispatch(&mut event1);
-        // Expected: 100 (initial) + 10 (listener1) + 5 (listener2) = 115
-        assert_eq!(event1.0, 115);
-        println!("Event1 dispatch complete. Final value: {}", event1.0);
+        event.dispatch(&AlienInfo { id: 42 });
 
-        // --- Dispatch Event2 ---
-        let mut event2 = Event2(5); // Initial value
-        println!("Dispatching Event2...");
-        listeners.on_event2.dispatch(&mut event2);
-        // Expected: 5 (initial) * 3 (listener3) = 15
-        assert_eq!(event2.0, 15);
-        println!("Event2 dispatch complete. Final value: {}", event2.0);
+        assert_eq!(*received.lock().unwrap(), Some(42));
     }
 
     #[test]
-    fn test_listener_cleanup_on_drop() {
-        let listeners = TestEvents::new();
-        let listener_count_before: usize;
-        let listener_count_after_drop: usize;
-        let listener_count_after_dispatch: usize;
+    fn dispatch_calls_listeners_in_registration_order() {
+        let event: Event<AlienInfo> = Event::new();
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let subs: Vec<Subscription> = (1..=3)
+            .map(|n| {
+                let order = order.clone();
+                event.add_listener(move |_: &AlienInfo| order.lock().unwrap().push(n))
+            })
+            .collect();
 
-        {
-            // Create a listener in a limited scope
-            let _listener_temp = Listener::new(&listeners.on_event1, |_| 1);
-            listener_count_before = listeners.on_event1.inner.len();
-            println!("Listener count before drop: {}", listener_count_before);
-            assert_eq!(listener_count_before, 1);
-            // _listener_temp is dropped here
-        }
+        event.dispatch(&AlienInfo { id: 0 });
 
-        // The Weak ref still exists, so the count might not change immediately
-        // (implementation detail of SkipSet iterators/cleanup)
-        listener_count_after_drop = listeners.on_event1.inner.len();
-         println!("Listener count after drop (before dispatch): {}", listener_count_after_drop);
-         // Asserting it might still be 1 is valid, as cleanup happens during dispatch
-         assert_eq!(listener_count_after_drop, 1);
-
-        // Dispatch an event to trigger cleanup
-        let mut event1 = Event1(0);
-        println!("Dispatching event to trigger cleanup...");
-        listeners.on_event1.dispatch(&mut event1);
-
-        // Now the dropped listener should have been removed
-        listener_count_after_dispatch = listeners.on_event1.inner.len();
-        println!("Listener count after dispatch (should be 0): {}", listener_count_after_dispatch);
-        assert_eq!(listener_count_after_dispatch, 0);
-
-         // Ensure the event wasn't updated (since the listener was gone)
-        assert_eq!(event1.0, 0);
+        assert_eq!(*order.lock().unwrap(), vec![1, 2, 3]);
     }
 
-     #[test]
-    fn test_listener_order() {
-        let listeners = TestEvents::new();
-        let call_order = Arc::new(Mutex::new(Vec::new()));
-        let (co_a, co_b, co_c) = (call_order.clone(), call_order.clone(), call_order.clone());
+    #[test]
+    fn dispatch_with_no_listeners_does_nothing() {
+        let event: Event<AlienInfo> = Event::new();
 
-        let _listener_a = Listener::new(&listeners.on_event1, move |_| {
-            println!("Listener A called");
-            co_a.try_lock().unwrap().push("A");
-            1 // Return value doesn't matter for this test
+        event.dispatch(&AlienInfo { id: 0 });
+    }
+
+    #[test]
+    fn dropping_subscription_stops_listener() {
+        let event: Event<AlienInfo> = Event::new();
+        let (count, callback) = counting_alien_listener();
+        let sub = event.add_listener(callback);
+
+        drop(sub);
+        event.dispatch(&AlienInfo { id: 0 });
+
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    // Regression: dropping a subscription whose callback owns another subscription to the same
+    // event used to re-lock the (non-reentrant) mutex on the same thread and deadlock.
+    #[test]
+    fn dropping_subscription_whose_callback_owns_another_does_not_deadlock() {
+        let event: Event<AlienInfo> = Event::new();
+        let (count, callback) = counting_alien_listener();
+        let inner = event.add_listener(callback);
+        let holder = Mutex::new(Some(inner));
+        let outer = event.add_listener(move |_: &AlienInfo| {
+            let _ = &holder;
         });
-        let _listener_b = Listener::new(&listeners.on_event1, move |_| {
-            println!("Listener B called");
-            co_b.try_lock().unwrap().push("B");
-            1
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(outer);
+            let _ = tx.send(());
         });
-         let _listener_c = Listener::new(&listeners.on_event1, move |_| {
-             println!("Listener C called");
-             co_c.try_lock().unwrap().push("C");
-            1
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("dropping the outer subscription deadlocked");
+
+        event.dispatch(&AlienInfo { id: 0 });
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn listener_stays_active_while_subscription_is_held() {
+        let event: Event<AlienInfo> = Event::new();
+        let (count, callback) = counting_alien_listener();
+        let _sub = event.add_listener(callback);
+
+        event.dispatch(&AlienInfo { id: 0 });
+        event.dispatch(&AlienInfo { id: 0 });
+
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn events_of_different_types_are_independent() {
+        let mut foo = Foo::new();
+        let (alien_count, alien_callback) = counting_alien_listener();
+        let zombie_count = Arc::new(AtomicUsize::new(0));
+        let z = zombie_count.clone();
+        let _alien_sub = foo.on_alien_invasion(alien_callback);
+        let _zombie_sub = foo.on_zombie_apocalypse(move |_: &ZombieInfo| {
+            z.fetch_add(1, Ordering::SeqCst);
+        });
+        foo.zombie_apocalypse_active = true;
+
+        foo.check_weather();
+
+        assert_eq!(alien_count.load(Ordering::SeqCst), 0);
+        assert_eq!(zombie_count.load(Ordering::SeqCst), 1);
+    }
+
+    // Dispatch iterates over a snapshot of the listeners taken when it starts. A listener
+    // dropped mid-dispatch is still called once in that dispatch, and never again after.
+    #[test]
+    fn dropping_subscription_during_dispatch_still_runs_it_this_round() {
+        let event: Event<AlienInfo> = Event::new();
+        let (count, callback) = counting_alien_listener();
+        let slot: Arc<Mutex<Option<Subscription>>> = Arc::new(Mutex::new(None));
+        let slot_for_first = slot.clone();
+        // Listener A drops subscription B (stored in `slot`) while dispatch is running.
+        let _first = event.add_listener(move |_: &AlienInfo| {
+            slot_for_first.lock().unwrap().take();
+        });
+        *slot.lock().unwrap() = Some(event.add_listener(callback));
+
+        // B is still in the snapshot, so it runs once here.
+        event.dispatch(&AlienInfo { id: 0 });
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+
+        // B has been dropped, so it no longer runs.
+        event.dispatch(&AlienInfo { id: 0 });
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    // A listener added mid-dispatch is missing from the snapshot, so it first runs on the
+    // next dispatch. The `added` flag makes the adding listener register its child only once.
+    #[test]
+    fn listener_added_during_dispatch_is_not_called_this_round() {
+        let event = Arc::new(Event::<AlienInfo>::new());
+        let (count, _) = counting_alien_listener();
+        let kept: Arc<Mutex<Vec<Subscription>>> = Arc::new(Mutex::new(Vec::new()));
+        let added = Arc::new(AtomicBool::new(false));
+
+        let adder_event = event.clone();
+        let adder_count = count.clone();
+        let adder_kept = kept.clone();
+        let adder_added = added.clone();
+        // Listener A registers a counting listener C on its first call only.
+        let _adder = event.add_listener(move |_: &AlienInfo| {
+            if !adder_added.swap(true, Ordering::SeqCst) {
+                let c = adder_count.clone();
+                let sub = adder_event.add_listener(move |_: &AlienInfo| {
+                    c.fetch_add(1, Ordering::SeqCst);
+                });
+                // Keep C's subscription alive so it stays registered.
+                adder_kept.lock().unwrap().push(sub);
+            }
         });
 
+        // C was added mid-dispatch, so it is not in this dispatch's snapshot.
+        event.dispatch(&AlienInfo { id: 0 });
+        assert_eq!(count.load(Ordering::SeqCst), 0);
 
-        let mut event1 = Event1(0);
-        println!("Dispatching event to test order...");
-        listeners.on_event1.dispatch(&mut event1);
+        // C is now registered and runs.
+        event.dispatch(&AlienInfo { id: 0 });
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
 
-        println!("Call order: {:?}", call_order);
-        assert_eq!(std::mem::take(&mut *call_order.try_lock().unwrap()), vec!["A", "B", "C"]);
+    #[test]
+    fn subscription_outliving_event_does_not_panic() {
+        let _sub = {
+            let event: Event<AlienInfo> = Event::new();
+            event.add_listener(|_: &AlienInfo| {})
+        };
+    }
+
+    #[test]
+    fn foo_is_send() {
+        assert_send(&Foo::new());
+    }
+
+    #[test]
+    fn check_weather_dispatches_only_active_events() {
+        let mut foo = Foo::new();
+        let (alien_count, alien_callback) = counting_alien_listener();
+        let zombie_count = Arc::new(AtomicUsize::new(0));
+        let z = zombie_count.clone();
+        let _alien_sub = foo.on_alien_invasion(alien_callback);
+        let _zombie_sub = foo.on_zombie_apocalypse(move |_: &ZombieInfo| {
+            z.fetch_add(1, Ordering::SeqCst);
+        });
+        foo.alien_invasion_active = true;
+
+        foo.check_weather();
+
+        assert_eq!(alien_count.load(Ordering::SeqCst), 1);
+        assert_eq!(zombie_count.load(Ordering::SeqCst), 0);
     }
 }
