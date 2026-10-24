@@ -226,30 +226,7 @@ pub trait IterMsg: Iterator<Item = Msg> + Sized {
     }
 }
 
-/// Applies prefix and suffix to the content of a message. Platform, developer,
-/// and control signal content is wrapped as a string; content parts are
-/// wrapped by inserting new text parts at the beginning and end.
-fn circumfix_msg(msg: &mut Msg, prefix: &str, suffix: &str) {
-    if prefix.is_empty() && suffix.is_empty() {
-        return;
-    }
-    match msg {
-        Msg::Platform(s) | Msg::Developer(s) => *s = format!("{prefix}{s}{suffix}"),
-        Msg::ControlSignal { content, .. } => *content = format!("{prefix}{content}{suffix}"),
-        Msg::User { content, .. }
-        | Msg::Agent { content, .. }
-        | Msg::Direct { content, .. }
-        | Msg::ToolResult { content, .. } => {
-            if !prefix.is_empty() {
-                content.insert(0, ContentPart::Text(prefix.into()));
-            }
-            if !suffix.is_empty() {
-                content.push(ContentPart::Text(suffix.into()));
-            }
-        }
-        Msg::Event { .. } => unimplemented!("circumfixing event messages"),
-    }
-}
+impl<I: Iterator<Item = Msg>> IterMsg for I {}
 
 pub struct MapFirstPerson<I, F> {
     iter: I,
@@ -311,6 +288,31 @@ where
             (self.f)(&mut msg);
         }
         Some(msg)
+    }
+}
+
+/// Applies prefix and suffix to the content of a message. Platform, developer,
+/// and control signal content is wrapped as a string; content parts are
+/// wrapped by inserting new text parts at the beginning and end.
+fn circumfix_msg(msg: &mut Msg, prefix: &str, suffix: &str) {
+    if prefix.is_empty() && suffix.is_empty() {
+        return;
+    }
+    match msg {
+        Msg::Platform(s) | Msg::Developer(s) => *s = format!("{prefix}{s}{suffix}"),
+        Msg::ControlSignal { content, .. } => *content = format!("{prefix}{content}{suffix}"),
+        Msg::User { content, .. }
+        | Msg::Agent { content, .. }
+        | Msg::Direct { content, .. }
+        | Msg::ToolResult { content, .. } => {
+            if !prefix.is_empty() {
+                content.insert(0, ContentPart::Text(prefix.into()));
+            }
+            if !suffix.is_empty() {
+                content.push(ContentPart::Text(suffix.into()));
+            }
+        }
+        Msg::Event { .. } => unimplemented!("circumfixing event messages"),
     }
 }
 
@@ -394,22 +396,6 @@ where
     }
 }
 
-impl<I> Iterator for ChunkByRole<I>
-where
-    I: Iterator<Item = Msg>,
-{
-    type Item = Vec<Msg>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let first = self.iter.next()?;
-        let kind = std::mem::discriminant(&first);
-        let mut chunk = vec![first];
-        while let Some(msg) = self.iter.next_if(|m| std::mem::discriminant(m) == kind) {
-            chunk.push(msg);
-        }
-        Some(chunk)
-    }
-}
 pub struct CircumfixContent<I> {
     iter: I,
     prefix: String,
@@ -440,6 +426,23 @@ pub struct SuffixContentWith<I, F> {
 
 pub struct ChunkByRole<I: Iterator<Item = Msg>> {
     iter: std::iter::Peekable<I>,
+}
+
+impl<I> Iterator for ChunkByRole<I>
+where
+    I: Iterator<Item = Msg>,
+{
+    type Item = Vec<Msg>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let first = self.iter.next()?;
+        let kind = std::mem::discriminant(&first);
+        let mut chunk = vec![first];
+        while let Some(msg) = self.iter.next_if(|m| std::mem::discriminant(m) == kind) {
+            chunk.push(msg);
+        }
+        Some(chunk)
+    }
 }
 
 pub struct SkipOrphanedInstructions<I> {
@@ -477,5 +480,260 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chat::{
+        Member,
+        group::{Group, Thread, thread_builder::ThreadBuilder},
+    };
+    use std::sync::Arc;
+
+    fn collect(builder: ThreadBuilder) -> Vec<Msg> {
+        let thread: Arc<Thread> = builder.into();
+        thread.iter().map(|e| e.value().clone()).collect()
+    }
+
+    /// Returns (me, ai) members of a group whose history is one user message
+    /// from "me" followed by one agent message from "ai".
+    fn conversation() -> (Member, Member) {
+        let group = Group::new();
+        let me = group.add_member(MemberId::new("me", true)).unwrap();
+        let ai = group.add_member(MemberId::new("ai", false)).unwrap();
+        group
+            .append(Msg::User {
+                sender: me.id.clone(),
+                timestamp: None,
+                content: vec![ContentPart::Text("hi".into())],
+            })
+            .unwrap()
+            .append(Msg::Agent {
+                sender: ai.id.clone(),
+                timestamp: None,
+                content: vec![ContentPart::Text("hey".into())],
+                tool_calls: vec![],
+            })
+            .unwrap();
+        (me, ai)
+    }
+
+    #[test]
+    fn map_first_person_only_touches_first_person() {
+        let (me, ai) = conversation();
+        let output: Vec<Msg> = me
+            .context()
+            .map_first_person(|m| {
+                if let Msg::User { content, .. } | Msg::Agent { content, .. } = m {
+                    *content = vec![ContentPart::Text("changed".into())];
+                }
+            })
+            .collect();
+        assert_eq!(
+            output,
+            vec![
+                Msg::User {
+                    sender: me.id.clone(),
+                    timestamp: None,
+                    content: vec![ContentPart::Text("changed".into())],
+                },
+                Msg::Agent {
+                    sender: ai.id.clone(),
+                    timestamp: None,
+                    content: vec![ContentPart::Text("hey".into())],
+                    tool_calls: vec![],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn map_others_only_touches_others() {
+        let (me, ai) = conversation();
+        let output: Vec<Msg> = me
+            .context()
+            .map_others(|m| {
+                if let Msg::User { content, .. } | Msg::Agent { content, .. } = m {
+                    *content = vec![ContentPart::Text("changed".into())];
+                }
+            })
+            .collect();
+        assert_eq!(
+            output,
+            vec![
+                Msg::User {
+                    sender: me.id.clone(),
+                    timestamp: None,
+                    content: vec![ContentPart::Text("hi".into())],
+                },
+                Msg::Agent {
+                    sender: ai.id.clone(),
+                    timestamp: None,
+                    content: vec![ContentPart::Text("changed".into())],
+                    tool_calls: vec![],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn map_platform_to_developer() {
+        let output: Vec<Msg> = collect(ThreadBuilder::new().platform("p").developer("d"))
+            .into_iter()
+            .map_platform_to_developer()
+            .collect();
+        assert_eq!(
+            output,
+            collect(ThreadBuilder::new().developer("p").developer("d"))
+        );
+    }
+
+    #[test]
+    fn prefix_content_wraps_strings_and_prepends_parts() {
+        let input = ThreadBuilder::new().developer("d").user("me", "hi");
+        let output: Vec<Msg> = collect(input).into_iter().prefix_content("> ").collect();
+        assert_eq!(
+            output,
+            collect(ThreadBuilder::new().developer("> d").msg(Msg::User {
+                sender: MemberId::new("me", true),
+                timestamp: None,
+                content: vec![
+                    ContentPart::Text("> ".into()),
+                    ContentPart::Text("hi".into()),
+                ],
+            }))
+        );
+    }
+
+    #[test]
+    fn suffix_content_appends_parts() {
+        let input = ThreadBuilder::new().developer("d").user("me", "hi");
+        let output: Vec<Msg> = collect(input).into_iter().suffix_content(" <").collect();
+        assert_eq!(
+            output,
+            collect(ThreadBuilder::new().developer("d <").msg(Msg::User {
+                sender: MemberId::new("me", true),
+                timestamp: None,
+                content: vec![
+                    ContentPart::Text("hi".into()),
+                    ContentPart::Text(" <".into()),
+                ],
+            }))
+        );
+    }
+
+    #[test]
+    fn circumfix_content_if_applies_only_when_predicate_matches() {
+        let input = collect(ThreadBuilder::new().developer("a").developer("b"));
+        let output: Vec<Msg> = input
+            .into_iter()
+            .circumfix_content_if(
+                "<",
+                ">",
+                |m| matches!(m, Msg::Developer(s) if s.as_str() == "a"),
+            )
+            .collect();
+        assert_eq!(
+            output,
+            collect(ThreadBuilder::new().developer("<a>").developer("b"))
+        );
+    }
+
+    #[test]
+    fn circumfix_content_with_uses_closure_output() {
+        let input = collect(ThreadBuilder::new().developer("a").developer("b"));
+        let output: Vec<Msg> = input
+            .into_iter()
+            .circumfix_content_with(|m| match m {
+                Msg::Developer(s) if s.as_str() == "a" => ("[", "]"),
+                _ => ("", ""),
+            })
+            .collect();
+        assert_eq!(
+            output,
+            collect(ThreadBuilder::new().developer("[a]").developer("b"))
+        );
+    }
+
+    #[test]
+    fn prefix_and_suffix_content_with_use_closure_output() {
+        let input = collect(ThreadBuilder::new().developer("a").developer("b"));
+        let output: Vec<Msg> = input
+            .into_iter()
+            .prefix_content_with(|m| match m {
+                Msg::Developer(s) if s.as_str() == "a" => "pre:",
+                _ => "",
+            })
+            .suffix_content_with(|m| match m {
+                Msg::Developer(s) if s.as_str() == "b" => ":suf",
+                _ => "",
+            })
+            .collect();
+        assert_eq!(
+            output,
+            collect(ThreadBuilder::new().developer("pre:a").developer("b:suf"))
+        );
+    }
+
+    #[test]
+    fn skip_orphaned_instructions_drops_late_instructions() {
+        let input = collect(
+            ThreadBuilder::new()
+                .platform("p1")
+                .developer("d1")
+                .user("me", "u")
+                .platform("p2")
+                .developer("d2"),
+        );
+        let output: Vec<Msg> = input.into_iter().skip_orphaned_instructions().collect();
+        assert_eq!(
+            output,
+            collect(
+                ThreadBuilder::new()
+                    .platform("p1")
+                    .developer("d1")
+                    .user("me", "u")
+            )
+        );
+    }
+
+    #[test]
+    fn chunk_by_role_groups_consecutive_variants() {
+        let input = collect(
+            ThreadBuilder::new()
+                .developer("d")
+                .user("me", "u1")
+                .user("me", "u2")
+                .agent("ai", "a", vec![])
+                .tool_result("ai", "c1", "r1")
+                .msg(Msg::Direct {
+                    sender: MemberId::new("ai", false),
+                    timestamp: None,
+                    tool_call_id: "c2".into(),
+                    recipients: SmallVec::from_elem(MemberId::new("me", true), 1),
+                    content: vec![ContentPart::Text("direct".into())],
+                })
+                .tool_result("ai", "c3", "r3"),
+        );
+        let chunks: Vec<Vec<Msg>> = input.into_iter().chunk_by_role().collect();
+        assert_eq!(
+            chunks,
+            vec![
+                collect(ThreadBuilder::new().developer("d")),
+                collect(ThreadBuilder::new().user("me", "u1").user("me", "u2")),
+                collect(ThreadBuilder::new().agent("ai", "a", vec![])),
+                collect(ThreadBuilder::new().tool_result("ai", "c1", "r1")),
+                collect(ThreadBuilder::new().msg(Msg::Direct {
+                    sender: MemberId::new("ai", false),
+                    timestamp: None,
+                    tool_call_id: "c2".into(),
+                    recipients: SmallVec::from_elem(MemberId::new("me", true), 1),
+                    content: vec![ContentPart::Text("direct".into())],
+                })),
+                collect(ThreadBuilder::new().tool_result("ai", "c3", "r3")),
+            ]
+        );
     }
 }

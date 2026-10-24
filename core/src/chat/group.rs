@@ -1,6 +1,8 @@
+use super::{
+    Msg,
+    member::{Member, MemberId},
+};
 use crossbeam_skiplist::{SkipMap, map::Entry};
-use serde_json::Value;
-use smallvec::SmallVec;
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -8,13 +10,6 @@ use std::{
         Arc, Mutex, Weak,
         atomic::{AtomicUsize, Ordering},
     },
-    time::SystemTime,
-};
-
-use crate::chat::{
-    Msg,
-    chat::{ContentPart, ToolCallRequest},
-    member::{Member, MemberId},
 };
 
 #[derive(Debug)]
@@ -25,7 +20,7 @@ pub struct Group {
 }
 
 impl Group {
-    fn new() -> Arc<Self> {
+    pub(super) fn new() -> Arc<Self> {
         Arc::new(Self {
             members: Default::default(),
             primary: Arc::new(Thread::new()),
@@ -203,87 +198,89 @@ impl Debug for Thread {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod thread_builder {
     use super::*;
-    use std::{fmt::Debug, time::Duration};
+    use crate::chat::chat::{ContentPart, ToolCallRequest};
+    use smallvec::SmallVec;
+    use std::time::SystemTime;
 
     #[derive(Debug)]
-    struct ThreadBuilder {
+    pub(crate) struct ThreadBuilder {
         thread: Arc<Thread>,
         time: Option<SystemTime>,
     }
 
     impl ThreadBuilder {
-        fn new() -> Self {
+        pub fn new() -> Self {
             Self {
                 thread: Arc::new(Thread::new()),
                 time: None,
             }
         }
 
-        fn with_time(time: SystemTime) -> Self {
+        pub fn with_time(time: SystemTime) -> Self {
             Self {
                 thread: Arc::new(Thread::new()),
                 time: Some(time),
             }
         }
 
-        fn fork(&self) -> Self {
+        pub fn fork(&self) -> Self {
             Self {
                 thread: self.thread.fork(),
                 time: self.time.clone(),
             }
         }
 
-        fn platform(self, text: &str) -> Self {
-            self.thread.append(Msg::Platform(text.into()));
+        pub fn msg(self, msg: Msg) -> Self {
+            self.thread.append(msg);
             self
         }
 
-        fn developer(self, text: &str) -> Self {
-            self.thread.append(Msg::Developer(text.into()));
-            self
+        pub fn platform(self, text: &str) -> Self {
+            self.msg(Msg::Platform(text.into()))
         }
 
-        fn user(mut self, id: &str, text: &str) -> Self {
+        pub fn developer(self, text: &str) -> Self {
+            self.msg(Msg::Developer(text.into()))
+        }
+
+        pub fn user(mut self, id: &str, text: &str) -> Self {
             let mut next_time = self
                 .time
-                .map(|t| t.checked_add(Duration::from_secs(1)).unwrap());
+                .map(|t| t.checked_add(std::time::Duration::from_secs(1)).unwrap());
             std::mem::swap(&mut self.time, &mut next_time);
-            self.thread.append(Msg::User {
+            self.msg(Msg::User {
                 sender: MemberId::new(id, true),
                 timestamp: next_time,
                 content: vec![ContentPart::Text(text.into())],
-            });
-            self
+            })
         }
 
-        fn agent(mut self, id: &str, text: &str, tool_calls: Vec<ToolCallRequest>) -> Self {
+        pub fn agent(mut self, id: &str, text: &str, tool_calls: Vec<ToolCallRequest>) -> Self {
             let mut next_time = self
                 .time
-                .map(|t| t.checked_add(Duration::from_secs(1)).unwrap());
+                .map(|t| t.checked_add(std::time::Duration::from_secs(1)).unwrap());
             std::mem::swap(&mut self.time, &mut next_time);
-            self.thread.append(Msg::Agent {
+            self.msg(Msg::Agent {
                 sender: MemberId::new(id, false),
                 timestamp: next_time,
                 content: vec![ContentPart::Text(text.into())],
                 tool_calls,
-            });
-            self
+            })
         }
 
-        fn tool_result(mut self, recipient: &str, call_id: &str, content: &str) -> Self {
+        pub fn tool_result(mut self, recipient: &str, call_id: &str, content: &str) -> Self {
             let mut next_time = self
                 .time
-                .map(|t| t.checked_add(Duration::from_secs(1)).unwrap());
+                .map(|t| t.checked_add(std::time::Duration::from_secs(1)).unwrap());
             std::mem::swap(&mut self.time, &mut next_time);
-            self.thread.append(Msg::ToolResult {
+            self.msg(Msg::ToolResult {
                 recipients: SmallVec::from_elem(MemberId::new(recipient, true), 1),
                 timestamp: next_time,
                 tool_call_id: call_id.into(),
                 content: vec![ContentPart::Text(content.into())],
-            });
-            self
+            })
         }
     }
 
@@ -298,6 +295,15 @@ mod tests {
             value.thread
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::chat::chat::{ContentPart, ToolCallRequest};
+
+    use super::thread_builder::ThreadBuilder;
+    use super::*;
+    use std::fmt::Debug;
 
     // Wrapper type for comparing the histories of conversations
     struct History<'a>(&'a Thread);
