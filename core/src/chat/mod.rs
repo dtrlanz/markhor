@@ -8,4 +8,4 @@ pub mod prompter;
 pub use error::ChatError;
 pub use group::{AddMemberError, AppendMessageError, Group, InitContext};
 pub use member::{Member, MemberId};
-pub use msg::Msg;
+pub use msg::{IterMsg, Msg};
