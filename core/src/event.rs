@@ -1,26 +1,77 @@
-use std::{marker::PhantomData, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex, Weak},
+};
+
+type Callback<T> = Arc<dyn Fn(&T) + Send + Sync>;
+
+struct Listeners<T> {
+    next_id: u64,
+    callbacks: BTreeMap<u64, Callback<T>>,
+}
 
 pub struct Event<T> {
-    _payload: PhantomData<fn(&T)>,
+    listeners: Arc<Mutex<Listeners<T>>>,
 }
 
 impl<T: 'static> Event<T> {
     pub fn new() -> Self {
-        todo!()
+        Self {
+            listeners: Arc::new(Mutex::new(Listeners {
+                next_id: 0,
+                callbacks: BTreeMap::new(),
+            })),
+        }
     }
 
     pub fn add_listener(&self, callback: impl Fn(&T) + Send + Sync + 'static) -> Subscription {
-        let _ = callback;
-        todo!()
+        let callback: Callback<T> = Arc::new(callback);
+        let id = {
+            let mut listeners = self.listeners.lock().unwrap();
+            let id = listeners.next_id;
+            listeners.next_id += 1;
+            listeners.callbacks.insert(id, callback);
+            id
+        };
+
+        let weak: Weak<Mutex<Listeners<T>>> = Arc::downgrade(&self.listeners);
+        Subscription {
+            remove: Some(Box::new(move || {
+                if let Some(listeners) = weak.upgrade() {
+                    listeners.lock().unwrap().callbacks.remove(&id);
+                }
+            })),
+        }
     }
 
     pub fn dispatch(&self, payload: &T) {
-        let _ = payload;
-        todo!()
+        // Clone the callbacks out so the lock is released before any callback runs.
+        let snapshot: Vec<Callback<T>> = self
+            .listeners
+            .lock()
+            .unwrap()
+            .callbacks
+            .values()
+            .cloned()
+            .collect();
+
+        for callback in snapshot {
+            callback(payload);
+        }
     }
 }
 
-pub struct Subscription;
+pub struct Subscription {
+    remove: Option<Box<dyn FnOnce() + Send + Sync>>,
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        if let Some(remove) = self.remove.take() {
+            remove();
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -136,7 +187,6 @@ mod tests {
         event.dispatch(&AlienInfo { id: 0 });
 
         assert_eq!(*order.lock().unwrap(), vec![1, 2, 3]);
-        drop(subs);
     }
 
     #[test]
@@ -247,12 +297,10 @@ mod tests {
 
     #[test]
     fn subscription_outliving_event_does_not_panic() {
-        let sub = {
+        let _sub = {
             let event: Event<AlienInfo> = Event::new();
             event.add_listener(|_: &AlienInfo| {})
         };
-
-        drop(sub);
     }
 
     #[test]
