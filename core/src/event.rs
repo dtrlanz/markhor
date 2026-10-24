@@ -93,14 +93,14 @@ mod tests {
 
     struct FooEvents {
         alien_invasion: Event<AlienInfo>,
-        zombie_apocolypse: Event<ZombieInfo>,
+        zombie_apocalypse: Event<ZombieInfo>,
     }
 
     impl FooEvents {
         fn new() -> Self {
             Self {
                 alien_invasion: Event::new(),
-                zombie_apocolypse: Event::new(),
+                zombie_apocalypse: Event::new(),
             }
         }
     }
@@ -108,7 +108,7 @@ mod tests {
     struct Foo {
         events: FooEvents,
         alien_invasion_active: bool,
-        zombie_apocolypse_active: bool,
+        zombie_apocalypse_active: bool,
     }
 
     impl Foo {
@@ -116,7 +116,7 @@ mod tests {
             Self {
                 events: FooEvents::new(),
                 alien_invasion_active: false,
-                zombie_apocolypse_active: false,
+                zombie_apocalypse_active: false,
             }
         }
 
@@ -127,20 +127,20 @@ mod tests {
             self.events.alien_invasion.add_listener(callback)
         }
 
-        fn on_zombie_apocolypse(
+        fn on_zombie_apocalypse(
             &mut self,
             callback: impl Fn(&ZombieInfo) + Send + Sync + 'static,
         ) -> Subscription {
-            self.events.zombie_apocolypse.add_listener(callback)
+            self.events.zombie_apocalypse.add_listener(callback)
         }
 
         fn check_weather(&mut self) {
             if self.alien_invasion_active {
                 self.events.alien_invasion.dispatch(&AlienInfo { id: 1 });
             }
-            if self.zombie_apocolypse_active {
+            if self.zombie_apocalypse_active {
                 self.events
-                    .zombie_apocolypse
+                    .zombie_apocalypse
                     .dispatch(&ZombieInfo { id: 2 });
             }
         }
@@ -227,10 +227,10 @@ mod tests {
         let zombie_count = Arc::new(AtomicUsize::new(0));
         let z = zombie_count.clone();
         let _alien_sub = foo.on_alien_invasion(alien_callback);
-        let _zombie_sub = foo.on_zombie_apocolypse(move |_: &ZombieInfo| {
+        let _zombie_sub = foo.on_zombie_apocalypse(move |_: &ZombieInfo| {
             z.fetch_add(1, Ordering::SeqCst);
         });
-        foo.zombie_apocolypse_active = true;
+        foo.zombie_apocalypse_active = true;
 
         foo.check_weather();
 
@@ -315,7 +315,7 @@ mod tests {
         let zombie_count = Arc::new(AtomicUsize::new(0));
         let z = zombie_count.clone();
         let _alien_sub = foo.on_alien_invasion(alien_callback);
-        let _zombie_sub = foo.on_zombie_apocolypse(move |_: &ZombieInfo| {
+        let _zombie_sub = foo.on_zombie_apocalypse(move |_: &ZombieInfo| {
             z.fetch_add(1, Ordering::SeqCst);
         });
         foo.alien_invasion_active = true;
