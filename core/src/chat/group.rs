@@ -200,7 +200,7 @@ impl Debug for Thread {
 #[cfg(test)]
 pub(super) mod thread_builder {
     use super::*;
-    use crate::chat::chat::{ContentPart, ToolCallRequest};
+    use crate::chat::common::{ContentPart, ToolCallRequest};
     use smallvec::SmallVec;
     use std::time::SystemTime;
 
@@ -299,7 +299,7 @@ pub(super) mod thread_builder {
 
 #[cfg(test)]
 mod tests {
-    use crate::chat::chat::{ContentPart, ToolCallRequest};
+    use crate::chat::common::{ContentPart, ToolCallRequest};
 
     use super::thread_builder::ThreadBuilder;
     use super::*;

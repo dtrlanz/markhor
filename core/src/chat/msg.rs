@@ -4,7 +4,7 @@ use serde_json::Value;
 use smallvec::SmallVec;
 
 use crate::chat::{
-    chat::{ContentPart, ToolCallRequest},
+    common::{ContentPart, ToolCallRequest},
     member::MemberId,
 };
 

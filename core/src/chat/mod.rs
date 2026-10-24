@@ -1,5 +1,6 @@
 pub mod chat;
 mod chat_ui;
+pub mod common;
 pub mod error;
 mod group;
 mod member;

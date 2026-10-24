@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::chat::{
     MemberId, Msg,
-    chat::{ContentPart, ToolCallRequest, ToolResult},
+    common::{ContentPart, ToolCallRequest, ToolResult},
 };
 
 #[async_trait]
