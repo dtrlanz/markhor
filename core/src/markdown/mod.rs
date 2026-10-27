@@ -6,10 +6,12 @@ use serde::Deserialize;
 use crate::markdown::traversal::{TraversalEvent, Traversal};
 use crate::markdown::xml::XmlTag;
 
+mod display;
 mod xml;
 mod to_markdown;
 mod traversal;
 
+pub use display::to_display_html;
 pub use to_markdown::ToMarkdown;
 
 #[derive(Debug, Clone)]
