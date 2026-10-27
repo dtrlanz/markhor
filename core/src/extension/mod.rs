@@ -1,8 +1,12 @@
-use crate::{chat::{chat::ChatModel, prompter::Prompter}, chunking::Chunker, convert::Converter, dependencies::ResolveDependencyError, embedding::EmbeddingModel, permissions::Permission};
-
-use std::{fmt::Display, ops::{Deref, DerefMut}};
+use crate::{
+    chat::{ChatUi, chat::ChatModel, prompter::Prompter},
+    chunking::Chunker,
+    convert::Converter,
+    dependencies::ResolveDependencyError,
+    embedding::EmbeddingModel,
+    permissions::Permission,
+};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod comp;
@@ -19,14 +23,31 @@ pub trait Extension: Send + Sync {
     fn uri(&self) -> &str;
     fn name(&self) -> &str;
     fn description(&self) -> &str;
-    async fn initialize(&mut self) -> Result<(), InitExtensionError> { Ok(()) }
+    async fn initialize(&mut self) -> Result<(), InitExtensionError> {
+        Ok(())
+    }
 
-    fn chat_models(&self) -> Vec<Box<dyn ChatModel>> { vec![] }
-    fn embedding_models(&self) -> Vec<Box<dyn EmbeddingModel>> { vec![] }
-    fn chunkers(&self) -> Vec<Box<dyn Chunker>> { vec![] }
-    fn converters(&self) -> Vec<Box<dyn Converter>> { vec![] }
-    fn prompters(&self) -> Vec<Box<dyn Prompter>> { vec![] }
-    fn tools(&self) -> Vec<Box<dyn crate::tool::Tool>> { vec![] }
+    fn chat_models(&self) -> Vec<Box<dyn ChatModel>> {
+        vec![]
+    }
+    fn chat_uis(&self) -> Vec<Box<dyn ChatUi>> {
+        vec![]
+    }
+    fn embedding_models(&self) -> Vec<Box<dyn EmbeddingModel>> {
+        vec![]
+    }
+    fn chunkers(&self) -> Vec<Box<dyn Chunker>> {
+        vec![]
+    }
+    fn converters(&self) -> Vec<Box<dyn Converter>> {
+        vec![]
+    }
+    fn prompters(&self) -> Vec<Box<dyn Prompter>> {
+        vec![]
+    }
+    fn tools(&self) -> Vec<Box<dyn crate::tool::Tool>> {
+        vec![]
+    }
 }
 
 #[derive(Debug, Error)]
@@ -42,10 +63,10 @@ pub enum InitExtensionError {
 pub enum UseExtensionError {
     #[error("Chat model not available in extension")]
     ChatModelNotAvailable,
-    
+
     #[error("Embedding model not available in extension")]
     EmbeddingModelNotAvailable,
-    
+
     #[error("Chunker not available in extension")]
     ChunkerNotAvailable,
 
@@ -58,4 +79,3 @@ pub enum UseExtensionError {
     #[error("Tool not available in extension")]
     ToolNotAvailable,
 }
-
