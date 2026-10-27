@@ -158,6 +158,15 @@ impl Member {
     pub fn id(&self) -> &MemberId {
         &self.id
     }
+
+    /// The thread this member reads context from.
+    ///
+    /// Members that share a thread (e.g. via [`Member::add_peer`]) return
+    /// equal references, so this can be used to check whether two members
+    /// see the same messages.
+    pub fn thread(&self) -> &Thread {
+        &self.context
+    }
 }
 
 /// Identifies a member within a [`Group`].
@@ -369,7 +378,30 @@ impl std::hash::Hash for MemberId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn members_share_thread_only_with_peers() {
+        let group = Group::new();
+        let alice = group.add_member(MemberId::new("Alice", true)).unwrap();
+        let bob = alice.add_peer(MemberId::new("Bob", true)).unwrap();
+        let worker = alice
+            .add_worker(MemberId::new("Carol", false), InitContext::None)
+            .unwrap();
+        let forked = alice
+            .add_worker(MemberId::new("Dave", false), InitContext::Fork)
+            .unwrap();
+
+        assert_eq!(alice.thread(), bob.thread());
+        assert_ne!(alice.thread(), worker.thread());
+        assert_ne!(alice.thread(), forked.thread());
+        assert_ne!(worker.thread(), forked.thread());
+
+        let set: HashSet<&Thread> = [alice.thread(), bob.thread(), worker.thread()]
+            .into_iter()
+            .collect();
+        assert_eq!(set.len(), 2);
+    }
 
     #[test]
     fn member_id_basics() {

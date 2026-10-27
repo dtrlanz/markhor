@@ -11,6 +11,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+use uuid::Uuid;
 
 #[derive(Debug)]
 pub struct Group {
@@ -125,7 +126,8 @@ pub enum InitContext {
     Fork,
 }
 
-pub(super) struct Thread {
+pub struct Thread {
+    id: Uuid,
     items: SkipMap<usize, Msg>,
     len: AtomicUsize,
     previous: Option<(Arc<Thread>, usize)>,
@@ -135,6 +137,7 @@ pub(super) struct Thread {
 impl Thread {
     pub(super) fn new() -> Self {
         Self {
+            id: Uuid::new_v4(),
             items: SkipMap::new(),
             len: AtomicUsize::new(0),
             previous: None,
@@ -142,9 +145,16 @@ impl Thread {
         }
     }
 
+    /// The unique identifier of this thread. Threads compare equal iff their
+    /// ids match.
+    pub fn id(&self) -> Uuid {
+        self.id
+    }
+
     pub(super) fn fork(self: &Arc<Self>) -> Arc<Self> {
         let len = self.len.load(Ordering::Acquire);
         let fork = Arc::new(Self {
+            id: Uuid::new_v4(),
             items: SkipMap::new(),
             len: AtomicUsize::new(len),
             previous: Some((self.clone(), len)),
@@ -189,11 +199,27 @@ impl Debug for Thread {
         }
         let forks = self.forks.lock().unwrap().clone();
         f.debug_struct("List")
+            .field("id", &self.id)
             .field("items", &Items(&self.items))
             .field("len", &self.len)
             .field("previous", &self.previous)
             .field("forks", &forks)
             .finish()
+    }
+}
+
+// Threads are identified by their unique `id`, not by their contents or address.
+impl PartialEq for Thread {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for Thread {}
+
+impl std::hash::Hash for Thread {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
     }
 }
 
