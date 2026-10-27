@@ -1,4 +1,3 @@
-mod console;
 mod sim;
 
 use std::{
@@ -6,6 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use markhor_cli::ConsoleChatUi;
 use markhor_core::chat::ChatUi;
 
 #[tokio::main]
@@ -17,8 +17,12 @@ async fn main() {
             .unwrap_or(0)
     });
 
-    let ui: Arc<dyn ChatUi> = Arc::new(console::ConsoleUi::default());
-    sim::Simulation::new(ui, seed).run().await;
+    let console = Arc::new(ConsoleChatUi::new());
+    let ui: Arc<dyn ChatUi> = console.clone();
+    sim::Simulation::new(ui, seed)
+        .with_console(console)
+        .run()
+        .await;
 }
 
 /// Reads an optional `--seed <n>` argument.

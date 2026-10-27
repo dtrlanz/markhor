@@ -6,6 +6,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use markhor_cli::{ConsoleChatUi, ReasoningDisplay};
 use markhor_core::chat::{
     ChatUi, MemberId, Msg, MsgEvent, MsgId, ReasoningEvent, ToolCallEvent, ToolCallId, WorkerEvent,
     common::{ContentPart, ToolCallRequest, ToolResult},
@@ -19,13 +20,49 @@ const COMMANDS: &[&str] = &[
     "tools",
     "stream",
     "reasoning",
+    "trace",
     "seed",
     "select",
+    "markdown",
     "exit",
 ];
 
 const HELP: &str = "Commands: /agents <n> | /tools <n> | /stream on|off | \
-    /reasoning on|off | /seed <n> | /select | /exit";
+    /reasoning on|off | /trace hidden|summaries|full | /seed <n> | /select | /markdown | /exit";
+
+const MARKDOWN_SHOWCASE: &str = r#"# Markdown showcase
+
+Some **bold**, *italic*, ~~struck~~ and `inline code`, plus a [link](https://example.com/docs) and raw <tags> that stay literal.
+
+## Lists
+
+- First item with a fairly long line that should wrap neatly at the terminal width instead of running off the edge
+- Second item
+  - Nested item
+- [x] Done task
+- [ ] Open task
+
+1. One
+2. Two
+
+> A block quote that also wraps when it is long enough to need more than one line on a narrow terminal.
+
+### Code
+
+```rust
+fn main() {
+    println!("hello");
+}
+```
+
+| Tool | Calls | Notes |
+|------|------:|-------|
+| search_notes | 3 | fast |
+| read_file | 12 | cached |
+
+---
+
+Done."#;
 
 const WORDS: &[&str] = &[
     "notes",
@@ -68,6 +105,11 @@ const OPTIONS: &[&str] = &[
     "Search the web",
     "Draft a reply",
     "Do nothing",
+];
+
+const FILLER: &[&str] = &[
+    "the", "a", "of", "and", "with", "for", "to", "in", "that", "this", "is", "from", "into",
+    "should", "can", "will", "between", "about",
 ];
 
 const CITIES: &[&str] = &["Lisbon", "Tokyo", "Nairobi", "Oslo"];
@@ -114,11 +156,13 @@ pub struct Simulation {
     assistant: MemberId,
     platform: MemberId,
     workers: JoinSet<()>,
+    console: Option<Arc<ConsoleChatUi>>,
 }
 
 impl Simulation {
     pub fn new(ui: Arc<dyn ChatUi>, seed: u64) -> Self {
         Self {
+            console: None,
             ui,
             ids: Arc::default(),
             seed,
@@ -134,6 +178,12 @@ impl Simulation {
             platform: MemberId::new("platform", false),
             workers: JoinSet::new(),
         }
+    }
+
+    /// Enables UI-specific commands such as `/trace`.
+    pub fn with_console(mut self, console: Arc<ConsoleChatUi>) -> Self {
+        self.console = Some(console);
+        self
     }
 
     pub async fn run(mut self) {
@@ -202,6 +252,13 @@ impl Simulation {
                 }
                 None => "usage: /reasoning on|off".to_string(),
             },
+            "trace" => match (&self.console, parse_display(arg)) {
+                (Some(console), Some(mode)) => {
+                    console.set_reasoning(mode);
+                    format!("Reasoning display: {mode:?}.")
+                }
+                _ => "usage: /trace hidden|summaries|full".to_string(),
+            },
             "seed" => match arg.and_then(|a| a.parse::<u64>().ok()) {
                 Some(n) => {
                     self.seed = n;
@@ -212,6 +269,12 @@ impl Simulation {
             },
             "select" => {
                 self.select_demo().await;
+                return true;
+            }
+            "markdown" => {
+                let sender = self.assistant.clone();
+                self.compose(&sender, MARKDOWN_SHOWCASE.to_string(), vec![])
+                    .await;
                 return true;
             }
             other => format!("Unknown command: /{other}. Type /help."),
@@ -328,7 +391,7 @@ impl Simulation {
 
         if self.settings.stream {
             for word in body.split_inclusive(' ') {
-                sleep(ms(&mut self.rng, 20, 90)).await;
+                sleep(ms(&mut self.rng, 8, 40)).await;
                 self.ui
                     .handle_message(&MsgEvent::Part(id, ContentPart::Text(word.to_string())));
             }
@@ -361,13 +424,17 @@ impl Simulation {
             sleep(ms(&mut self.rng, 30, 120)).await;
             let title = pick(&mut self.rng, TOPICS).to_string();
             let prose = sentence(&mut self.rng);
+            let thinking = (0..self.rng.usize(2..=4))
+                .map(|_| prose_sentence(&mut self.rng))
+                .collect::<Vec<_>>()
+                .join(" ");
             if self.settings.stream {
                 self.ui
-                    .handle_reasoning(&ReasoningEvent::Part(id, format!("{prose} ")));
+                    .handle_reasoning(&ReasoningEvent::Part(id, format!("{thinking} ")));
             }
             self.ui
                 .handle_reasoning(&ReasoningEvent::Summary(id, title, prose.clone()));
-            trace.push_str(&prose);
+            trace.push_str(&thinking);
             trace.push(' ');
         }
 
@@ -512,9 +579,90 @@ fn sentence(rng: &mut fastrand::Rng) -> String {
     s
 }
 
+/// A longer, prose-like sentence that mixes topic words with connectives.
+fn prose_sentence(rng: &mut fastrand::Rng) -> String {
+    let n = rng.usize(9..=20);
+    let mut words: Vec<&str> = Vec::with_capacity(n);
+    for i in 0..n {
+        let filler = i > 0 && i % 2 == 1 && rng.usize(0..3) != 0;
+        words.push(if filler {
+            pick(rng, FILLER)
+        } else {
+            pick(rng, WORDS)
+        });
+    }
+    let mut s = words.join(" ");
+    if let Some(first) = s.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    s.push('.');
+    s
+}
+
+/// A short title such as "Pipeline context overview".
+fn heading(rng: &mut fastrand::Rng) -> String {
+    let mut s = (0..rng.usize(2..=4))
+        .map(|_| pick(rng, WORDS))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if let Some(first) = s.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    s
+}
+
+/// A realistic-length agent reply: a few paragraphs, sometimes with a list
+/// or a code block.
 fn paragraph(rng: &mut fastrand::Rng) -> String {
-    let n = rng.usize(1..=3);
-    (0..n).map(|_| sentence(rng)).collect::<Vec<_>>().join(" ")
+    let mut blocks: Vec<String> = Vec::new();
+    for i in 0..rng.usize(1..=4) {
+        // Never before the first block: callers prefix a lead-in sentence.
+        if i > 0 && rng.bool() {
+            let level = if rng.bool() { "##" } else { "###" };
+            blocks.push(format!("{level} {}", heading(rng)));
+        }
+        let sentences = (0..rng.usize(2..=5))
+            .map(|_| prose_sentence(rng))
+            .collect::<Vec<_>>()
+            .join(" ");
+        blocks.push(sentences);
+    }
+
+    match rng.usize(0..6) {
+        0 | 1 => {
+            let items: Vec<String> = (0..rng.usize(3..=5))
+                .map(|_| {
+                    format!(
+                        "- **{}**: {}",
+                        pick(rng, WORDS),
+                        prose_sentence(rng)
+                    )
+                })
+                .collect();
+            let at = rng.usize(1..=blocks.len());
+            blocks.insert(at, items.join("\n"));
+        }
+        2 => {
+            let snippet = format!(
+                "```rust\nfn {}() {{\n    let {} = {}();\n}}\n```",
+                pick(rng, WORDS),
+                pick(rng, WORDS),
+                pick(rng, WORDS)
+            );
+            blocks.push(snippet);
+        }
+        _ => {}
+    }
+    blocks.join("\n\n")
+}
+
+fn parse_display(arg: Option<&str>) -> Option<ReasoningDisplay> {
+    match arg? {
+        "hidden" => Some(ReasoningDisplay::Hidden),
+        "summaries" => Some(ReasoningDisplay::Summaries),
+        "full" => Some(ReasoningDisplay::Full),
+        _ => None,
+    }
 }
 
 fn parse_switch(arg: Option<&str>) -> Option<bool> {
