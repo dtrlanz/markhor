@@ -17,12 +17,12 @@ pub struct Member {
     pub(super) group: Arc<Group>,
     /// The thread this member reads context from. Shared with any peer added
     /// via [`Member::add_peer`].
-    pub(super) context: Arc<Thread>,
+    pub(super) thread: Arc<Thread>,
 }
 
 impl Member {
-    pub(super) fn new(id: MemberId, group: Arc<Group>, context: Arc<Thread>) -> Self {
-        Self { id, group, context }
+    pub(super) fn new(id: MemberId, group: Arc<Group>, thread: Arc<Thread>) -> Self {
+        Self { id, group, thread }
     }
 
     /// Adds a peer to the group that shares this member's context thread, so
@@ -31,7 +31,7 @@ impl Member {
     /// Returns [`AddMemberError::AlreadyExists`] if `id` is already a member of
     /// the group. The error carries the already existing `Member`.
     pub fn add_peer(&self, id: MemberId) -> Result<Member, AddMemberError> {
-        self.group.add_member_with_thread(id, &self.context)
+        self.group.add_member_with_thread(id, &self.thread)
     }
 
     /// Adds a worker to the with its own separate thread, and returns it as a
@@ -50,7 +50,7 @@ impl Member {
     pub fn add_worker(&self, id: MemberId, context: InitContext) -> Result<Member, AddMemberError> {
         let thread = match context {
             InitContext::None => Arc::new(Thread::new()),
-            InitContext::Fork => self.context.fork(),
+            InitContext::Fork => self.thread.fork(),
         };
         let result = self.group.add_member_with_thread(id, &thread);
         if result.is_ok() {
@@ -79,7 +79,7 @@ impl Member {
     ///   first-person perspective as needed.
     pub fn context(&self) -> impl Iterator<Item = Msg> + '_ {
         let first_person = self.id.to_first_person();
-        self.context
+        self.thread
             .iter()
             .filter_map(move |entry| match entry.value() {
                 // Messages with specific recipients are only visible to those
@@ -165,7 +165,7 @@ impl Member {
     /// equal references, so this can be used to check whether two members
     /// see the same messages.
     pub fn thread(&self) -> &Thread {
-        &self.context
+        &self.thread
     }
 }
 

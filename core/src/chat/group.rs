@@ -434,8 +434,8 @@ mod tests {
             )
         );
 
-        assert_eq!(human.context.len.load(Ordering::SeqCst), 3);
-        assert_eq!(ai.context.len.load(Ordering::SeqCst), 3);
+        assert_eq!(human.thread.len.load(Ordering::SeqCst), 3);
+        assert_eq!(ai.thread.len.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]
