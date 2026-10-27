@@ -29,6 +29,7 @@ sha2 = "0.10.9"
 hex = "0.4.3"
 mime_guess2 = "2.3.1"
 sanitize-filename = "0.6.0"
+smallvec = "1.16.3"
 
 [dev-dependencies]
 tempfile = "3.19.1"
