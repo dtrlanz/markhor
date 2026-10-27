@@ -212,6 +212,12 @@ impl Simulation {
         }
 
         // Let background workers finish before the process exits.
+        if !self.workers.is_empty() {
+            self.notice(format!(
+                "Waiting for {} background worker(s) to finish.",
+                self.workers.len()
+            ));
+        }
         while self.workers.join_next().await.is_some() {}
     }
 
@@ -477,11 +483,14 @@ impl Simulation {
     }
 }
 
+/// Workers are long-running background agents. They are deliberately slower
+/// than tool calls, so they routinely outlive the turn that spawned them and
+/// report back during later turns.
 async fn run_worker(ui: Arc<dyn ChatUi>, member: MemberId, mut rng: fastrand::Rng) {
     ui.handle_worker(&WorkerEvent::Begin(member.clone()));
 
-    for _ in 0..rng.usize(1..=3) {
-        sleep(ms(&mut rng, 100, 500)).await;
+    for _ in 0..rng.usize(2..=6) {
+        sleep(ms(&mut rng, 1_500, 6_000)).await;
         let title = pick(&mut rng, TOPICS).to_string();
         ui.handle_worker(&WorkerEvent::Summary(
             member.clone(),
@@ -490,7 +499,7 @@ async fn run_worker(ui: Arc<dyn ChatUi>, member: MemberId, mut rng: fastrand::Rn
         ));
     }
 
-    sleep(ms(&mut rng, 100, 500)).await;
+    sleep(ms(&mut rng, 1_500, 6_000)).await;
     // Workers sometimes finish without a text representation.
     let text = if rng.usize(0..4) == 0 {
         String::new()
