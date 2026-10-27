@@ -107,7 +107,7 @@ impl From<Message> for GeminiContent {
                     }).collect();
 
                 GeminiContent {
-                    role: "function".to_string(), // Role for providing tool results back (Todo: verify)
+                    role: "user".to_string(), // Gemini 3.x rejects the "function" role; tool results go under "user"
                     parts: function_response_parts,
                 }
             }
@@ -482,7 +482,7 @@ struct GeminiModelInfo {
 // ============== Gemini Client Implementation ==============
 
 const DEFAULT_GEMINI_API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
-const DEFAULT_GEMINI_CHAT_MODEL: &str = "gemini-2.0-flash-lite";
+const DEFAULT_GEMINI_CHAT_MODEL: &str = "gemini-3.5-flash";
 
 // TODO: Clean up distinction between chat client (& Gemini extension) vs individual chat models
 
@@ -882,111 +882,112 @@ pub fn create_default_http_client() -> Result<reqwest::Client, ChatError> {
 
 
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use markhor_core::chat::chat::{Message, ToolDefinition, ToolParameterSchema, ToolResult}; // Bring trait types into scope
-//     use std::env; // To read API key from environment
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use markhor_core::chat::chat::{Message, ToolDefinition, ToolParameterSchema, ToolResult}; // Bring trait types into scope
+    use std::env; // To read API key from environment
 
-//     // Helper to initialize tracing subscriber
-//     fn setup_tracing() {
-//         //let _ = tracing_subscriber::fmt::try_init();
-//     }
+    // Helper to initialize tracing subscriber
+    fn setup_tracing() {
+        //let _ = tracing_subscriber::fmt::try_init();
+    }
 
-//      #[test]
-//      fn test_convert_messages_basic() {
-//          let messages = vec![
-//              Message::system("Be helpful."),
-//              Message::user("Hello"),
-//              Message::assistant("Hi! How can I help?"),
-//          ];
-//          let (system_instr, contents) = GeminiClient::convert_messages(&messages).unwrap();
+     #[test]
+     fn test_convert_messages_basic() {
+         let messages = vec![
+             Message::system("Be helpful."),
+             Message::user("Hello"),
+             Message::assistant("Hi! How can I help?"),
+         ];
+         let (system_instr, contents) = GeminiChatClient::convert_messages(&messages).unwrap();
 
-//          assert!(system_instr.is_some());
-//          assert_eq!(system_instr.unwrap().parts.len(), 1); // Assuming combined text
+         assert!(system_instr.is_some());
+         assert_eq!(system_instr.unwrap().parts.len(), 1); // Assuming combined text
 
-//          assert_eq!(contents.len(), 2);
-//          assert_eq!(contents[0].role, "user");
-//          assert!(matches!(contents[0].parts[0], GeminiPart::Text { ref text } if text == "Hello"));
-//          assert_eq!(contents[1].role, "model");
-//          assert!(matches!(contents[1].parts[0], GeminiPart::Text { ref text } if text == "Hi! How can I help?"));
-//      }
+         assert_eq!(contents.len(), 2);
+         assert_eq!(contents[0].role, "user");
+         assert!(matches!(contents[0].parts[0], GeminiPart::Text { ref text } if text == "Hello"));
+         assert_eq!(contents[1].role, "model");
+         assert!(matches!(contents[1].parts[0], GeminiPart::Text { ref text } if text == "Hi! How can I help?"));
+     }
 
-//      #[test]
-//      fn test_convert_messages_tool_result() {
-//          let messages = vec![
-//              Message::user("What's the weather?"),
-//              // Simulate assistant asking for tool (cannot represent call well)
-//              Message::assistant("Okay, I can check that."),
-//               // Provide tool result
-//              Message::tool(vec![ToolResult {
-//                  call_id: "123".to_string(),
-//                  name: "get_weather".to_string(), // Matched by name in Gemini
-//                  content: serde_json::json!({
-//                      "temp": 25,
-//                      "unit": "C",
-//                  }),
-//              }]),
-//          ];
-//          let (_system_instr, contents) = GeminiClient::convert_messages(&messages).unwrap();
+     #[test]
+     fn test_convert_messages_tool_result() {
+         let messages = vec![
+             Message::user("What's the weather?"),
+             // Simulate assistant asking for tool (cannot represent call well)
+             Message::assistant("Okay, I can check that."),
+              // Provide tool result
+             Message::tool(vec![ToolResult {
+                 call_id: "123".to_string(),
+                 name: "get_weather".to_string(), // Matched by name in Gemini
+                 content: serde_json::json!({
+                     "temp": 25,
+                     "unit": "C",
+                 }),
+             }]),
+         ];
+         let (_system_instr, contents) = GeminiChatClient::convert_messages(&messages).unwrap();
 
-//          assert_eq!(contents.len(), 3); // user, model, function
-//          assert_eq!(contents[0].role, "user");
-//          assert_eq!(contents[1].role, "model");
-//          assert_eq!(contents[2].role, "function");
-//          assert_eq!(contents[2].parts.len(), 1);
-//          match &contents[2].parts[0] {
-//              GeminiPart::FunctionResponse { function_response } => {
-//                  assert_eq!(function_response.name, "get_weather");
-//                  assert!(function_response.response.is_object());
-//                  assert_eq!(function_response.response["temp"], 25);
-//              }
-//              _ => panic!("Expected FunctionResponse part"),
-//          }
-//      }
+         assert_eq!(contents.len(), 3); // user, model, user (function response)
+         assert_eq!(contents[0].role, "user");
+         assert_eq!(contents[1].role, "model");
+         assert_eq!(contents[2].role, "user");
+         assert_eq!(contents[2].parts.len(), 1);
+         match &contents[2].parts[0] {
+             GeminiPart::FunctionResponse { function_response } => {
+                 assert_eq!(function_response.name, "get_weather");
+                 assert!(function_response.response.is_object());
+                 assert_eq!(function_response.response["temp"], 25);
+             }
+             _ => panic!("Expected FunctionResponse part"),
+         }
+     }
 
-//       #[test]
-//       fn test_convert_tools_config() {
-//            let tool_def = ToolDefinition {
-//                name: "my_func".to_string(), description: "d".to_string(),
-//                parameters: ToolParameterSchema{ schema_type: "object".to_string(), properties: Default::default(), required: vec![] }
-//            };
+      #[test]
+      fn test_convert_tools_config() {
+           let tool_def = ToolDefinition {
+               name: "my_func".to_string(), description: "d".to_string(),
+               parameters: ToolParameterSchema{ schema_type: "object".to_string(), properties: Default::default(), required: vec![] }
+           };
 
-//           // Auto (default when tools present)
-//           let options_auto = ChatOptions { tools: Some(vec![tool_def.clone()]), tool_choice: None, ..Default::default() };
-//           let (tools, cfg) = GeminiClient::convert_tools(&options_auto);
-//           assert!(tools.is_some());
-//           assert!(cfg.is_some());
-//           //assert!(matches!(cfg.as_ref().unwrap().mode, GeminiToolChoiceMode::Auto));
+          // Auto (default when tools present)
+          let options_auto = ChatOptions { tools: Some(vec![tool_def.clone()]), tool_choice: None, ..Default::default() };
+          let (tools, cfg) = GeminiChatClient::convert_tools(&options_auto);
+          assert!(tools.is_some());
+          // Omitted tool_config means AUTO when tools are present
+          assert!(cfg.is_none());
+          //assert!(matches!(cfg.as_ref().unwrap().mode, GeminiToolChoiceMode::Auto));
 
-//           // Explicit Auto
-//           let options_explicit_auto = ChatOptions { tools: Some(vec![tool_def.clone()]), tool_choice: Some(ToolChoice::Auto), ..Default::default() };
-//           let (_, cfg) = GeminiClient::convert_tools(&options_explicit_auto);
-//           assert!(cfg.is_some());
-//           //assert!(matches!(cfg.as_ref().unwrap().mode, GeminiToolChoiceMode::Auto));
+          // Explicit Auto
+          let options_explicit_auto = ChatOptions { tools: Some(vec![tool_def.clone()]), tool_choice: Some(ToolChoice::Auto), ..Default::default() };
+          let (_, cfg) = GeminiChatClient::convert_tools(&options_explicit_auto);
+          assert!(cfg.is_none());
+          //assert!(matches!(cfg.as_ref().unwrap().mode, GeminiToolChoiceMode::Auto));
 
 
-//           // None
-//           let options_none = ChatOptions { tools: Some(vec![tool_def.clone()]), tool_choice: Some(ToolChoice::None), ..Default::default() };
-//            let (_, cfg) = GeminiClient::convert_tools(&options_none);
-//           assert!(cfg.is_some());
-//         //   assert!(matches!(cfg.as_ref().unwrap().mode, GeminiToolChoiceMode::None));
+          // None
+          let options_none = ChatOptions { tools: Some(vec![tool_def.clone()]), tool_choice: Some(ToolChoice::None), ..Default::default() };
+           let (_, cfg) = GeminiChatClient::convert_tools(&options_none);
+          assert!(cfg.is_some());
+        //   assert!(matches!(cfg.as_ref().unwrap().mode, GeminiToolChoiceMode::None));
 
-//            // Required (Any)
-//            let options_req = ChatOptions { tools: Some(vec![tool_def.clone()]), tool_choice: Some(ToolChoice::Required), ..Default::default() };
-//            let (_, cfg) = GeminiClient::convert_tools(&options_req);
-//           assert!(cfg.is_some());
-//         //   assert!(matches!(cfg.as_ref().unwrap().mode, GeminiToolChoiceMode::Any));
+           // Required (Any)
+           let options_req = ChatOptions { tools: Some(vec![tool_def.clone()]), tool_choice: Some(ToolChoice::Required), ..Default::default() };
+           let (_, cfg) = GeminiChatClient::convert_tools(&options_req);
+          assert!(cfg.is_some());
+        //   assert!(matches!(cfg.as_ref().unwrap().mode, GeminiToolChoiceMode::Any));
 
-//            // Specific Tool
-//            let options_tool = ChatOptions { tools: Some(vec![tool_def.clone()]), tool_choice: Some(ToolChoice::Tool { name: "my_func".to_string() }), ..Default::default() };
-//            let (_, cfg) = GeminiClient::convert_tools(&options_tool);
-//            assert!(cfg.is_some());
-//            let config = cfg.unwrap();
-//         //    assert!(matches!(config.mode, GeminiToolChoiceMode::Function));
-//            assert!(config.function_calling_config.is_some());
-//            let func_cfg = config.function_calling_config.unwrap();
-//            assert!(matches!(func_cfg.mode, GeminiFunctionCallingMode::Any));
-//            assert_eq!(func_cfg.allowed_function_names, Some(vec!["my_func".to_string()]));
-//       }
-// }
+           // Specific Tool
+           let options_tool = ChatOptions { tools: Some(vec![tool_def.clone()]), tool_choice: Some(ToolChoice::Tool { name: "my_func".to_string() }), ..Default::default() };
+           let (_, cfg) = GeminiChatClient::convert_tools(&options_tool);
+           assert!(cfg.is_some());
+           let config = cfg.unwrap();
+        //    assert!(matches!(config.mode, GeminiToolChoiceMode::Function));
+           assert!(config.function_calling_config.is_some());
+           let func_cfg = config.function_calling_config.unwrap();
+           assert!(matches!(func_cfg.mode, GeminiFunctionCallingMode::Any));
+           assert_eq!(func_cfg.allowed_function_names, Some(vec!["my_func".to_string()]));
+      }
+}

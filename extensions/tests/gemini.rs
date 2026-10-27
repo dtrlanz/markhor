@@ -68,9 +68,9 @@ async fn test_gemini_generate_simple_integration() {
         Message::user("Hi there, what's the capital of France?"),
     ];
     let options = ChatOptions {
-            model_id: Some("gemini-1.5-flash-latest".to_string()),
+            model_id: Some("gemini-3.5-flash".to_string()),
             temperature: Some(0.7),
-            max_tokens: Some(50),
+            max_tokens: Some(500), // Thinking models count reasoning tokens against this limit
             ..Default::default()
     };
 
@@ -93,7 +93,7 @@ async fn test_gemini_generate_simple_integration() {
     assert!(text_response.to_lowercase().contains("paris"));
     assert!(response.finish_reason.is_some());
     assert!(response.usage.is_some());
-    assert_eq!(response.model_id, Some("gemini-1.5-flash-latest".to_string()));
+    assert_eq!(response.model_id, Some("gemini-3.5-flash".to_string()));
 }
 
 
@@ -126,7 +126,7 @@ async fn test_gemini_generate_tool_use_integration() {
         Message::user("What is the weather like in Boston? I prefer temperatures in Celsius."),
     ];
     let options_1 = ChatOptions {
-        model_id: Some("gemini-1.5-flash-latest".to_string()), // Or gemini-pro if flash doesn't support tools well
+        model_id: Some("gemini-3.5-flash".to_string()),
         tools: Some(vec![get_weather_tool.clone()]),
         // ToolChoice::Auto is default if tools are present, or be explicit:
         tool_choice: Some(ToolChoice::Auto),
@@ -194,7 +194,7 @@ async fn test_gemini_generate_tool_use_integration() {
 
     info!(history = ?messages_2, "Sending second request with tool result and full history...");
     let options_2 = ChatOptions {
-        model_id: Some("gemini-1.5-flash-latest".to_string()),
+        model_id: Some("gemini-3.5-flash".to_string()),
         // No specific tools or choice needed here, model should just respond to the result.
         // Although keeping the tool definition might be safer in some edge cases.
         tools: None, // Some(vec![get_weather_tool.clone()]),
