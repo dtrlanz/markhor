@@ -1,6 +1,5 @@
 pub mod chunking;
 pub mod cli;
-pub mod gemini;
 pub mod ocr;
 pub mod plugin;
 

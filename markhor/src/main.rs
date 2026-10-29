@@ -13,7 +13,6 @@ use markhor_core::extension::Extension;
 use markhor_core::library::Workspace;
 use markhor_extensions::chunking::Chunkers;
 use markhor_extensions::cli::CliExtension;
-use markhor_extensions::gemini::GeminiClientExtension;
 use markhor_extensions::ocr::mistral::client::MistralClient;
 use reqwest::Client;
 use tracing::{Level, debug, error, info};

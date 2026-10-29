@@ -8,11 +8,8 @@ use std::{
 
 use async_trait::async_trait;
 use markhor_core::{
-    chat::{
-        ChatError,
-        chat::{ChatModel, ChatOptions, ChatResponse, ChatStream, ContentPart, Message, ModelInfo},
-    },
-    extension::Extension,
+    chat::{ChatError, ChatModel, ChatOptions, ChatResponse, MemberId, Msg, common::ContentPart},
+    extension::{Extension, ModelId},
 };
 
 const SONNET_18: [&str; 14] = [
@@ -52,7 +49,7 @@ impl ChatModel for ShakespeareChatModel {
 
     async fn generate(
         &self,
-        messages: &[Message],
+        messages: &[Msg],
         options: &ChatOptions,
     ) -> Result<ChatResponse, ChatError> {
         if self.idx.load(Ordering::SeqCst) >= SONNET_18.len() {
@@ -66,14 +63,6 @@ impl ChatModel for ShakespeareChatModel {
             finish_reason: None,
             model_id: Some("shakespeare".to_string()),
         })
-    }
-
-    async fn generate_stream(
-        &self,
-        messages: &[Message],
-        options: &ChatOptions,
-    ) -> Result<ChatStream, ChatError> {
-        unimplemented!()
     }
 }
 
@@ -104,8 +93,20 @@ impl Extension for ShakespeareChatExtension {
 async fn shakespeare_chat_model() {
     let model = ShakespeareChatModel::new();
     let messages = vec![
-        Message::user("Tell me a sonnet"),
-        Message::assistant("Sure, here is one:"),
+        Msg::User {
+            sender: MemberId::new("user", true),
+            timestamp: None,
+            content: vec![ContentPart::Text("Tell me a sonnet".into())],
+        },
+        Msg::Agent {
+            sender: MemberId::new("ai", false),
+            timestamp: None,
+            content: vec![ContentPart::Text("Sure, here is one:".into())],
+            tool_calls: vec![],
+            model: ModelId::new("will-s", "globe"),
+            reasoning_content: Default::default(),
+            metadata: Default::default(),
+        },
     ];
     let response = ChatModel::generate(&model, &messages, &Default::default())
         .await
