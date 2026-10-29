@@ -3,9 +3,12 @@ use std::time::SystemTime;
 use serde_json::Value;
 use smallvec::SmallVec;
 
-use crate::chat::{
-    common::{ContentPart, ToolCallRequest},
-    member::MemberId,
+use crate::{
+    chat::{
+        common::{ContentPart, ToolCallRequest},
+        member::MemberId,
+    },
+    extension::ModelId,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -22,6 +25,7 @@ pub enum Msg {
         timestamp: Option<SystemTime>,
         content: Vec<ContentPart>,
         tool_calls: Vec<ToolCallRequest>,
+        model: ModelId,
     },
     Direct {
         sender: MemberId,
@@ -515,6 +519,7 @@ mod tests {
                 timestamp: None,
                 content: vec![ContentPart::Text("hey".into())],
                 tool_calls: vec![],
+                model: ModelId::new("spiff-3-nano", "zygomorphic-labs"),
             })
             .unwrap();
         (me, ai)
@@ -544,6 +549,7 @@ mod tests {
                     timestamp: None,
                     content: vec![ContentPart::Text("hey".into())],
                     tool_calls: vec![],
+                    model: ModelId::new("spiff-3-nano", "zygomorphic-labs"),
                 },
             ]
         );
@@ -573,6 +579,7 @@ mod tests {
                     timestamp: None,
                     content: vec![ContentPart::Text("changed".into())],
                     tool_calls: vec![],
+                    model: ModelId::new("spiff-3-nano", "zygomorphic-labs"),
                 },
             ]
         );

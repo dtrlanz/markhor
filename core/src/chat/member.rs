@@ -116,6 +116,7 @@ impl Member {
                     timestamp,
                     content,
                     tool_calls,
+                    model,
                 } => {
                     if sender == &self.id {
                         Some(Msg::Agent {
@@ -123,6 +124,7 @@ impl Member {
                             timestamp: timestamp.clone(),
                             content: content.clone(),
                             tool_calls: tool_calls.clone(),
+                            model: model.clone(),
                         })
                     } else {
                         Some(Msg::Agent {
@@ -136,6 +138,7 @@ impl Member {
                                 // But not from humans
                                 tool_calls.clone()
                             },
+                            model: model.clone(),
                         })
                     }
                 }

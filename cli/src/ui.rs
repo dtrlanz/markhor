@@ -1182,7 +1182,7 @@ impl ChatUi for ConsoleChatUi {
 mod tests {
     use std::time::SystemTime;
 
-    use markhor_core::chat::ToolCallId;
+    use markhor_core::{chat::ToolCallId, extension::ModelId};
     use serde_json::json;
 
     use super::*;
@@ -1212,6 +1212,7 @@ mod tests {
             timestamp: Some(SystemTime::now()),
             content: vec![ContentPart::Text(text.to_string())],
             tool_calls: vec![],
+            model: ModelId::new("spiff-3-nano", "zygomorphic-labs"),
         }
     }
 
@@ -1243,7 +1244,10 @@ mod tests {
         assert!(out.contains(&"┃ # Title".to_string()), "{out:?}");
         assert!(out.contains(&"┃ • one".to_string()), "{out:?}");
         assert!(out.contains(&"┃ ▏ code".to_string()), "{out:?}");
-        assert!(out.contains(&"┃".to_string()), "bar continues across gaps: {out:?}");
+        assert!(
+            out.contains(&"┃".to_string()),
+            "bar continues across gaps: {out:?}"
+        );
     }
 
     #[test]
@@ -1488,6 +1492,7 @@ mod tests {
                 name: "t".into(),
                 arguments: json!({}),
             }],
+            model: ModelId::new("spiff-3-nano", "zygomorphic-labs"),
         };
         ui.handle_message(&MsgEvent::Begin(MsgId(1), agent()));
         ui.handle_message(&MsgEvent::Full(MsgId(1), msg));

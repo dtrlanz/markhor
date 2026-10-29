@@ -11,9 +11,11 @@ use thiserror::Error;
 
 mod comp;
 mod extension_config;
+mod model_id;
 
 pub use comp::Comp;
 pub use extension_config::ExtensionConfig;
+pub use model_id::ModelId;
 
 #[cfg(test)]
 pub(crate) use comp::TryIntoComp;

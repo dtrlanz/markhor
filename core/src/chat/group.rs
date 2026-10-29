@@ -226,7 +226,10 @@ impl std::hash::Hash for Thread {
 #[cfg(test)]
 pub(super) mod thread_builder {
     use super::*;
-    use crate::chat::common::{ContentPart, ToolCallRequest};
+    use crate::{
+        chat::common::{ContentPart, ToolCallRequest},
+        extension::ModelId,
+    };
     use smallvec::SmallVec;
     use std::time::SystemTime;
 
@@ -293,6 +296,7 @@ pub(super) mod thread_builder {
                 timestamp: next_time,
                 content: vec![ContentPart::Text(text.into())],
                 tool_calls,
+                model: ModelId::new("spiff-3-nano", "zygomorphic-labs"),
             })
         }
 
@@ -326,6 +330,7 @@ pub(super) mod thread_builder {
 #[cfg(test)]
 mod tests {
     use crate::chat::common::{ContentPart, ToolCallRequest};
+    use crate::extension::ModelId;
 
     use super::thread_builder::ThreadBuilder;
     use super::*;
@@ -420,6 +425,7 @@ mod tests {
                 timestamp: None,
                 content: vec![ContentPart::Text("Hello! How can I help you today?".into())],
                 tool_calls: vec![],
+                model: ModelId::new("spiff-3-nano", "zygomorphic-labs"),
             })
             .unwrap();
 

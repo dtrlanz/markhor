@@ -7,9 +7,13 @@ use std::{
 };
 
 use markhor_cli::{ConsoleChatUi, ReasoningDisplay};
-use markhor_core::chat::{
-    ChatUi, MemberId, Msg, MsgEvent, MsgId, ReasoningEvent, ToolCallEvent, ToolCallId, WorkerEvent,
-    common::{ContentPart, ToolCallRequest, ToolResult},
+use markhor_core::{
+    chat::{
+        ChatUi, MemberId, Msg, MsgEvent, MsgId, ReasoningEvent, ToolCallEvent, ToolCallId,
+        WorkerEvent,
+        common::{ContentPart, ToolCallRequest, ToolResult},
+    },
+    extension::ModelId,
 };
 use serde_json::{Value, json};
 use tokio::{task::JoinSet, time::sleep};
@@ -417,6 +421,7 @@ impl Simulation {
                 timestamp: Some(SystemTime::now()),
                 content: vec![ContentPart::Text(body)],
                 tool_calls,
+                model: ModelId::new("sim-7-pro", "simulator"),
             },
         ));
         id
@@ -640,13 +645,7 @@ fn paragraph(rng: &mut fastrand::Rng) -> String {
     match rng.usize(0..6) {
         0 | 1 => {
             let items: Vec<String> = (0..rng.usize(3..=5))
-                .map(|_| {
-                    format!(
-                        "- **{}**: {}",
-                        pick(rng, WORDS),
-                        prose_sentence(rng)
-                    )
-                })
+                .map(|_| format!("- **{}**: {}", pick(rng, WORDS), prose_sentence(rng)))
                 .collect();
             let at = rng.usize(1..=blocks.len());
             blocks.insert(at, items.join("\n"));
