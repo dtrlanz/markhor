@@ -1,16 +1,19 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use markhor_core::embedding::{EmbeddingModel, Embedding, EmbeddingError, EmbeddingUseCase};
+use markhor_core::embedding::{Embedding, EmbeddingError, EmbeddingModel, EmbeddingUseCase};
 use reqwest::Client;
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, instrument, trace, warn};
 use url::Url; // For logging/tracing
-use secrecy::ExposeSecret;
 
 use crate::gemini::error::map_response_error;
 
-use super::{error::GeminiError, shared::{self, GeminiConfig, SharedGeminiClient, EXTENSION_URI}};
+use super::{
+    error::GeminiError,
+    shared::{self, EXTENSION_URI, GeminiConfig, SharedGeminiClient},
+};
 
 /// Embedder implementation for Google Gemini models via the Generative Language API.
 #[derive(Debug, Clone)] // Clone shares the SharedGeminiClient efficiently
@@ -64,10 +67,10 @@ impl GeminiEmbedder {
         model_name: String,
         task_type: Option<String>,
     ) -> Result<Self, GeminiError> {
-        
-
         if model_name.is_empty() {
-            return Err(GeminiError::InvalidConfiguration("Model name cannot be empty".to_string()));
+            return Err(GeminiError::InvalidConfiguration(
+                "Model name cannot be empty".to_string(),
+            ));
         }
         let model_path_segment = format!("models/{}", model_name);
 
@@ -87,7 +90,7 @@ impl GeminiEmbedder {
     fn build_batch_embed_url(&self) -> Result<Url, GeminiError> {
         let path_segment = format!("{}:batchEmbedContents", self.model_path_segment);
         self.shared_client.build_url(&path_segment) // No extra query besides API key
-    }    
+    }
 }
 
 /// Helper function to map Gemini task type strings to the EmbeddingUseCase enum.
@@ -281,9 +284,7 @@ impl EmbeddingModel for GeminiEmbedder {
     }
 }
 
-
 // --- Gemini API Request Structures ---
-
 
 #[derive(Serialize, Debug)]
 pub struct GeminiBatchRequest<'a> {
@@ -297,7 +298,7 @@ pub struct GeminiEmbedRequest<'a> {
     pub content: GeminiContent<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_type: Option<&'a str>, // e.g., "RETRIEVAL_DOCUMENT"
-    // title field is omitted for simplicity, can be added if needed
+                                    // title field is omitted for simplicity, can be added if needed
 }
 
 #[derive(Serialize, Debug)]

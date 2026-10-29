@@ -4,7 +4,6 @@ use tracing::error;
 
 pub mod plaintext;
 
-
 pub struct Chunkers;
 
 impl Extension for Chunkers {

@@ -1,6 +1,6 @@
+use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::future::Future;
 use std::sync::Arc;
 use std::task;
 
@@ -16,16 +16,15 @@ use markhor_extensions::cli::CliExtension;
 use markhor_extensions::gemini::GeminiClientExtension;
 use markhor_extensions::ocr::mistral::client::MistralClient;
 use reqwest::Client;
-use tracing::{debug, error, info, Level};
+use tracing::{Level, debug, error, info};
 use tracing_subscriber::EnvFilter;
-
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // --- Tracing Initialization ---
-    
+
     // Initialize tracing
     setup_tracing(cli.verbose, cli.quiet);
 
@@ -56,7 +55,7 @@ async fn main() -> Result<()> {
     //         debug!("Google API key not found in environment variables");
     //     }
     // };
-    
+
     // // Load Mistral API key from env var
     // match std::env::var("MISTRAL_API_KEY") {
     //     Ok(key) => {
@@ -82,8 +81,8 @@ async fn main() -> Result<()> {
                 error!("Could not get current directory: {}", e);
                 return Err(e.into());
             }
-        }
-        Err(e) => None
+        },
+        Err(e) => None,
     };
 
     // // Pass folder to CLI extension to enable auto-completion of document names
@@ -135,7 +134,7 @@ async fn main() -> Result<()> {
         Commands::Workspace(args) => {
             println!("Managing workspace with args: {:?}", args);
             commands::handle_workspace(args, app).await
-             // This command itself has subcommands, so handle_workspace will need its own match
+            // This command itself has subcommands, so handle_workspace will need its own match
         }
     };
 
@@ -161,9 +160,7 @@ async fn main() -> Result<()> {
 fn setup_tracing(verbosity: u8, quiet: bool) {
     // RUST_LOG takes precedence over -v/ -q flags
     let filter = match std::env::var("RUST_LOG") {
-        Ok(env_var) if !env_var.is_empty() => {
-            EnvFilter::new(env_var)
-        }
+        Ok(env_var) if !env_var.is_empty() => EnvFilter::new(env_var),
         // RUST_LOG is not set or empty, use CLI flags
         _ => {
             let base_level = if quiet {
@@ -171,7 +168,7 @@ fn setup_tracing(verbosity: u8, quiet: bool) {
             } else {
                 match verbosity {
                     0 => Level::WARN,  // Default
-                    1 => Level::INFO, // -v
+                    1 => Level::INFO,  // -v
                     2 => Level::DEBUG, // -vv
                     _ => Level::TRACE, // -vvv or more
                 }
@@ -184,7 +181,6 @@ fn setup_tracing(verbosity: u8, quiet: bool) {
             EnvFilter::new(filter_directives)
         }
     };
-
 
     // Configure the fmt subscriber
     let subscriber = tracing_subscriber::fmt()
@@ -204,15 +200,21 @@ fn setup_tracing(verbosity: u8, quiet: bool) {
     tracing::debug!("Tracing initialized");
 }
 
-
 async fn get_workspace(cli_ws_flag: Option<PathBuf>) -> Result<Arc<Workspace>> {
     if let Some(ws_path) = cli_ws_flag {
         // Open the workspace at the specified path
         debug!("Opening workspace at: {}", ws_path.display());
         let ws = Workspace::open(&ws_path).await;
         if let Err(e) = ws {
-            error!("Could not open workspace specified in workspace flag: {}", e);
-            return Err(anyhow::anyhow!("Failed to open workspace at {}: {}", ws_path.display(), e));
+            error!(
+                "Could not open workspace specified in workspace flag: {}",
+                e
+            );
+            return Err(anyhow::anyhow!(
+                "Failed to open workspace at {}: {}",
+                ws_path.display(),
+                e
+            ));
         }
         return Ok(ws?.into());
     } else {
@@ -240,6 +242,7 @@ async fn get_workspace(cli_ws_flag: Option<PathBuf>) -> Result<Arc<Workspace>> {
     info!("Could not find workspace in current directory or its parents");
     // Returning error (not option), which can be propagated/displayed later if a workspace was
     // actually required.
-    Err(anyhow::anyhow!("No workspace found in current directory or its parents"))
+    Err(anyhow::anyhow!(
+        "No workspace found in current directory or its parents"
+    ))
 }
-

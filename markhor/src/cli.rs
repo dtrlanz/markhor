@@ -20,7 +20,6 @@ pub struct Cli {
     /// Suppress all output except errors.
     #[arg(short, long, global = true)]
     pub quiet: bool,
-
     // Consider adding --output-format (text, json, yaml) later
 }
 
@@ -55,7 +54,8 @@ pub struct ImportArgs {
     pub paths: Vec<PathBuf>,
 
     /// Attach metadata key-value pairs (e.g., --metadata source=web type=pdf).
-    #[arg(long, value_parser = clap::value_parser!(String))] // Basic parsing, needs refinement later for key=value
+    #[arg(long, value_parser = clap::value_parser!(String))]
+    // Basic parsing, needs refinement later for key=value
     pub metadata: Vec<String>, // TODO: Parse into HashMap<String, String>
 
     /// Attach tags to the imported document(s).
@@ -207,12 +207,12 @@ pub enum WorkspaceCommands {
         force: bool, // Skip confirmation
     },
     /// Show information about the current or a specified workspace.
-    Info { // Added this based on ShowArgs having workspace info possibility
-         /// Path or name of the workspace to show info for. Defaults to current.
+    Info {
+        // Added this based on ShowArgs having workspace info possibility
+        /// Path or name of the workspace to show info for. Defaults to current.
         target: Option<String>,
-    }
-    // 'Open' might not be needed if we use directory-based detection primarily.
-    // If global tracking exists, 'open' could switch the 'current' global default.
+    }, // 'Open' might not be needed if we use directory-based detection primarily.
+       // If global tracking exists, 'open' could switch the 'current' global default.
 }
 
 // HelpArgs might not be needed if using clap's built-in help

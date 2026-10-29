@@ -5,10 +5,7 @@ use std::borrow::Borrow;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContentPart {
     Text(String),
-    Image {
-        mime_type: String,
-        data: Vec<u8>,
-    },
+    Image { mime_type: String, data: Vec<u8> },
 }
 
 impl ContentPart {
@@ -31,10 +28,10 @@ impl Borrow<str> for ContentPart {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolResult {
-    /// An id for matching tool requests to results. 
-    /// 
+    /// An id for matching tool requests to results.
+    ///
     /// Should uniquely identify a tool call within a list of messages.
-    pub call_id: String, 
+    pub call_id: String,
 
     /// The name of the function/tool to call.
     pub name: String,
@@ -53,7 +50,7 @@ pub struct ToolCallRequest {
 
     /// The name of the function/tool to call.
     pub name: String,
-    
+
     /// The arguments to pass to the function.
     pub arguments: JsonValue,
 }

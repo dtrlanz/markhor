@@ -11,7 +11,8 @@ use super::error::GeminiError;
 // Assume GeminiError is accessible
 
 // Renaming the old default base URL constant for clarity
-const DEFAULT_GEMINI_GENERATIVE_LANGUAGE_BASE_URL: &str = "https://generativelanguage.googleapis.com";
+const DEFAULT_GEMINI_GENERATIVE_LANGUAGE_BASE_URL: &str =
+    "https://generativelanguage.googleapis.com";
 
 pub(crate) const EXTENSION_URI: &str = "todo";
 
@@ -39,13 +40,17 @@ impl GeminiConfig {
     pub fn new(api_key: impl Into<String>) -> Result<Self, GeminiError> {
         let api_key = api_key.into();
         if api_key.is_empty() {
-            return Err(GeminiError::InvalidConfiguration("API key cannot be empty".to_string()));
+            return Err(GeminiError::InvalidConfiguration(
+                "API key cannot be empty".to_string(),
+            ));
         }
 
-        let base_url = Url::parse(DEFAULT_GEMINI_GENERATIVE_LANGUAGE_BASE_URL)
-            .map_err(|e| GeminiError::InvalidConfiguration(
-                format!("Internal error: Failed to parse default base URL: {}", e)
-            ))?; // This should ideally never fail
+        let base_url = Url::parse(DEFAULT_GEMINI_GENERATIVE_LANGUAGE_BASE_URL).map_err(|e| {
+            GeminiError::InvalidConfiguration(format!(
+                "Internal error: Failed to parse default base URL: {}",
+                e
+            ))
+        })?; // This should ideally never fail
 
         Ok(Self {
             api_key: api_key.into(),
@@ -57,10 +62,9 @@ impl GeminiConfig {
     /// Allows setting a custom base URL.
     #[must_use]
     pub fn base_url(mut self, url: &str) -> Result<Self, GeminiError> {
-        self.base_url = Url::parse(url)
-            .map_err(|e| GeminiError::InvalidConfiguration(
-                format!("Invalid base URL '{}': {}", url, e)
-            ))?;
+        self.base_url = Url::parse(url).map_err(|e| {
+            GeminiError::InvalidConfiguration(format!("Invalid base URL '{}': {}", url, e))
+        })?;
         Ok(self)
     }
 
@@ -83,28 +87,37 @@ impl SharedGeminiClient {
     /// Creates a new SharedGeminiClient.
     /// Builds a default reqwest client if one is not provided.
     #[instrument(name = "shared_gemini_client_new", skip(config, client_override))]
-    pub(crate) fn new(config: GeminiConfig, client_override: Option<Client>) -> Result<Self, GeminiError> {
+    pub(crate) fn new(
+        config: GeminiConfig,
+        client_override: Option<Client>,
+    ) -> Result<Self, GeminiError> {
         let client = match client_override {
             Some(client) => {
                 debug!("Using provided HTTP client.");
                 client
-            },
+            }
             None => {
                 debug!(timeout=?config.timeout, "Building default HTTP client.");
                 Client::builder()
                     .timeout(config.timeout)
                     // Add other default client configurations (proxies, headers?) here if needed
                     .build()
-                    .map_err(|e| GeminiError::InvalidConfiguration(
-                        format!("Failed to build default HTTP client: {}", e)
-                    ))?
+                    .map_err(|e| {
+                        GeminiError::InvalidConfiguration(format!(
+                            "Failed to build default HTTP client: {}",
+                            e
+                        ))
+                    })?
             }
         };
 
         // Log base URL without API key
         debug!(base_url = %config.base_url, "Shared Gemini client initialized.");
 
-        Ok(Self { config, http_client: client })
+        Ok(Self {
+            config,
+            http_client: client,
+        })
     }
 
     /// Provides access to the underlying HTTP client.
@@ -155,14 +168,21 @@ impl SharedGeminiClient {
     //     Ok(url)
     // }
 
-    pub(crate) fn build_url(&self, relative_path: &str /* e.g., "models/gemini-pro:generateContent" */ ) -> Result<Url, GeminiError> {
+    pub(crate) fn build_url(
+        &self,
+        relative_path: &str, /* e.g., "models/gemini-pro:generateContent" */
+    ) -> Result<Url, GeminiError> {
         let base_path = format!("v1beta/{}", relative_path); // Prepend v1beta
         let mut url = self.config.base_url.clone();
-    
+
         url.path_segments_mut()
-            .map_err(|_| GeminiError::InvalidConfiguration("Base URL cannot be a 'cannot-be-a-base' URL.".to_string()))?
+            .map_err(|_| {
+                GeminiError::InvalidConfiguration(
+                    "Base URL cannot be a 'cannot-be-a-base' URL.".to_string(),
+                )
+            })?
             .extend(base_path.split('/')); // Split and extend
-    
+
         trace!(built_url = %url, "Built Gemini API URL (without auth)");
         Ok(url)
     }

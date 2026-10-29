@@ -1,6 +1,5 @@
 use crate::permissions::{self, Permission};
 
-
 #[derive(Debug, Clone)]
 pub struct ExtensionConfig {
     pub permissions: Vec<Permission>,

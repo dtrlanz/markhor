@@ -5,33 +5,34 @@ mod scope;
 mod tag;
 mod workspace;
 
-use std::{borrow::Borrow, ops::BitXor, path::PathBuf};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256, digest::{OutputSizeUser, generic_array::GenericArray}};
+use sha2::{
+    Digest, Sha256,
+    digest::{OutputSizeUser, generic_array::GenericArray},
+};
+use std::{borrow::Borrow, ops::BitXor, path::PathBuf};
 use thiserror::Error;
 
+pub(crate) use document::chunks::ChunkIdx;
 pub use document::{
     Document,
     DocumentMetadata,
     // TextLocation,
     MetadataLocation,
-    chunks::{Chunk, ChunkMut},
-    Text, 
     Part,
+    Text,
+    chunks::{Chunk, ChunkMut},
 };
-pub(crate) use document::chunks::ChunkIdx;
 pub use folder::{Folder, ReadEntry};
 pub use retriever::Retriever;
 pub use scope::{PrelimFilter, Scope};
 pub use tag::Tag;
 pub use workspace::Workspace;
 
-
 const METADATA_EXTENSION: &str = "mark";
 const ATTACHMENTS_DIR: &str = "attachments";
 const WORKSPACE_CONFIG_DIR: &str = ".markhor";
 const WORKSPACE_METADATA_FILENAME: &str = "workspace.yaml";
-
 
 #[derive(Debug, Error)]
 pub enum AccessLibraryError {
@@ -72,10 +73,15 @@ impl BitXor for HashValue {
     type Output = Self;
 
     fn bitxor(self, rhs: Self) -> Self::Output {
-        let value = self.value.iter().zip(rhs.value.iter())
+        let value = self
+            .value
+            .iter()
+            .zip(rhs.value.iter())
             .map(|(a, b)| a ^ b)
             .collect::<Vec<u8>>();
-        HashValue { value: GenericArray::from_slice(&value).clone() }
+        HashValue {
+            value: GenericArray::from_slice(&value).clone(),
+        }
     }
 }
 
@@ -83,7 +89,9 @@ impl<T: Borrow<str> + ?Sized> From<&T> for HashValue {
     fn from(value: &T) -> Self {
         let mut hasher = sha2::Sha256::new();
         hasher.update(value.borrow().as_bytes());
-        HashValue { value: hasher.finalize() }
+        HashValue {
+            value: hasher.finalize(),
+        }
     }
 }
 
@@ -98,14 +106,24 @@ impl<T: Borrow<str> + ?Sized> From<&T> for HashValue {
 // }
 
 impl Serialize for HashValue {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
-        let hex_string = self.value.iter().map(|byte| format!("{:02x}", byte)).collect::<String>();
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let hex_string = self
+            .value
+            .iter()
+            .map(|byte| format!("{:02x}", byte))
+            .collect::<String>();
         serializer.serialize_str(&hex_string)
     }
 }
 
 impl<'de> Deserialize<'de> for HashValue {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> where D: serde::Deserializer<'de> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
         let hex_string = String::deserialize(deserializer)?;
         let bytes = hex::decode(hex_string).map_err(serde::de::Error::custom)?;
         let value = GenericArray::from_slice(&bytes).clone();
@@ -167,9 +185,8 @@ pub(crate) mod fs_test_utils {
                 FsNode::File { name, .. } => name.as_ref(),
                 FsNode::Folder { name, .. } => name.as_ref(),
             }
-        }        
+        }
     }
-
 
     /// Represents a materialized virtual filesystem in a temporary directory.
     pub struct TempTree<'a> {
@@ -181,7 +198,7 @@ pub(crate) mod fs_test_utils {
         /// Asynchronously creates a temp dir and materializes multiple top-level nodes.
         pub async fn new(nodes: Vec<FsNode<'a>>) -> io::Result<Self> {
             let temp_dir = tempfile::tempdir()?;
-            
+
             // Materialize each top-level node directly into the temp_dir
             for node in &nodes {
                 Self::materialize(temp_dir.path(), node).await?;
@@ -233,16 +250,24 @@ pub(crate) mod fs_test_utils {
         fn merge_nodes(existing: &mut Vec<FsNode<'a>>, new_nodes: Vec<FsNode<'a>>) {
             for new_node in new_nodes {
                 // Check if a node with the exact same name already exists at this level
-                if let Some(existing_node) = existing.iter_mut().find(|n| n.name() == new_node.name()) {
+                if let Some(existing_node) =
+                    existing.iter_mut().find(|n| n.name() == new_node.name())
+                {
                     match (existing_node, new_node) {
                         // If both are folders, recursively merge their children
                         (
-                            FsNode::Folder { children: existing_children, .. },
-                            FsNode::Folder { children: new_children, .. }
+                            FsNode::Folder {
+                                children: existing_children,
+                                ..
+                            },
+                            FsNode::Folder {
+                                children: new_children,
+                                ..
+                            },
                         ) => {
                             Self::merge_nodes(existing_children, new_children);
                         }
-                        // Otherwise, overwrite the existing node 
+                        // Otherwise, overwrite the existing node
                         // (e.g., file overwrites file, or a file replaces a folder)
                         (e, n) => *e = n,
                     }
@@ -251,17 +276,17 @@ pub(crate) mod fs_test_utils {
                     existing.push(new_node);
                 }
             }
-        }        
+        }
 
         /// Returns an iterator that yields the absolute path and reference to every node in the tree.
         pub fn iter(&self) -> TempTreeIter<'a, '_> {
             let mut stack = Vec::new();
-            
+
             // Push in reverse order so the first item declared in the macro is yielded first
             for node in self.nodes.iter().rev() {
                 stack.push((self.temp_dir.path().join(node.name()), node));
             }
-            
+
             TempTreeIter { stack }
         }
 
@@ -384,28 +409,32 @@ mod tests {
         let tree = TempTree::new(fs_tree! {
             "my_app" => {
                 "Cargo.toml" => "[package]\nname=\"my_app\"",
-                
+
                 // Nested folder
                 "src" => {
                     "main.rs" => "fn main() { println!(\"Hello\"); }",
                     "lib.rs" => "pub fn run() {}",
                 },
-                
+
                 // Empty folder
                 "assets" => {},
-                
+
                 // For complex expressions (function calls, macros, etc),
                 // wrap the contents in `{ }`
                 "config.json" => { dynamic_config },
                 "data.bin" => { vec![0, 1, 2, 3] },
             }
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         // Verify it works!
         assert!(tree.join("my_app/src/main.rs").exists());
         assert!(tree.join("my_app/assets").is_dir());
-        
-        let config = tokio::fs::read_to_string(tree.join("my_app/config.json")).await.unwrap();
+
+        let config = tokio::fs::read_to_string(tree.join("my_app/config.json"))
+            .await
+            .unwrap();
         assert_eq!(config, r#"{ "port": 8080 }"#);
     }
 
@@ -445,7 +474,9 @@ mod tests {
         assert!(tree.join("tests/integration_test.rs").is_file());
 
         // 4. Read contents back asynchronously to ensure data was written correctly
-        let readme_content = tokio::fs::read_to_string(tree.join("README.md")).await.unwrap();
+        let readme_content = tokio::fs::read_to_string(tree.join("README.md"))
+            .await
+            .unwrap();
         assert_eq!(readme_content, "# Top Level Readme\n");
 
         let bin_content = tokio::fs::read(tree.join("data.bin")).await.unwrap();
@@ -461,14 +492,14 @@ mod tests {
             .iter()
             .find(|(_, node)| node.name() == "utils.rs")
             .expect("utils.rs should be in the iterator");
-        
+
         assert_eq!(utils_node.name(), "utils.rs");
         assert!(utils_path.is_absolute());
         assert_eq!(
-            tokio::fs::read_to_string(utils_path).await.unwrap(), 
+            tokio::fs::read_to_string(utils_path).await.unwrap(),
             "pub fn do_stuff() {}"
         );
-    }   
+    }
 
     #[tokio::test]
     async fn test_tree_merging() {
@@ -477,10 +508,14 @@ mod tests {
             "src" => {
                 "main.rs" => "fn main() { println!(\"v1\"); }",
             }
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         // Verify initial state
-        let v1 = tokio::fs::read_to_string(tree.join("src/main.rs")).await.unwrap();
+        let v1 = tokio::fs::read_to_string(tree.join("src/main.rs"))
+            .await
+            .unwrap();
         assert_eq!(v1, "fn main() { println!(\"v1\"); }");
 
         // 2. Merge new files and modify existing ones
@@ -493,10 +528,14 @@ mod tests {
             },
             // This will be created at the root
             "README.md" => "# Updated App",
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         // 3. Verify the disk was updated properly
-        let v2 = tokio::fs::read_to_string(tree.join("src/main.rs")).await.unwrap();
+        let v2 = tokio::fs::read_to_string(tree.join("src/main.rs"))
+            .await
+            .unwrap();
         assert_eq!(v2, "fn main() { println!(\"v2\"); }");
         assert!(tree.join("src/lib.rs").is_file());
         assert!(tree.join("README.md").is_file());
@@ -504,7 +543,5 @@ mod tests {
         // 4. Verify our in-memory structure was merged cleanly (no duplicate folders)
         // Nodes should be exactly: README.md, src, main.rs, lib.rs (4 items)
         assert_eq!(tree.iter().count(), 4);
-    }    
-
-
+    }
 }

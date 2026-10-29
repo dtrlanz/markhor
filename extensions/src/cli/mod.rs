@@ -2,7 +2,6 @@ use markhor_core::{chat::prompter::Prompter, extension::Extension, library::Fold
 
 pub mod prompter;
 
-
 pub struct CliExtension {
     folder: Option<Folder>,
 }
@@ -33,6 +32,8 @@ impl Extension for CliExtension {
     }
 
     fn prompters(&self) -> Vec<Box<dyn Prompter>> {
-        vec![Box::new(prompter::ConsolePrompter::new(self.folder.clone()))]
+        vec![Box::new(prompter::ConsolePrompter::new(
+            self.folder.clone(),
+        ))]
     }
 }

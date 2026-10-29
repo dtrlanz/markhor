@@ -1,8 +1,9 @@
-use std::{collections::HashSet, path::{Path, PathBuf}};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use crate::library::{AccessLibraryError, Document, Folder, Tag, Workspace, folder::ReadRecursive};
-
-
 
 #[derive(Debug, Clone)]
 pub struct Scope {
@@ -14,7 +15,12 @@ pub struct Scope {
 impl Scope {
     pub fn contains(&self, document: &Document) -> bool {
         // Check path
-        if !document.workspace().path().join(document.path()).starts_with(&self.folder_path) {
+        if !document
+            .workspace()
+            .path()
+            .join(document.path())
+            .starts_with(&self.folder_path)
+        {
             return false;
         }
         // Check tags
@@ -83,18 +89,16 @@ impl<'a> Docs<'a> {
     }
 }
 
-
-
-/// A preliminary filter that can be applied to a scope to quickly determine if it may include 
+/// A preliminary filter that can be applied to a scope to quickly determine if it may include
 /// a specific document.
-/// 
-/// This is used to avoid expensive operations when we can determine that a document is 
-/// definitely not included in the scope. The filter may return false positives (indicating that 
-/// a document may be included when it is not), but is guaranteed not to return false negatives 
+///
+/// This is used to avoid expensive operations when we can determine that a document is
+/// definitely not included in the scope. The filter may return false positives (indicating that
+/// a document may be included when it is not), but is guaranteed not to return false negatives
 /// (indicating that a document is not included when it is).
-/// 
+///
 /// # To do
-/// 
+///
 /// This is a placeholder implementation that always returns true. Actual implementation should be
 /// fairly simple, probably involving pigeonholes, bitwise operations, and nice things like that.
 #[derive(Debug, Clone)]
@@ -103,7 +107,7 @@ pub struct PrelimFilter {
 }
 
 impl PrelimFilter {
-    /// Returns true if the document from which this filter was created may be included in the 
+    /// Returns true if the document from which this filter was created may be included in the
     /// given scope, false if it is definitely not.
     pub fn maybe_matches(&self, _scope: &Scope) -> bool {
         // TODO
@@ -118,7 +122,6 @@ impl From<&Document> for PrelimFilter {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,7 +134,9 @@ mod tests {
             "child" => {
                 "nested.md" => "nested",
             },
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         let ws = Workspace::open(&dir).await.unwrap();
         let scope = Scope::from(ws.root());
@@ -142,8 +147,14 @@ mod tests {
         docs.sort_by_key(|doc| doc.path().to_owned());
 
         assert_eq!(docs[0].path(), "child/nested.md");
-        assert_eq!(docs[0].text().await.unwrap().export(&mut None).as_deref(), Some("nested"));
+        assert_eq!(
+            docs[0].text().await.unwrap().export(&mut None).as_deref(),
+            Some("nested")
+        );
         assert_eq!(docs[1].path(), "doc.md");
-        assert_eq!(docs[1].text().await.unwrap().export(&mut None).as_deref(), Some("foo"));
+        assert_eq!(
+            docs[1].text().await.unwrap().export(&mut None).as_deref(),
+            Some("foo")
+        );
     }
 }

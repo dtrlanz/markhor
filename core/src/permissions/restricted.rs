@@ -10,7 +10,7 @@ pub trait Restricted {
 
 /// Wrapper for using methods of the `Restricted` trait on any type that does not implement it
 /// directly, so long as it implements `AsRef<[Permission]>`.
-/// 
+///
 /// This can be useful if you have a `Vec<Permission>` and need a convenient way to check whether
 /// that set of permissions could be accessed to a type implementing `Authorized`.
 pub struct Resource<T: AsRef<[Permission]>>(pub T);

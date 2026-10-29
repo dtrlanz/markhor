@@ -1,9 +1,12 @@
 use std::{collections::VecDeque, fmt::Debug, ops::Range};
 
 use pulldown_cmark::{CowStr, Event, HeadingLevel, OffsetIter, Parser, Tag, TagEnd};
-use tracing::{warn};
+use tracing::warn;
 
-use crate::markdown::{Markdown, xml::{self, XmlTag}};
+use crate::markdown::{
+    Markdown,
+    xml::{self, XmlTag},
+};
 
 #[derive(Debug)]
 pub struct Traversal<'a> {
@@ -15,8 +18,8 @@ pub struct Traversal<'a> {
 
 impl<'a> Traversal<'a> {
     pub fn new(md: &'a Markdown<'a>) -> Self {
-        let parser = pulldown_cmark::Parser::new_ext(md.content, md.options.md_options)
-            .into_offset_iter();
+        let parser =
+            pulldown_cmark::Parser::new_ext(md.content, md.options.md_options).into_offset_iter();
 
         Traversal {
             md,
@@ -30,10 +33,11 @@ impl<'a> Traversal<'a> {
         // If we need to parse exact range, create a new parser for the paragraph range.
         // This may be necessary if previous markdown nodes overlapped with an XML tag.
         let mut range_parser = if parse_exact_range {
-            // Iterate main parser until paragraph end to ensure it resumes from the 
+            // Iterate main parser until paragraph end to ensure it resumes from the
             // correct position afterwards.
             while let Some((event, _)) = self.parser.next() {
-                if event == Event::End(TagEnd::Paragraph) || event == Event::End(TagEnd::HtmlBlock) {
+                if event == Event::End(TagEnd::Paragraph) || event == Event::End(TagEnd::HtmlBlock)
+                {
                     break;
                 }
             }
@@ -51,9 +55,16 @@ impl<'a> Traversal<'a> {
             let parse_result = xml::parse_tag(&self.md.content[range.start + offset..range.end]);
             if let Some((xml_rel_range, xml_tag)) = parse_result {
                 // Check if XML tag passes filter
-                if self.md.options.xml_filter.as_ref().map_or(false, |filter| filter(&xml_tag)) {
+                if self
+                    .md
+                    .options
+                    .xml_filter
+                    .as_ref()
+                    .map_or(false, |filter| filter(&xml_tag))
+                {
                     // convert relative range to absolute range
-                    let xml_range = (range.start + xml_rel_range.start)..(range.start + xml_rel_range.end);
+                    let xml_range =
+                        (range.start + xml_rel_range.start)..(range.start + xml_rel_range.end);
                     break (xml_range, xml_tag);
                 }
                 // Continue searching for next XML tag
@@ -64,27 +75,33 @@ impl<'a> Traversal<'a> {
                 // used.
                 let parser = range_parser.as_mut().unwrap_or(&mut self.parser);
                 while let Some((event, range)) = parser.next() {
-                    if event == Event::End(TagEnd::Paragraph) || event == Event::End(TagEnd::HtmlBlock) { 
-                        break; 
+                    if event == Event::End(TagEnd::Paragraph)
+                        || event == Event::End(TagEnd::HtmlBlock)
+                    {
+                        break;
                     }
-                    self.event_queue.push_back((TraversalEvent::Markdown(event), range));
+                    self.event_queue
+                        .push_back((TraversalEvent::Markdown(event), range));
                 }
                 return;
             };
         };
 
         // Closure to get next event from appropriate parser
-        let mut next_event = || if xml_range.start == range.start {
-            // Paragraph begins with XML tag, skip markdown parsing
-            None
-        } else if let Some(parser) = range_parser.as_mut() {
-            // Parser for exact range exists, we need to use it
-            parser.next()
-                // Adjust offsets to be absolute
-                .map(|(e, r)| (e, (r.start + range.start)..(r.end + range.start)))
-        } else {
-            // Use main parser
-            self.parser.next()
+        let mut next_event = || {
+            if xml_range.start == range.start {
+                // Paragraph begins with XML tag, skip markdown parsing
+                None
+            } else if let Some(parser) = range_parser.as_mut() {
+                // Parser for exact range exists, we need to use it
+                parser
+                    .next()
+                    // Adjust offsets to be absolute
+                    .map(|(e, r)| (e, (r.start + range.start)..(r.end + range.start)))
+            } else {
+                // Use main parser
+                self.parser.next()
+            }
         };
 
         // Process markdown nodes up to the XML tag
@@ -95,7 +112,8 @@ impl<'a> Traversal<'a> {
             if range.end <= xml_range.start {
                 // Entire markdown node is before the XML tag
                 // Keep calm and carry on
-                self.event_queue.push_back((TraversalEvent::Markdown(event), range));
+                self.event_queue
+                    .push_back((TraversalEvent::Markdown(event), range));
                 continue;
             } else if range.start < xml_range.start {
                 // Markdown node overlaps with start of XML tag
@@ -104,7 +122,8 @@ impl<'a> Traversal<'a> {
                     // Text nodes are clipped to the start of the XML tag
                     Event::Text(_) => {
                         let clipped_text = &self.md.content[range.start..xml_range.start];
-                        let text_event = TraversalEvent::Markdown(Event::Text(CowStr::from(clipped_text)));
+                        let text_event =
+                            TraversalEvent::Markdown(Event::Text(CowStr::from(clipped_text)));
                         (text_event, xml_range.start)
                     }
                     // Inline code overrides xml parsing
@@ -115,9 +134,13 @@ impl<'a> Traversal<'a> {
                     // Todo: handle other markdown node types
                     // For now, convert to text and trigger warning
                     _ => {
-                        warn!("Markdown node {:?} overlaps with XML tag, converting to text", event);
+                        warn!(
+                            "Markdown node {:?} overlaps with XML tag, converting to text",
+                            event
+                        );
                         let clipped_text = &self.md.content[range.start..xml_range.start];
-                        let text_event = TraversalEvent::Markdown(Event::Text(CowStr::from(clipped_text)));
+                        let text_event =
+                            TraversalEvent::Markdown(Event::Text(CowStr::from(clipped_text)));
                         (text_event, xml_range.start)
                     }
                 };
@@ -137,7 +160,7 @@ impl<'a> Traversal<'a> {
                 break;
             } else {
                 // Should not happen if markdown offsets are contiguous and above logic is correct
-                unreachable!(); 
+                unreachable!();
             }
         }
 
@@ -147,11 +170,13 @@ impl<'a> Traversal<'a> {
                 // Handle effects on node stack
                 self.handle_start_marker(TraversalNode::Xml(name), xml_range.clone());
                 // Create XML start event
-                self.event_queue.push_back((TraversalEvent::XmlStart {
+                self.event_queue.push_back((
+                    TraversalEvent::XmlStart {
                         name: name,
                         attributes: attributes,
-                    }, xml_range.clone())
-                );
+                    },
+                    xml_range.clone(),
+                ));
             }
             XmlTag::End { name } => {
                 // Handle effects on node stack and create XML end event
@@ -161,20 +186,29 @@ impl<'a> Traversal<'a> {
                 // Try parsing as milestone
                 if let Some((unit, value, other_attrs)) = self.parse_milestone(name, &attributes) {
                     // Handle effects on node stack
-                    self.handle_start_marker(TraversalNode::Region(unit.clone()), xml_range.clone());
+                    self.handle_start_marker(
+                        TraversalNode::Region(unit.clone()),
+                        xml_range.clone(),
+                    );
 
                     // Create milestone event
-                    self.event_queue.push_back((TraversalEvent::RegionStart {
-                        unit: unit,
-                        value: value,
-                        attributes: other_attrs,
-                    }, xml_range.clone()));
+                    self.event_queue.push_back((
+                        TraversalEvent::RegionStart {
+                            unit: unit,
+                            value: value,
+                            attributes: other_attrs,
+                        },
+                        xml_range.clone(),
+                    ));
                 } else {
                     // Create XML empty event
-                    self.event_queue.push_back((TraversalEvent::XmlEmpty {
-                        name: name,
-                        attributes: attributes,
-                    }, xml_range.clone()));
+                    self.event_queue.push_back((
+                        TraversalEvent::XmlEmpty {
+                            name: name,
+                            attributes: attributes,
+                        },
+                        xml_range.clone(),
+                    ));
                 }
             }
         }
@@ -185,22 +219,20 @@ impl<'a> Traversal<'a> {
 
     /// Creates paragraph start and end events around the current event queue, reordering certain
     /// structural markers to be outside the paragraph.
-    /// 
+    ///
     /// Assumes that the event queue contains only events for a single paragraph, not including the
     /// paragraph start and end events.
     fn fix_paragraph_delimitation(&mut self, range: Range<usize>) {
         // Remove any extraneous paragraph start events within the paragraph. These may be created
         // when constructing a new parser to resume parsing after an XML tag (when `parse_exact_range`
         // is true).
-        self.event_queue.retain(|(event, _)| {
-            match event {
-                TraversalEvent::Markdown(Event::Start(Tag::Paragraph)) => false,
-                TraversalEvent::Markdown(Event::Start(Tag::HtmlBlock)) => false,
-                _ => true,
-            }
+        self.event_queue.retain(|(event, _)| match event {
+            TraversalEvent::Markdown(Event::Start(Tag::Paragraph)) => false,
+            TraversalEvent::Markdown(Event::Start(Tag::HtmlBlock)) => false,
+            _ => true,
         });
 
-        // Determine index for paragraph start event. Some paragraph-initial events 
+        // Determine index for paragraph start event. Some paragraph-initial events
         // should be queued before it (e.g., xml start & empty tags).
         let mut start_index = 0;
         while start_index < self.event_queue.len() {
@@ -241,19 +273,36 @@ impl<'a> Traversal<'a> {
                 }
             }
             // Insert paragraph start event at start_index
-            self.event_queue.insert(start_index, (TraversalEvent::Markdown(Event::Start(Tag::Paragraph)), range.clone()));
+            self.event_queue.insert(
+                start_index,
+                (
+                    TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
+                    range.clone(),
+                ),
+            );
             // Insert paragraph end event at end_index + 1 (to account for the start event)
-            self.event_queue.insert(end_index + 1, (TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)), range.clone()));
-        }        
+            self.event_queue.insert(
+                end_index + 1,
+                (
+                    TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
+                    range.clone(),
+                ),
+            );
+        }
     }
 
-    fn parse_milestone(&self, name: &'a str, attributes: &Vec<(&'a str, Option<CowStr<'a>>)>) -> Option<(CowStr<'a>, CowStr<'a>, Vec<(&'a str, Option<CowStr<'a>>)>)> {
+    fn parse_milestone(
+        &self,
+        name: &'a str,
+        attributes: &Vec<(&'a str, Option<CowStr<'a>>)>,
+    ) -> Option<(CowStr<'a>, CowStr<'a>, Vec<(&'a str, Option<CowStr<'a>>)>)> {
         if self.md.options.enable_milestones && name == "milestone" {
             // Extract the name and description from attributes
             let mut unit = None;
             let mut value = None;
 
-            let attributes = attributes.iter()
+            let attributes = attributes
+                .iter()
                 .filter_map(|(attr_name, attr_value)| {
                     if *attr_name == "unit" {
                         unit = attr_value.clone();
@@ -264,7 +313,8 @@ impl<'a> Traversal<'a> {
                     } else {
                         Some((*attr_name, attr_value.clone()))
                     }
-                }).collect();
+                })
+                .collect();
 
             if let (Some(unit), Some(value)) = (unit, value) {
                 return Some((unit, value, attributes));
@@ -274,7 +324,7 @@ impl<'a> Traversal<'a> {
     }
 
     /// Handles the effect of an end marker on the current node stack.
-    /// 
+    ///
     /// Closes the affected node and handles possible effects on other open nodes. Creates all
     /// the resulting events, including the end event for the given node.
     fn handle_end_marker(&mut self, node: TraversalNode<'a>, range: Range<usize>) {
@@ -290,8 +340,8 @@ impl<'a> Traversal<'a> {
     }
 
     /// Handles the effect of a start marker on the current node stack.
-    /// 
-    /// Adds the new node to the stack after processing possible effects on nodes that are already 
+    ///
+    /// Adds the new node to the stack after processing possible effects on nodes that are already
     /// open. Does not create a start event for the new node; the caller is responsible for that.
     fn handle_start_marker(&mut self, node: TraversalNode<'a>, range: Range<usize>) {
         // Handle effect of start marker on open nodes
@@ -311,10 +361,15 @@ impl<'a> Traversal<'a> {
 
     /// Processes a traversal effect on the node stack.
     ///
-    /// Processes the given effect on the node at the specified index in the node stack, and 
-    /// handles any resulting effects. Returns true if processing should continue to the next 
+    /// Processes the given effect on the node at the specified index in the node stack, and
+    /// handles any resulting effects. Returns true if processing should continue to the next
     /// node in the stack, false otherwise.
-    fn process_effect(&mut self, target_node_index: usize, effect: TraversalEffect<'a>, range: Range<usize>) -> bool {
+    fn process_effect(
+        &mut self,
+        target_node_index: usize,
+        effect: TraversalEffect<'a>,
+        range: Range<usize>,
+    ) -> bool {
         match effect {
             TraversalEffect::None => {
                 // No action needed; continue processing
@@ -352,7 +407,8 @@ impl<'a> Traversal<'a> {
                 // Remove node from stack
                 let target_node = self.node_stack.remove(target_node_index);
                 // Push error event
-                self.event_queue.push_back((TraversalEvent::Error(err), range.clone()));
+                self.event_queue
+                    .push_back((TraversalEvent::Error(err), range.clone()));
                 // Push end event
                 let end_event = target_node.to_end();
                 self.event_queue.push_back((end_event, range));
@@ -370,31 +426,45 @@ impl<'a> Iterator for Traversal<'a> {
         if let Some(event) = self.event_queue.pop_front() {
             return Some(event);
         }
-        
+
         // Process next markdown event
         if let Some((event, range)) = self.parser.next() {
             match event {
-                Event::Start(Tag::Heading{ level, id, classes, attrs }) => {
+                Event::Start(Tag::Heading {
+                    level,
+                    id,
+                    classes,
+                    attrs,
+                }) => {
                     // Handle effects on node stack
                     self.handle_start_marker(TraversalNode::Section(level), range.clone());
                     // Queue section start event first, heading event later
                     // Cloning attributes etc. is a bit inelegant. But downstream consumers may
-                    // need them either on the section node or on the heading event. We might 
-                    // change this later if it turns out to be unnecessary in practice. 
-                    // Regardless, real-world performance impact is probably negligible. 
-                    self.event_queue.push_back((TraversalEvent::SectionStart {
-                        level,
-                        id: id.clone(),
-                        classes: classes.clone(),
-                        attrs: attrs.clone(),
-                    }, range.clone()));
+                    // need them either on the section node or on the heading event. We might
+                    // change this later if it turns out to be unnecessary in practice.
+                    // Regardless, real-world performance impact is probably negligible.
+                    self.event_queue.push_back((
+                        TraversalEvent::SectionStart {
+                            level,
+                            id: id.clone(),
+                            classes: classes.clone(),
+                            attrs: attrs.clone(),
+                        },
+                        range.clone(),
+                    ));
                     // Recreate heading start event
-                    self.event_queue.push_back((TraversalEvent::Markdown(Event::Start(
-                        Tag::Heading { level, id, classes, attrs }
-                    )), range.clone()));
+                    self.event_queue.push_back((
+                        TraversalEvent::Markdown(Event::Start(Tag::Heading {
+                            level,
+                            id,
+                            classes,
+                            attrs,
+                        })),
+                        range.clone(),
+                    ));
                     // Emit event from queue.
                     return self.event_queue.pop_front();
-                },
+                }
                 Event::Start(Tag::Paragraph) => {
                     // Parse paragraph for possible XML tags
                     // This will create all relevant events between start and end of paragraph
@@ -403,13 +473,16 @@ impl<'a> Iterator for Traversal<'a> {
                     self.fix_paragraph_delimitation(range);
 
                     // Emit event from queue.
-                    assert!(!self.event_queue.is_empty(), "Event queue should not be empty after parsing paragraph");
+                    assert!(
+                        !self.event_queue.is_empty(),
+                        "Event queue should not be empty after parsing paragraph"
+                    );
                     return self.event_queue.pop_front();
-                },
+                }
                 Event::Start(Tag::HtmlBlock) => {
                     // We're treating HTML blocks as paragraphs for XML parsing purposes. That's
                     // not correct, of course. But it's a reasonable approximation for most texts
-                    // we're likely to encounter, and it simplifies the implementation 
+                    // we're likely to encounter, and it simplifies the implementation
                     // significantly.
 
                     // Parse paragraph for possible XML tags
@@ -421,9 +494,11 @@ impl<'a> Iterator for Traversal<'a> {
                         match event {
                             TraversalEvent::Markdown(markdown_event) => {
                                 if let Event::Html(html_content) = markdown_event {
-                                    *markdown_event = Event::Text(CowStr::from(html_content.as_ref()).into_static());
+                                    *markdown_event = Event::Text(
+                                        CowStr::from(html_content.as_ref()).into_static(),
+                                    );
                                 }
-                            },
+                            }
                             _ => {}
                         }
                     }
@@ -431,13 +506,16 @@ impl<'a> Iterator for Traversal<'a> {
                     self.fix_paragraph_delimitation(range);
 
                     // Emit event from queue.
-                    assert!(!self.event_queue.is_empty(), "Event queue should not be empty after parsing paragraph");
+                    assert!(
+                        !self.event_queue.is_empty(),
+                        "Event queue should not be empty after parsing paragraph"
+                    );
                     return self.event_queue.pop_front();
-                },
+                }
                 _ => {
                     // Other events are passed through as is
                     return Some((TraversalEvent::Markdown(event), range));
-                },
+                }
             }
         }
 
@@ -463,7 +541,9 @@ impl<'a> TraversalNode<'a> {
         match self {
             TraversalNode::Xml(name) => TraversalEvent::XmlEnd { name },
             TraversalNode::Section(level) => TraversalEvent::SectionEnd { level: *level },
-            TraversalNode::Region(unit) => TraversalEvent::RegionEnd { unit: unit.to_string().into() },
+            TraversalNode::Region(unit) => TraversalEvent::RegionEnd {
+                unit: unit.to_string().into(),
+            },
         }
     }
 
@@ -493,15 +573,9 @@ impl<'a> TraversalNode<'a> {
 
     fn on_parent_closing(&self) -> TraversalEffect<'a> {
         match self {
-            TraversalNode::Xml(self_name) => {
-                xml_node::on_parent_closing(self_name)
-            },
-            TraversalNode::Section(_) => {
-                section_node::on_parent_closing()
-            },
-            TraversalNode::Region(_) => {
-                region_node::on_parent_closing()
-            },
+            TraversalNode::Xml(self_name) => xml_node::on_parent_closing(self_name),
+            TraversalNode::Section(_) => section_node::on_parent_closing(),
+            TraversalNode::Region(_) => region_node::on_parent_closing(),
         }
     }
 }
@@ -509,17 +583,11 @@ impl<'a> TraversalNode<'a> {
 mod xml_node {
     use super::*;
 
-    pub fn on_start_marker<'a>(
-        _self_name: &'a str,
-        _other_name: &'a str,
-    ) -> TraversalEffect<'a> {
+    pub fn on_start_marker<'a>(_self_name: &'a str, _other_name: &'a str) -> TraversalEffect<'a> {
         TraversalEffect::None
     }
 
-    pub fn on_end_marker<'a>(
-        self_name: &'a str,
-        other_name: &'a str,
-    ) -> TraversalEffect<'a> {
+    pub fn on_end_marker<'a>(self_name: &'a str, other_name: &'a str) -> TraversalEffect<'a> {
         if self_name == other_name {
             TraversalEffect::CloseNodeAndNotifyDescendants
         } else {
@@ -527,11 +595,10 @@ mod xml_node {
         }
     }
 
-    pub fn on_parent_closing<'a>(
-        self_name: &'a str,
-    ) -> TraversalEffect<'a> {
-        TraversalEffect::CloseNodeAndError(
-            TraverseMarkdownError::ExpectedXmlEnd(CowStr::from(self_name)))
+    pub fn on_parent_closing<'a>(self_name: &'a str) -> TraversalEffect<'a> {
+        TraversalEffect::CloseNodeAndError(TraverseMarkdownError::ExpectedXmlEnd(CowStr::from(
+            self_name,
+        )))
     }
 }
 
@@ -559,10 +626,7 @@ mod section_node {
 mod region_node {
     use super::*;
 
-    pub fn on_start_marker(
-        self_unit: &str,
-        other_unit: &str,
-    ) -> TraversalEffect<'static> {
+    pub fn on_start_marker(self_unit: &str, other_unit: &str) -> TraversalEffect<'static> {
         if self_unit == other_unit {
             TraversalEffect::CloseNode
         } else {
@@ -661,145 +725,213 @@ pub mod tests {
 
     #[test]
     fn nested_headings() {
-        assert_events(cfg_headings_only(), 
+        assert_events(
+            cfg_headings_only(),
             r#"# Heading 1
 
 Some paragraph text.
 
 ## Heading 2
 
-More text."#, 
+More text."#,
             vec![
-                TraversalEvent::SectionStart { level: HeadingLevel::H1, id: None, classes: vec![], attrs: vec![] },
-                TraversalEvent::Markdown(Event::Start(Tag::Heading { level: HeadingLevel::H1, id: None, classes: vec![], attrs: vec![] })),
+                TraversalEvent::SectionStart {
+                    level: HeadingLevel::H1,
+                    id: None,
+                    classes: vec![],
+                    attrs: vec![],
+                },
+                TraversalEvent::Markdown(Event::Start(Tag::Heading {
+                    level: HeadingLevel::H1,
+                    id: None,
+                    classes: vec![],
+                    attrs: vec![],
+                })),
                 TraversalEvent::Markdown(Event::Text(CowStr::from("Heading 1"))),
                 TraversalEvent::Markdown(Event::End(TagEnd::Heading(HeadingLevel::H1))),
                 TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
                 TraversalEvent::Markdown(Event::Text(CowStr::from("Some paragraph text."))),
                 TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
-                TraversalEvent::SectionStart { level: HeadingLevel::H2, id: None,classes: vec![], attrs: vec![] },
-                TraversalEvent::Markdown(Event::Start(Tag::Heading { level: HeadingLevel::H2, id: None, classes: vec![], attrs: vec![] })),
+                TraversalEvent::SectionStart {
+                    level: HeadingLevel::H2,
+                    id: None,
+                    classes: vec![],
+                    attrs: vec![],
+                },
+                TraversalEvent::Markdown(Event::Start(Tag::Heading {
+                    level: HeadingLevel::H2,
+                    id: None,
+                    classes: vec![],
+                    attrs: vec![],
+                })),
                 TraversalEvent::Markdown(Event::Text(CowStr::from("Heading 2"))),
                 TraversalEvent::Markdown(Event::End(TagEnd::Heading(HeadingLevel::H2))),
                 TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
                 TraversalEvent::Markdown(Event::Text(CowStr::from("More text."))),
                 TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
-                TraversalEvent::SectionEnd { level: HeadingLevel::H2 },
-                TraversalEvent::SectionEnd { level: HeadingLevel::H1 },
-            ]
+                TraversalEvent::SectionEnd {
+                    level: HeadingLevel::H2,
+                },
+                TraversalEvent::SectionEnd {
+                    level: HeadingLevel::H1,
+                },
+            ],
         );
     }
 
     #[test]
     fn inverted_headings() {
-        assert_events(cfg_headings_only(), 
+        assert_events(
+            cfg_headings_only(),
             r#"## Heading 2
 
 Some paragraph text.
 
 # Heading 1
 
-More text."#, 
+More text."#,
             vec![
-                TraversalEvent::SectionStart { level: HeadingLevel::H2, id: None, classes: vec![], attrs: vec![] },
-                TraversalEvent::Markdown(Event::Start(Tag::Heading { level: HeadingLevel::H2, id: None, classes: vec![], attrs: vec![] })),
+                TraversalEvent::SectionStart {
+                    level: HeadingLevel::H2,
+                    id: None,
+                    classes: vec![],
+                    attrs: vec![],
+                },
+                TraversalEvent::Markdown(Event::Start(Tag::Heading {
+                    level: HeadingLevel::H2,
+                    id: None,
+                    classes: vec![],
+                    attrs: vec![],
+                })),
                 TraversalEvent::Markdown(Event::Text(CowStr::from("Heading 2"))),
                 TraversalEvent::Markdown(Event::End(TagEnd::Heading(HeadingLevel::H2))),
                 TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
                 TraversalEvent::Markdown(Event::Text(CowStr::from("Some paragraph text."))),
                 TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
-                TraversalEvent::SectionEnd { level: HeadingLevel::H2 },
-                TraversalEvent::SectionStart { level: HeadingLevel::H1, id: None,classes: vec![], attrs: vec![] },
-                TraversalEvent::Markdown(Event::Start(Tag::Heading { level: HeadingLevel::H1, id: None, classes: vec![], attrs: vec![] })),
+                TraversalEvent::SectionEnd {
+                    level: HeadingLevel::H2,
+                },
+                TraversalEvent::SectionStart {
+                    level: HeadingLevel::H1,
+                    id: None,
+                    classes: vec![],
+                    attrs: vec![],
+                },
+                TraversalEvent::Markdown(Event::Start(Tag::Heading {
+                    level: HeadingLevel::H1,
+                    id: None,
+                    classes: vec![],
+                    attrs: vec![],
+                })),
                 TraversalEvent::Markdown(Event::Text(CowStr::from("Heading 1"))),
                 TraversalEvent::Markdown(Event::End(TagEnd::Heading(HeadingLevel::H1))),
                 TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
                 TraversalEvent::Markdown(Event::Text(CowStr::from("More text."))),
                 TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
-                TraversalEvent::SectionEnd { level: HeadingLevel::H1 },
-            ]
+                TraversalEvent::SectionEnd {
+                    level: HeadingLevel::H1,
+                },
+            ],
         );
     }
 
     #[test]
     fn xml_as_separate_paragraphs() {
-        assert_events(cfg_all_xmls_tags(), 
+        assert_events(
+            cfg_all_xmls_tags(),
             r#"<my_tag>
 
 Some paragraph text.
 
-</my_tag>"#, 
+</my_tag>"#,
             vec![
-                TraversalEvent::XmlStart { name: "my_tag", attributes: vec![] },
+                TraversalEvent::XmlStart {
+                    name: "my_tag",
+                    attributes: vec![],
+                },
                 TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
                 TraversalEvent::Markdown(Event::Text(CowStr::from("Some paragraph text."))),
                 TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
                 TraversalEvent::XmlEnd { name: "my_tag" },
-            ]
+            ],
         );
     }
 
     #[test]
     fn xml_as_separate_lines() {
-        assert_events(cfg_all_xmls_tags(), 
+        assert_events(
+            cfg_all_xmls_tags(),
             r#"<my_tag>
 Some paragraph text.
-</my_tag>"#, 
+</my_tag>"#,
             vec![
-                TraversalEvent::XmlStart { name: "my_tag", attributes: vec![] },
+                TraversalEvent::XmlStart {
+                    name: "my_tag",
+                    attributes: vec![],
+                },
                 TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
                 TraversalEvent::Markdown(Event::Text(CowStr::from("Some paragraph text."))),
                 TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
                 TraversalEvent::XmlEnd { name: "my_tag" },
-            ]
+            ],
         );
     }
     #[test]
     fn xml_in_html_block() {
-        assert_events(cfg_all_xmls_tags(), 
+        assert_events(
+            cfg_all_xmls_tags(),
             r#"<div>
 Some paragraph text.
 <my_tag></my_tag>
-</div>"#, 
+</div>"#,
             vec![
-                TraversalEvent::XmlStart { name: "div", attributes: vec![] },
+                TraversalEvent::XmlStart {
+                    name: "div",
+                    attributes: vec![],
+                },
                 TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
                 TraversalEvent::Markdown(Event::Text(CowStr::from("Some paragraph text.\n"))),
-                TraversalEvent::XmlStart { name: "my_tag", attributes: vec![] },
+                TraversalEvent::XmlStart {
+                    name: "my_tag",
+                    attributes: vec![],
+                },
                 TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
                 TraversalEvent::XmlEnd { name: "my_tag" },
                 TraversalEvent::XmlEnd { name: "div" },
-            ]
+            ],
         );
     }
 
-
     #[test]
     fn milestones() {
-        assert_events(cfg_all_xmls_tags(), 
+        assert_events(
+            cfg_all_xmls_tags(),
             r#"<milestone unit="chapter" n="1"/>
 Some paragraph text.
 <milestone unit="chapter" n="2"/>
 More text."#,
             vec![
-                TraversalEvent::RegionStart { 
-                    unit: CowStr::from("chapter"), 
-                    value: CowStr::from("1"), 
+                TraversalEvent::RegionStart {
+                    unit: CowStr::from("chapter"),
+                    value: CowStr::from("1"),
                     attributes: vec![],
                 },
                 TraversalEvent::Markdown(Event::Start(Tag::Paragraph)),
                 TraversalEvent::Markdown(Event::Text(CowStr::from("Some paragraph text.\n"))),
-                TraversalEvent::RegionEnd { unit: CowStr::from("chapter") },
-                TraversalEvent::RegionStart { 
-                    unit: CowStr::from("chapter"), 
-                    value: CowStr::from("2"), 
+                TraversalEvent::RegionEnd {
+                    unit: CowStr::from("chapter"),
+                },
+                TraversalEvent::RegionStart {
+                    unit: CowStr::from("chapter"),
+                    value: CowStr::from("2"),
                     attributes: vec![],
                 },
                 TraversalEvent::Markdown(Event::Text(CowStr::from("More text."))),
                 TraversalEvent::Markdown(Event::End(TagEnd::Paragraph)),
-                TraversalEvent::RegionEnd { unit: CowStr::from("chapter") },
-            ]
+                TraversalEvent::RegionEnd {
+                    unit: CowStr::from("chapter"),
+                },
+            ],
         );
     }
-
 }

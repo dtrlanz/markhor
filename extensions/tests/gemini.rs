@@ -1,20 +1,18 @@
 use markhor_core::chat::chat::{
-    ChatModel, ChatOptions, ContentPart, FinishReason,
-    Message, ToolChoice, ToolDefinition, ToolParameterSchema, ToolResult,
+    ChatModel, ChatOptions, ContentPart, FinishReason, Message, ToolChoice, ToolDefinition,
+    ToolParameterSchema, ToolResult,
 };
-use markhor_core::embedding::{EmbeddingModel, EmbeddingUseCase, EmbeddingError};
+use markhor_core::embedding::{EmbeddingError, EmbeddingModel, EmbeddingUseCase};
 use serde_json::json;
 use tracing::error;
 
 use markhor_extensions::gemini::{GeminiChatClient, GeminiEmbedder};
 
-
-
 // Bring trait types into scope
+use std::env;
 use tokio;
 use tracing::info;
-use tracing_subscriber; // To see logs during tests
-use std::env; // To read API key from environment
+use tracing_subscriber; // To see logs during tests // To read API key from environment
 
 // Helper to initialize tracing subscriber
 fn setup_tracing() {
@@ -27,8 +25,7 @@ async fn get_api_key() -> String {
     println!("Current directory: {:?}", std::env::current_dir());
 
     dotenv::dotenv().ok();
-    let api_key = env::var("GEMINI_API_KEY")
-        .expect("GEMINI_API_KEY environment variable not set.");
+    let api_key = env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY environment variable not set.");
 
     api_key
 }
@@ -53,9 +50,12 @@ async fn test_gemini_list_models_integration() {
     // Check if a common model exists
     assert!(models.iter().any(|m| m.id.contains("gemini")));
     info!("Found {} models.", models.len());
-    for model in models.iter().take(5) { // Print first 5
-        info!("Model: id={}, description={:?}, context_window={:?}, max_output={:?}",
-            model.id, model.description, model.context_window, model.max_output_tokens);
+    for model in models.iter().take(5) {
+        // Print first 5
+        info!(
+            "Model: id={}, description={:?}, context_window={:?}, max_output={:?}",
+            model.id, model.description, model.context_window, model.max_output_tokens
+        );
     }
 }
 
@@ -64,20 +64,18 @@ async fn test_gemini_list_models_integration() {
 async fn test_gemini_generate_simple_integration() {
     setup_tracing();
     let client = get_chat_client().await;
-    let messages = vec![
-        Message::user("Hi there, what's the capital of France?"),
-    ];
+    let messages = vec![Message::user("Hi there, what's the capital of France?")];
     let options = ChatOptions {
-            model_id: Some("gemini-3.5-flash".to_string()),
-            temperature: Some(0.7),
-            max_tokens: Some(500), // Thinking models count reasoning tokens against this limit
-            ..Default::default()
+        model_id: Some("gemini-3.5-flash".to_string()),
+        temperature: Some(0.7),
+        max_tokens: Some(500), // Thinking models count reasoning tokens against this limit
+        ..Default::default()
     };
 
     let result = client.generate(&messages, &options).await;
 
     if let Err(ref e) = result {
-            error!(error = %e, "generate failed");
+        error!(error = %e, "generate failed");
     }
     assert!(result.is_ok());
 
@@ -95,7 +93,6 @@ async fn test_gemini_generate_simple_integration() {
     assert!(response.usage.is_some());
     assert_eq!(response.model_id, Some("gemini-3.5-flash".to_string()));
 }
-
 
 #[tokio::test]
 #[ignore]
@@ -117,14 +114,15 @@ async fn test_gemini_generate_tool_use_integration() {
                     "type": "string",
                     "enum": ["celsius", "fahrenheit"]
                 }
-            })).unwrap(),
+            }))
+            .unwrap(),
             required: vec!["location".to_string()],
         },
     };
 
-    let mut messages_1 = vec![
-        Message::user("What is the weather like in Boston? I prefer temperatures in Celsius."),
-    ];
+    let mut messages_1 = vec![Message::user(
+        "What is the weather like in Boston? I prefer temperatures in Celsius.",
+    )];
     let options_1 = ChatOptions {
         model_id: Some("gemini-3.5-flash".to_string()),
         tools: Some(vec![get_weather_tool.clone()]),
@@ -156,7 +154,7 @@ async fn test_gemini_generate_tool_use_integration() {
     // 1. Create the Assistant message representing the *first* response
     //    This now correctly includes both content AND the requested tool calls.
     let assistant_message_from_response_1 = Message::assistant_response(
-        response_1.content.clone(),   // Pass the content received
+        response_1.content.clone(),    // Pass the content received
         response_1.tool_calls.clone(), // Pass the tool calls requested
     );
 
@@ -177,17 +175,16 @@ async fn test_gemini_generate_tool_use_integration() {
     // 3. Create the Tool message with the result
     let tool_result = ToolResult {
         call_id: tool_call_request.id.clone(), // Use the ID from the request
-        name: tool_call_request.name.clone(), // Use FUNCTION NAME here for Gemini matching
+        name: tool_call_request.name.clone(),  // Use FUNCTION NAME here for Gemini matching
         content: tool_result_content,
     };
     let tool_result_message = Message::Tool(vec![tool_result]);
-
 
     // --- Second call: Provide tool result in proper history context ---
 
     // 4. Construct the full message history for the second call
     let messages_2 = vec![
-        messages_1.pop().unwrap(),                      // Original user prompt
+        messages_1.pop().unwrap(),         // Original user prompt
         assistant_message_from_response_1, // Assistant's response (text + tool *call*)
         tool_result_message,               // Tool execution *result*
     ];
@@ -197,7 +194,7 @@ async fn test_gemini_generate_tool_use_integration() {
         model_id: Some("gemini-3.5-flash".to_string()),
         // No specific tools or choice needed here, model should just respond to the result.
         // Although keeping the tool definition might be safer in some edge cases.
-        tools: None, // Some(vec![get_weather_tool.clone()]),
+        tools: None,                         // Some(vec![get_weather_tool.clone()]),
         tool_choice: Some(ToolChoice::None), // Don't force/allow tool use now
         ..Default::default()
     };
@@ -214,7 +211,10 @@ async fn test_gemini_generate_tool_use_integration() {
     info!(response = ?response_2, "Received response 2 (expecting final answer)");
 
     // 6. Assert the final response
-    assert!(response_2.finish_reason == Some(FinishReason::Stop) || response_2.finish_reason == Some(FinishReason::Length));
+    assert!(
+        response_2.finish_reason == Some(FinishReason::Stop)
+            || response_2.finish_reason == Some(FinishReason::Length)
+    );
     assert!(response_2.tool_calls.is_empty());
     assert!(!response_2.content.is_empty());
     assert!(matches!(response_2.content[0], ContentPart::Text(_)));
@@ -229,9 +229,6 @@ async fn test_gemini_generate_tool_use_integration() {
     info!("Final text response: {}", text_response);
 }
 
-
-
-
 #[tokio::test]
 async fn integration_test_gemini_embed_success() {
     let api_key = get_api_key().await;
@@ -240,8 +237,8 @@ async fn integration_test_gemini_embed_success() {
     let model_name = "gemini-embedding-001";
 
     let embedder = match GeminiEmbedder::new(api_key, model_name) {
-            Ok(e) => e,
-            Err(e) => panic!("Failed to create GeminiEmbedder: {}", e),
+        Ok(e) => e,
+        Err(e) => panic!("Failed to create GeminiEmbedder: {}", e),
     };
 
     let texts = ["Hello Gemini!", "This is an integration test."];
@@ -250,17 +247,38 @@ async fn integration_test_gemini_embed_success() {
 
     match result {
         Ok(embeddings) => {
-            assert_eq!(embeddings.len(), texts.len(), "Should return same number of embeddings as inputs");
+            assert_eq!(
+                embeddings.len(),
+                texts.len(),
+                "Should return same number of embeddings as inputs"
+            );
             let expected_dims = embedder.dimensions();
-            assert!(expected_dims.is_some(), "Dimensions should be known for {}", model_name);
+            assert!(
+                expected_dims.is_some(),
+                "Dimensions should be known for {}",
+                model_name
+            );
             let expected_dims = expected_dims.unwrap(); // Safe after check
 
             for (i, embedding) in embeddings.iter().enumerate() {
-                assert_eq!(embedding.0.len(), expected_dims, "Embedding {} should have correct dimensions", i);
+                assert_eq!(
+                    embedding.0.len(),
+                    expected_dims,
+                    "Embedding {} should have correct dimensions",
+                    i
+                );
                 // Basic sanity check on values (not all zero)
-                assert!(embedding.0.iter().any(|&v| v != 0.0), "Embedding {} should not be all zeros", i);
+                assert!(
+                    embedding.0.iter().any(|&v| v != 0.0),
+                    "Embedding {} should not be all zeros",
+                    i
+                );
             }
-            assert_eq!(embedder.intended_use_case(), EmbeddingUseCase::General, "Default use case should be General");
+            assert_eq!(
+                embedder.intended_use_case(),
+                EmbeddingUseCase::General,
+                "Default use case should be General"
+            );
         }
         Err(e) => {
             panic!("Embedding failed unexpectedly: {}", e);
@@ -277,7 +295,7 @@ async fn integration_test_gemini_embed_with_task_type() {
     let task_type = "RETRIEVAL_DOCUMENT".to_string();
 
     let embedder = match GeminiEmbedder::new_with_options(
-        api_key, 
+        api_key,
         model_name,
         Some(task_type.clone()),
         None,
@@ -287,22 +305,37 @@ async fn integration_test_gemini_embed_with_task_type() {
         Err(e) => panic!("Failed to create GeminiEmbedder: {}", e),
     };
 
-    assert_eq!(embedder.intended_use_case(), EmbeddingUseCase::RetrievalDocument, "Use case should be mapped correctly");
+    assert_eq!(
+        embedder.intended_use_case(),
+        EmbeddingUseCase::RetrievalDocument,
+        "Use case should be mapped correctly"
+    );
 
     let texts = ["This document is intended for retrieval."];
     let result = embedder.embed(&texts).await;
 
-        match result {
+    match result {
         Ok(embeddings) => {
-            assert_eq!(embeddings.len(), texts.len(), "Should return embedding for the input");
+            assert_eq!(
+                embeddings.len(),
+                texts.len(),
+                "Should return embedding for the input"
+            );
             let expected_dims = embedder.dimensions().unwrap_or(0);
             assert_ne!(expected_dims, 0, "Dimensions should be > 0");
-            assert_eq!(embeddings[0].0.len(), expected_dims, "Embedding should have correct dimensions");
+            assert_eq!(
+                embeddings[0].0.len(),
+                expected_dims,
+                "Embedding should have correct dimensions"
+            );
         }
         Err(e) => {
             // Note: Some task_types might eventually be invalid for certain models,
             // so this could potentially error, but RETRIEVAL_DOCUMENT is generally safe.
-            panic!("Embedding failed unexpectedly with task_type '{}': {}", task_type, e);
+            panic!(
+                "Embedding failed unexpectedly with task_type '{}': {}",
+                task_type, e
+            );
         }
     }
 }
@@ -322,18 +355,23 @@ async fn integration_test_gemini_embed_invalid_api_key() {
     let texts = ["Testing with an invalid key."];
     let result = embedder.embed(&texts).await;
 
-    assert!(result.is_err(), "Embedding should fail with invalid API key");
+    assert!(
+        result.is_err(),
+        "Embedding should fail with invalid API key"
+    );
 
     // Check if the error is an InvalidRequest
     let err = result.err().unwrap();
     assert!(
         matches!(err, EmbeddingError::InvalidRequest { .. }),
-        "Error should be an ApiError variant, got {:?}", err
+        "Error should be an ApiError variant, got {:?}",
+        err
     );
 
     assert!(
-        format!("{}", err).contains("API key"), 
-        "Error message should include 'API key', got {:?}", err
+        format!("{}", err).contains("API key"),
+        "Error message should include 'API key', got {:?}",
+        err
     );
 }
 
@@ -352,19 +390,29 @@ async fn integration_test_gemini_embed_invalid_model_name() {
     let texts = ["Testing with an invalid model."];
     let result = embedder.embed(&texts).await;
 
-    assert!(result.is_err(), "Embedding should fail with invalid model name");
+    assert!(
+        result.is_err(),
+        "Embedding should fail with invalid model name"
+    );
 
     // Expect an error, likely a 404, which translates to ModelNotFound
     let err = result.err().unwrap();
     assert!(
-        matches!(err, EmbeddingError::ModelNotFound( .. )),
-        "Error should be ModelNotFound variant, got {:?}", err
+        matches!(err, EmbeddingError::ModelNotFound(..)),
+        "Error should be ModelNotFound variant, got {:?}",
+        err
     );
 
     // Optional: Check if status code seems like 'not found' or 'invalid argument' if needed
-    if let EmbeddingError::Api { status, message, .. } = err {
-            println!("Received ApiError status: {:?}, message: {}", status, message);
-            // Example check: assert!(status_code == Some(404) || status_code == Some(400));
+    if let EmbeddingError::Api {
+        status, message, ..
+    } = err
+    {
+        println!(
+            "Received ApiError status: {:?}, message: {}",
+            status, message
+        );
+        // Example check: assert!(status_code == Some(404) || status_code == Some(400));
     }
 }
 
@@ -376,8 +424,8 @@ async fn integration_test_gemini_batch_limit_error() {
     let model_name = "gemini-embedding-001";
 
     let embedder = match GeminiEmbedder::new(api_key, model_name) {
-            Ok(e) => e,
-            Err(e) => panic!("Failed to create GeminiEmbedder: {}", e),
+        Ok(e) => e,
+        Err(e) => panic!("Failed to create GeminiEmbedder: {}", e),
     };
 
     // Create a batch larger than the expected limit (100 for gemini-embedding-001)
@@ -385,12 +433,21 @@ async fn integration_test_gemini_batch_limit_error() {
 
     let result = embedder.embed(&large_batch).await;
 
-    assert!(result.is_err(), "Embedding should fail when batch size exceeds limit");
+    assert!(
+        result.is_err(),
+        "Embedding should fail when batch size exceeds limit"
+    );
 
     let err = result.err().unwrap();
     assert!(
-        matches!(err, EmbeddingError::BatchTooLarge { limit: Some(100), actual: 101 }),
-        "Error should be BatchTooLarge with correct details, got {:?}", err
+        matches!(
+            err,
+            EmbeddingError::BatchTooLarge {
+                limit: Some(100),
+                actual: 101
+            }
+        ),
+        "Error should be BatchTooLarge with correct details, got {:?}",
+        err
     );
 }
-

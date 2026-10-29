@@ -2,9 +2,16 @@ use std::ops::Range;
 
 use async_trait::async_trait;
 
-use markhor_core::{chat::prompter::{PromptError, Prompter}, library::{Folder, ReadEntry}};
+use markhor_core::{
+    chat::prompter::{PromptError, Prompter},
+    library::{Folder, ReadEntry},
+};
 use nu_ansi_term::{Color, Style};
-use reedline::{default_emacs_keybindings, ColumnarMenu, Completer, DefaultPrompt, DefaultPromptSegment, Emacs, Highlighter, KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal, Span, StyledText, Suggestion};
+use reedline::{
+    ColumnarMenu, Completer, DefaultPrompt, DefaultPromptSegment, Emacs, Highlighter, KeyCode,
+    KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal, Span, StyledText,
+    Suggestion, default_emacs_keybindings,
+};
 use tokio::sync::Mutex;
 
 pub struct ConsolePrompter {
@@ -13,9 +20,7 @@ pub struct ConsolePrompter {
 
 impl ConsolePrompter {
     pub fn new(folder: Option<Folder>) -> Self {
-        Self { 
-            folder,
-        }
+        Self { folder }
     }
 
     pub fn with_attach_callback(self, callback: Box<dyn Fn(&[&str]) + Send + Sync>) -> Self {
@@ -23,11 +28,10 @@ impl ConsolePrompter {
             folder: self.folder,
         }
     }
-    
 
     pub fn isolate_document_names(input: &str) -> Vec<Range<usize>> {
         let mut result = vec![];
-        
+
         let mut next_slash = input.find('/');
         while let Some(start) = next_slash {
             // Check if name is enclosed in quotation marks
@@ -41,7 +45,9 @@ impl ConsolePrompter {
                 }
             } else {
                 // If not, look for the next space or end of string
-                let end = input[start..].find(' ').map(|i| i + start)
+                let end = input[start..]
+                    .find(' ')
+                    .map(|i| i + start)
                     .unwrap_or(input.len());
                 if end > start + 1 {
                     result.push(start + 1..end);
@@ -52,9 +58,11 @@ impl ConsolePrompter {
         result
     }
 
-    pub fn isolate_document_names_with_prefix_suffix(input: &str) -> Vec<(Range<usize>, Range<usize>, Range<usize>)> {
+    pub fn isolate_document_names_with_prefix_suffix(
+        input: &str,
+    ) -> Vec<(Range<usize>, Range<usize>, Range<usize>)> {
         let mut result = vec![];
-        
+
         let mut next_slash = input.find('/');
         while let Some(start) = next_slash {
             // Check if name is enclosed in quotation marks
@@ -68,7 +76,9 @@ impl ConsolePrompter {
                 }
             } else {
                 // If not, look for the next space or end of string
-                let end = input[start..].find(' ').map(|i| i + start)
+                let end = input[start..]
+                    .find(' ')
+                    .map(|i| i + start)
                     .unwrap_or(input.len());
                 if end > start + 1 {
                     result.push((start..start + 1, start + 1..end, end..end));
@@ -83,7 +93,6 @@ impl ConsolePrompter {
 #[async_trait]
 impl Prompter for ConsolePrompter {
     async fn prompt(&self, message: &str) -> Result<String, PromptError> {
-
         // ** Auto-complete the document names **
 
         // Create a list of document names from the folder
@@ -108,7 +117,7 @@ impl Prompter for ConsolePrompter {
 
         // Use the interactive menu to select options from the completer
         let completion_menu = Box::new(ColumnarMenu::default().with_name("completion_menu"));
-        
+
         // Set up keybindings
         // TAB to select completion
         let mut keybindings = default_emacs_keybindings();
@@ -121,11 +130,7 @@ impl Prompter for ConsolePrompter {
             ]),
         );
         // ESC to cancel
-        keybindings.add_binding(
-            KeyModifiers::NONE,
-            KeyCode::Esc, 
-            ReedlineEvent::CtrlC,
-        );
+        keybindings.add_binding(KeyModifiers::NONE, KeyCode::Esc, ReedlineEvent::CtrlC);
 
         let edit_mode = Box::new(Emacs::new(keybindings));
 
@@ -139,25 +144,21 @@ impl Prompter for ConsolePrompter {
             left_prompt: DefaultPromptSegment::Basic(message.to_string()),
             right_prompt: DefaultPromptSegment::Empty,
         };
-        
-        let mut result = tokio::task::spawn_blocking(move || {
-            match line_editor.read_line(&prompt) {
+
+        let mut result =
+            tokio::task::spawn_blocking(move || match line_editor.read_line(&prompt) {
                 Ok(Signal::Success(line)) => Ok(line),
                 Ok(Signal::CtrlD) => Err(PromptError::Canceled),
                 Ok(Signal::CtrlC) => Err(PromptError::Canceled),
                 Err(err) => Err(PromptError::Io(err)),
-            }
-        }).await?;
+            })
+            .await?;
 
-        if let (
-                Ok(input), 
-                Some(folder), 
-            ) = (
-                result.as_mut(), 
-                self.folder.as_ref(), 
-            ) {
+        if let (Ok(input), Some(folder)) = (result.as_mut(), self.folder.as_ref()) {
             let mut prefix_suffix = vec![];
-            for (prefix,range, suffix) in  ConsolePrompter::isolate_document_names_with_prefix_suffix(&input) {
+            for (prefix, range, suffix) in
+                ConsolePrompter::isolate_document_names_with_prefix_suffix(&input)
+            {
                 prefix_suffix.push((prefix, suffix));
                 let file_name = &input[range];
                 match folder.document(file_name).await {
@@ -182,7 +183,6 @@ impl Prompter for ConsolePrompter {
     }
 }
 
-
 struct DocNameCompleter {
     doc_names: Vec<String>,
 }
@@ -195,7 +195,9 @@ impl Completer for DocNameCompleter {
             let prefix = &line[last_slash + 1..pos].to_lowercase();
 
             // Filter the document names based on the prefix
-            let suggestions = self.doc_names.iter()
+            let suggestions = self
+                .doc_names
+                .iter()
                 .filter(|name| name.starts_with(prefix))
                 .filter_map(|name| {
                     // Check if name contains whitespace
@@ -213,18 +215,16 @@ impl Completer for DocNameCompleter {
                         return Some(name.clone());
                     }
                 })
-                .map(|name| {
-                    Suggestion {
-                        value: name,
-                        description: None,
-                        style: None,
-                        extra: None,
-                        span: Span {
-                            start: last_slash + 1,
-                            end: pos,
-                        },
-                        append_whitespace: true,
-                    }
+                .map(|name| Suggestion {
+                    value: name,
+                    description: None,
+                    style: None,
+                    extra: None,
+                    span: Span {
+                        start: last_slash + 1,
+                        end: pos,
+                    },
+                    append_whitespace: true,
                 })
                 .collect();
 
@@ -254,28 +254,28 @@ impl Highlighter for DocNameHighlighter {
                 Style {
                     ..Default::default()
                 },
-                line[last_end..open.start].to_string()
+                line[last_end..open.start].to_string(),
             ));
             buffer.push((
                 Style {
                     foreground: Some(Color::Cyan),
                     ..Default::default()
                 },
-                line[open].to_string()
+                line[open].to_string(),
             ));
             buffer.push((
                 Style {
                     foreground: Some(Color::Cyan),
                     ..Default::default()
                 },
-                line[range.start..range.end].to_string()
+                line[range.start..range.end].to_string(),
             ));
             buffer.push((
                 Style {
                     foreground: Some(Color::Cyan),
                     ..Default::default()
                 },
-                line[close.clone()].to_string()
+                line[close.clone()].to_string(),
             ));
             last_end = close.end;
         }
@@ -283,7 +283,7 @@ impl Highlighter for DocNameHighlighter {
             Style {
                 ..Default::default()
             },
-            line[last_end..].to_string()
+            line[last_end..].to_string(),
         ));
         StyledText { buffer }
     }

@@ -1,8 +1,8 @@
+use base64::{Engine, engine::general_purpose::STANDARD as Base64Standard};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info, instrument, warn};
 use std::path::{Path, PathBuf};
-use base64::{engine::general_purpose::STANDARD as Base64Standard, Engine};
 use tokio::fs;
+use tracing::{debug, error, info, instrument, warn};
 
 use super::error::OcrOutputError; // Only needed if we want arbitrary extra fields
 
@@ -80,10 +80,7 @@ impl OcrResponse {
     ///
     /// Returns `Ok(())` on success, or an `OcrOutputError` on failure.
     #[instrument(skip(self), fields(output_dir = %output_dir.as_ref().display()))]
-    pub async fn save_to_files(
-        &self,
-        output_dir: impl AsRef<Path>,
-    ) -> Result<(), OcrOutputError> {
+    pub async fn save_to_files(&self, output_dir: impl AsRef<Path>) -> Result<(), OcrOutputError> {
         let output_dir = output_dir.as_ref();
 
         // Ensure output path is a directory or creatable, not a file
@@ -134,23 +131,22 @@ impl OcrResponse {
 
                     // ---- START: Data URI Handling ----
                     let base64_data_to_decode = if image.image_base64.starts_with("data:") {
-                         // Find the comma separating the prefix from the data
-                         if let Some(comma_index) = image.image_base64.find(',') {
-                             let data_part = &image.image_base64[comma_index + 1..];
-                             debug!(target: "mistral_ocr::output", image_id = %image.id, "Detected and stripped Data URI prefix");
-                             data_part
-                         } else {
+                        // Find the comma separating the prefix from the data
+                        if let Some(comma_index) = image.image_base64.find(',') {
+                            let data_part = &image.image_base64[comma_index + 1..];
+                            debug!(target: "mistral_ocr::output", image_id = %image.id, "Detected and stripped Data URI prefix");
+                            data_part
+                        } else {
                             // Found "data:" but no comma? This is weird. Log and try decoding the whole thing anyway? Or error?
                             // Let's warn and proceed cautiously. The decode will likely fail.
                             warn!(target: "mistral_ocr::output", image_id = %image.id, "Found 'data:' prefix but no comma, attempting decode anyway");
                             &image.image_base64
-                         }
+                        }
                     } else {
                         // No "data:" prefix, assume it's raw base64
                         &image.image_base64
                     };
                     // ---- END: Data URI Handling ----
-
 
                     // Decode the (potentially stripped) base64 data
                     let image_data = Base64Standard.decode(base64_data_to_decode).map_err(|e| {
@@ -171,7 +167,6 @@ impl OcrResponse {
         Ok(())
     }
 }
-
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -206,8 +201,8 @@ pub struct ImageDetail {
     pub bottom_right_y: u32,
     /// Base64 encoded representation of the image.
     pub image_base64: String, // base64 crate can decode this if needed
-    // #[serde(flatten)]
-    // extra: HashMap<String, serde_json::Value>,
+                              // #[serde(flatten)]
+                              // extra: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -234,8 +229,6 @@ pub struct UsageInfo {
                                      // extra: HashMap<String, serde_json::Value>,
 }
 
-
-
 /// Represents the successful response from the file upload endpoint.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -247,10 +240,9 @@ pub struct FileUploadResponse {
     pub filename: String,
     pub purpose: String,
     pub sample_type: Option<String>, // It might not always be present or determined
-    pub num_lines: Option<u64>, // Nullable field
-    pub source: String, // e.g., "upload"
+    pub num_lines: Option<u64>,      // Nullable field
+    pub source: String,              // e.g., "upload"
 }
-
 
 /// Represents a specific validation error detail (part of the 422 response).
 #[derive(Debug, Clone, Deserialize)]
@@ -265,19 +257,14 @@ pub struct ValidationErrorDetail {
     pub error_type: String,
 }
 
-
 /// Represents the structure of a 422 Unprocessable Entity error response.
 #[derive(Debug, Clone, Deserialize)]
 pub struct HttpValidationErrorResponse {
     pub detail: Vec<ValidationErrorDetail>,
 }
 
-
-
-
 /// Represents the successful response containing the signed URL.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SignedUrlResponse {
     pub url: String, // The actual field name is "url"
 }
-

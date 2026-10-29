@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use super::{error::EmbeddingError, Embedding};
+use super::{Embedding, error::EmbeddingError};
 
 /// Trait for asynchronous text embedding generation.
 ///
@@ -57,7 +57,6 @@ pub trait EmbeddingModel: Send + Sync {
     /// depending on the implementation.
     fn max_chunk_length_hint(&self) -> Option<usize>; // Unit: Characters
 }
-
 
 /// Represents common intended use cases for embeddings.
 ///

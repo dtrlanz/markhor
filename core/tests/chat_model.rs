@@ -1,8 +1,19 @@
-use std::{collections::HashMap, sync::{atomic::{AtomicUsize, Ordering}, Arc}};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use async_trait::async_trait;
-use markhor_core::{chat::{chat::{ChatModel, ChatOptions, ChatResponse, ChatStream, ContentPart, Message, ModelInfo}, ChatError}, extension::Extension};
-
+use markhor_core::{
+    chat::{
+        ChatError,
+        chat::{ChatModel, ChatOptions, ChatResponse, ChatStream, ContentPart, Message, ModelInfo},
+    },
+    extension::Extension,
+};
 
 const SONNET_18: [&str; 14] = [
     "Shall I compare thee to a summer’s day?",
@@ -18,8 +29,8 @@ const SONNET_18: [&str; 14] = [
     "Nor shall Death brag thou wand’rest in his shade,",
     "When in eternal lines to time thou grow’st.",
     "So long as men can breathe or eyes can see,",
-    "So long lives this, and this gives life to thee."];
-
+    "So long lives this, and this gives life to thee.",
+];
 
 struct ShakespeareChatModel {
     idx: AtomicUsize,
@@ -27,7 +38,9 @@ struct ShakespeareChatModel {
 
 impl ShakespeareChatModel {
     fn new() -> Self {
-        Self { idx: AtomicUsize::new(0) }
+        Self {
+            idx: AtomicUsize::new(0),
+        }
     }
 }
 
@@ -37,7 +50,11 @@ impl ChatModel for ShakespeareChatModel {
         "shakespeare"
     }
 
-    async fn generate(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatResponse, ChatError> {
+    async fn generate(
+        &self,
+        messages: &[Message],
+        options: &ChatOptions,
+    ) -> Result<ChatResponse, ChatError> {
         if self.idx.load(Ordering::SeqCst) >= SONNET_18.len() {
             return Err(ChatError::RateLimited);
         }
@@ -51,11 +68,14 @@ impl ChatModel for ShakespeareChatModel {
         })
     }
 
-    async fn generate_stream(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatStream, ChatError> {
+    async fn generate_stream(
+        &self,
+        messages: &[Message],
+        options: &ChatOptions,
+    ) -> Result<ChatStream, ChatError> {
         unimplemented!()
     }
 }
-
 
 struct ShakespeareChatExtension;
 
@@ -87,8 +107,18 @@ async fn shakespeare_chat_model() {
         Message::user("Tell me a sonnet"),
         Message::assistant("Sure, here is one:"),
     ];
-    let response = ChatModel::generate(&model,&messages, &Default::default()).await.unwrap();
-    assert_eq!(response.content.join(""), "Shall I compare thee to a summer’s day?");
-    let response = ChatModel::generate(&model, &messages, &Default::default()).await.unwrap();
-    assert_eq!(response.content.join(""), "Thou art more lovely and more temperate.");
+    let response = ChatModel::generate(&model, &messages, &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        response.content.join(""),
+        "Shall I compare thee to a summer’s day?"
+    );
+    let response = ChatModel::generate(&model, &messages, &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        response.content.join(""),
+        "Thou art more lovely and more temperate."
+    );
 }

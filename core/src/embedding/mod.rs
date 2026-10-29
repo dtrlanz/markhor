@@ -1,11 +1,11 @@
-mod error;
 mod embedder;
+mod error;
 // mod vector_store;
 
 use std::ops::Deref;
 
-pub use error::{EmbeddingError};
 pub use embedder::{EmbeddingModel, EmbeddingUseCase};
+pub use error::EmbeddingError;
 // pub use vector_store::{VectorStore, ChunkDataResult};
 
 use serde::{Deserialize, Serialize};
@@ -84,9 +84,7 @@ pub(crate) mod test_utils {
 
     impl MockEmbedder {
         pub fn new(vocabulary: Vec<&'static str>) -> Self {
-            Self {
-                vocabulary,
-            }
+            Self { vocabulary }
         }
     }
 
@@ -97,14 +95,16 @@ pub(crate) mod test_utils {
 
             for text in texts {
                 // 1. Pre-process: lowercase and strip basic punctuation
-                let cleaned = text.to_lowercase()
+                let cleaned = text
+                    .to_lowercase()
                     .replace(&['.', ',', '!', '?', '\'', '\"'][..], "");
-                
+
                 // 2. Tokenize
                 let tokens: Vec<&str> = cleaned.split_whitespace().collect();
 
                 // 3. Count occurrences of our vocabulary words
-                let mut vector: Vec<f32> = self.vocabulary
+                let mut vector: Vec<f32> = self
+                    .vocabulary
                     .iter()
                     .map(|&word| tokens.iter().filter(|&&t| t == word).count() as f32)
                     .collect();
@@ -153,9 +153,7 @@ pub(crate) mod test_utils {
 
     impl MockEmbedderExtension {
         pub fn new(vocabulary: Vec<&'static str>) -> Self {
-            Self {
-                vocabulary,
-            }
+            Self { vocabulary }
         }
     }
 

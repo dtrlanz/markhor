@@ -1,11 +1,17 @@
 use core::panic;
-use std::{ops::Deref, path::{Path, PathBuf}, sync::atomic::{AtomicU64, Ordering}};
+use std::{
+    ops::Deref,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
-use markhor_extensions::ocr::mistral::{client::MistralClient, helpers::{DocumentInput, OcrRequest}};
+use markhor_extensions::ocr::mistral::{
+    client::MistralClient,
+    helpers::{DocumentInput, OcrRequest},
+};
 use tokio::fs;
 
 mod common;
-
 
 // Path to the test files are relative to the crate root
 const TEST_PDF_PATH: &str = "tests/common/lorem ipsum with mona lisa.pdf";
@@ -35,7 +41,9 @@ fn get_output_dir(file_path: &str) -> OutputDir {
         OutputDir::TempDir(temp_dir)
     } else {
         // Append file name to the output directory
-        let path_buf = Path::new("tests/output").join(Path::new(file_path).file_name().unwrap()).to_path_buf();
+        let path_buf = Path::new("tests/output")
+            .join(Path::new(file_path).file_name().unwrap())
+            .to_path_buf();
         OutputDir::FixedDir(path_buf)
     }
 }
@@ -47,7 +55,10 @@ static TEST_COUNT: AtomicU64 = AtomicU64::new(0);
 
 async fn delay_test() {
     let count = TEST_COUNT.fetch_add(1, Ordering::SeqCst);
-    tokio::time::sleep(tokio::time::Duration::from_millis(TEST_DELAY_IN_MILLISECONDS * count)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(
+        TEST_DELAY_IN_MILLISECONDS * count,
+    ))
+    .await;
 }
 
 // Ignored by default to avoid running costly API calls on every `cargo test`
@@ -56,7 +67,7 @@ async fn delay_test() {
 #[ignore]
 async fn pdf_ocr_via_public_url() {
     delay_test().await; // Delay to avoid rate limits
-    
+
     // Setup tracing subscriber
     //tracing_subscriber::fmt::init();
 
@@ -67,8 +78,11 @@ async fn pdf_ocr_via_public_url() {
     // Create a temporary directory for potential output saving
     let output_dir = get_output_dir("public pdf");
     let output_dir_path: &Path = &output_dir;
-    println!("Test output will be saved to: {}", output_dir_path.display()); // Info for debugging
-    
+    println!(
+        "Test output will be saved to: {}",
+        output_dir_path.display()
+    ); // Info for debugging
+
     let request = OcrRequest {
         model: "mistral-ocr-latest".to_string(),
         document: DocumentInput::DocumentUrl {
@@ -84,26 +98,38 @@ async fn pdf_ocr_via_public_url() {
 
     match client.process_document(&request).await {
         Ok(response) => {
-            println!("Successfully processed document using model: {}", response.model);
+            println!(
+                "Successfully processed document using model: {}",
+                response.model
+            );
             println!("Processed {} pages.", response.usage_info.pages_processed);
 
             // Call the new save function
             match response.save_to_files(&*output_dir).await {
-                Ok(()) => println!("Successfully saved output to '{}'", output_dir.to_str().unwrap()),
+                Ok(()) => println!(
+                    "Successfully saved output to '{}'",
+                    output_dir.to_str().unwrap()
+                ),
                 Err(e) => eprintln!("Error saving OCR output: {}", e),
             }
 
             for page in response.pages {
                 println!("\n--- Page {} ---", page.index + 1); // Display 1-based index
-                println!("Dimensions: {}x{} @ {} DPI", page.dimensions.width, page.dimensions.height, page.dimensions.dpi);
+                println!(
+                    "Dimensions: {}x{} @ {} DPI",
+                    page.dimensions.width, page.dimensions.height, page.dimensions.dpi
+                );
                 println!("Extracted {} images.", page.images.len());
                 // Optionally print markdown or image details
                 // println!("Markdown:\n{}", page.markdown);
                 for image in page.images {
-                    println!("  Image ID: {}, Coords: ({},{}),({},{}) Size: ~{} bytes",
+                    println!(
+                        "  Image ID: {}, Coords: ({},{}),({},{}) Size: ~{} bytes",
                         image.id,
-                        image.top_left_x, image.top_left_y,
-                        image.bottom_right_x, image.bottom_right_y,
+                        image.top_left_x,
+                        image.top_left_y,
+                        image.bottom_right_x,
+                        image.bottom_right_y,
                         image.image_base64.len() * 3 / 4 // Rough estimate of decoded size
                     );
                     // You could use the `base64` crate here to decode image.image_base64
@@ -111,7 +137,7 @@ async fn pdf_ocr_via_public_url() {
             }
         }
         Err(e) => {
-             eprintln!("Error processing document: {}", e);
+            eprintln!("Error processing document: {}", e);
         }
     }
 }
@@ -133,11 +159,14 @@ async fn png_ocr_via_public_url() {
     // Create a temporary directory for potential output saving
     let output_dir = get_output_dir("public png");
     let output_dir_path: &Path = &output_dir;
-    println!("Test output will be saved to: {}", output_dir_path.display()); // Info for debugging
-    
+    println!(
+        "Test output will be saved to: {}",
+        output_dir_path.display()
+    ); // Info for debugging
+
     let request = OcrRequest {
         model: "mistral-ocr-latest".to_string(),
-        document: DocumentInput::ImageUrl { 
+        document: DocumentInput::ImageUrl {
             image_url: "https://raw.githubusercontent.com/mistralai/cookbook/refs/heads/main/mistral/ocr/receipt.png".into(),
         },
         include_image_base64: Some(true),
@@ -150,26 +179,38 @@ async fn png_ocr_via_public_url() {
 
     match client.process_document(&request).await {
         Ok(response) => {
-            println!("Successfully processed document using model: {}", response.model);
+            println!(
+                "Successfully processed document using model: {}",
+                response.model
+            );
             println!("Processed {} pages.", response.usage_info.pages_processed);
 
             // Call the new save function
             match response.save_to_files(&*output_dir).await {
-                Ok(()) => println!("Successfully saved output to '{}'", output_dir.to_str().unwrap()),
+                Ok(()) => println!(
+                    "Successfully saved output to '{}'",
+                    output_dir.to_str().unwrap()
+                ),
                 Err(e) => eprintln!("Error saving OCR output: {}", e),
             }
 
             for page in response.pages {
                 println!("\n--- Page {} ---", page.index + 1); // Display 1-based index
-                println!("Dimensions: {}x{} @ {} DPI", page.dimensions.width, page.dimensions.height, page.dimensions.dpi);
+                println!(
+                    "Dimensions: {}x{} @ {} DPI",
+                    page.dimensions.width, page.dimensions.height, page.dimensions.dpi
+                );
                 println!("Extracted {} images.", page.images.len());
                 // Optionally print markdown or image details
                 // println!("Markdown:\n{}", page.markdown);
                 for image in page.images {
-                    println!("  Image ID: {}, Coords: ({},{}),({},{}) Size: ~{} bytes",
+                    println!(
+                        "  Image ID: {}, Coords: ({},{}),({},{}) Size: ~{} bytes",
                         image.id,
-                        image.top_left_x, image.top_left_y,
-                        image.bottom_right_x, image.bottom_right_y,
+                        image.top_left_x,
+                        image.top_left_y,
+                        image.bottom_right_x,
+                        image.bottom_right_y,
                         image.image_base64.len() * 3 / 4 // Rough estimate of decoded size
                     );
                     // You could use the `base64` crate here to decode image.image_base64
@@ -177,7 +218,7 @@ async fn png_ocr_via_public_url() {
             }
         }
         Err(e) => {
-             eprintln!("Error processing document: {}", e);
+            eprintln!("Error processing document: {}", e);
         }
     }
 }
@@ -202,7 +243,10 @@ async fn pdf_ocr_via_file_upload_workflow() {
     // Create a temporary directory for potential output saving
     let output_dir = get_output_dir(TEST_PDF_PATH);
     let output_dir_path: &Path = &output_dir;
-    println!("Test output will be saved to: {}", output_dir_path.display()); // Info for debugging
+    println!(
+        "Test output will be saved to: {}",
+        output_dir_path.display()
+    ); // Info for debugging
 
     // --- Step 1: Upload File ---
     println!("Step 1: Uploading file '{}'...", file_path.display());
@@ -231,7 +275,10 @@ async fn pdf_ocr_via_file_upload_workflow() {
         .await
         .expect("2. Getting signed URL failed");
 
-    println!(" -> Signed URL obtained: {}...", &signed_url_response.url[..50]); // Print prefix
+    println!(
+        " -> Signed URL obtained: {}...",
+        &signed_url_response.url[..50]
+    ); // Print prefix
     assert!(!signed_url_response.url.is_empty());
     assert!(signed_url_response.url.starts_with("https://")); // Basic check
     let usable_url = signed_url_response.url; // Keep the URL for the next step
@@ -262,7 +309,10 @@ async fn pdf_ocr_via_file_upload_workflow() {
     );
 
     // Core assertions for OCR success
-    assert!(ocr_response.usage_info.pages_processed > 0, "Expected at least one page processed");
+    assert!(
+        ocr_response.usage_info.pages_processed > 0,
+        "Expected at least one page processed"
+    );
     assert_eq!(
         ocr_response.pages.len() as u32,
         ocr_response.usage_info.pages_processed,
@@ -277,19 +327,31 @@ async fn pdf_ocr_via_file_upload_workflow() {
             first_page.markdown.len(),
             first_page.images.len()
         );
-        assert!(!first_page.markdown.is_empty(), "First page markdown should not be empty");
+        assert!(
+            !first_page.markdown.is_empty(),
+            "First page markdown should not be empty"
+        );
 
         // Specific checks based on sample pdf
-        assert!(first_page.markdown.contains("Lorem ipsum"), "Expected 'Lorem ipsum' in the first page markdown");
+        assert!(
+            first_page.markdown.contains("Lorem ipsum"),
+            "Expected 'Lorem ipsum' in the first page markdown"
+        );
 
         // Assuming images in sample pdf
-        assert!(!first_page.images.is_empty(), "Expected images on the first page");
+        assert!(
+            !first_page.images.is_empty(),
+            "Expected images on the first page"
+        );
     } else {
         panic!("OCR response had 0 pages in the details array, but processed > 0");
     }
 
     // --- Step 4 (Optional): Test Saving Output ---
-    println!("Step 4: Saving OCR output to '{}'...", output_dir_path.display());
+    println!(
+        "Step 4: Saving OCR output to '{}'...",
+        output_dir_path.display()
+    );
     ocr_response
         .save_to_files(output_dir_path)
         .await
@@ -305,10 +367,13 @@ async fn pdf_ocr_via_file_upload_workflow() {
         expected_md_path.display()
     );
     assert!(
-        fs::read_to_string(&expected_md_path).await.expect("Failed to read output.md").len() > 0,
+        fs::read_to_string(&expected_md_path)
+            .await
+            .expect("Failed to read output.md")
+            .len()
+            > 0,
         "output.md should not be empty"
     );
-
 
     // Check images directory *if* images were expected and found
     let images_were_found = ocr_response.pages.iter().any(|p| !p.images.is_empty());
@@ -322,8 +387,13 @@ async fn pdf_ocr_via_file_upload_workflow() {
         //let image_files = fs::read_dir(&expected_images_dir).expect("Could not read images dir").count();
         //assert!(image_files > 0, "Images directory is empty but images were expected");
     } else {
-        println!(" -> No images were extracted by OCR (or include_image_base64 was false), skipping image directory check.");
-        assert!(!expected_images_dir.exists(), "Images directory should not exist if no images were extracted.");
+        println!(
+            " -> No images were extracted by OCR (or include_image_base64 was false), skipping image directory check."
+        );
+        assert!(
+            !expected_images_dir.exists(),
+            "Images directory should not exist if no images were extracted."
+        );
     }
 
     println!("Integration test completed successfully!");
@@ -338,7 +408,7 @@ async fn lorem_ipsum_png_ocr() {
 }
 
 #[tokio::test]
-#[ignore] 
+#[ignore]
 async fn lorem_ipsum_jpg_ocr() {
     delay_test().await; // Delay to avoid rate limits
 
@@ -346,7 +416,7 @@ async fn lorem_ipsum_jpg_ocr() {
 }
 
 #[tokio::test]
-#[ignore] 
+#[ignore]
 async fn lorem_ipsum_with_mona_lisa_png_ocr() {
     delay_test().await; // Delay to avoid rate limits
 
@@ -377,7 +447,10 @@ async fn test_image_ocr_helper(test_file: &str, expected_text: &str) {
     // Create a temporary directory for potential output saving
     let output_dir = get_output_dir(test_file);
     let output_dir_path: &Path = &output_dir;
-    println!("Test output will be saved to: {}", output_dir_path.display()); // Info for debugging
+    println!(
+        "Test output will be saved to: {}",
+        output_dir_path.display()
+    ); // Info for debugging
 
     // --- Step 1: Upload File ---
     println!("Step 1: Uploading file '{}'...", file_path.display());
@@ -392,7 +465,10 @@ async fn test_image_ocr_helper(test_file: &str, expected_text: &str) {
     );
     assert_eq!(upload_response.purpose, "ocr");
     assert!(upload_response.bytes > 0);
-    assert_eq!(upload_response.filename, file_path.file_name().unwrap().to_str().unwrap()); // Assuming this filename
+    assert_eq!(
+        upload_response.filename,
+        file_path.file_name().unwrap().to_str().unwrap()
+    ); // Assuming this filename
     assert!(!upload_response.id.is_empty());
     let file_id = upload_response.id; // Keep the ID for the next step
 
@@ -437,7 +513,10 @@ async fn test_image_ocr_helper(test_file: &str, expected_text: &str) {
     );
 
     // Core assertions for OCR success
-    assert!(ocr_response.usage_info.pages_processed > 0, "Expected at least one page processed");
+    assert!(
+        ocr_response.usage_info.pages_processed > 0,
+        "Expected at least one page processed"
+    );
     assert_eq!(
         ocr_response.pages.len() as u32,
         ocr_response.usage_info.pages_processed,
@@ -452,14 +531,19 @@ async fn test_image_ocr_helper(test_file: &str, expected_text: &str) {
             first_page.markdown.len(),
             first_page.images.len()
         );
-        assert!(!first_page.markdown.is_empty(), "First page markdown should not be empty");
-
+        assert!(
+            !first_page.markdown.is_empty(),
+            "First page markdown should not be empty"
+        );
 
         // Specific checks based on sample pdf
         // Defer until after file is saved (to allow for manual inspection if needed)
         || {
-            assert!(first_page.markdown.contains(expected_text), 
-                "Expected '{}' in the first page markdown", expected_text);
+            assert!(
+                first_page.markdown.contains(expected_text),
+                "Expected '{}' in the first page markdown",
+                expected_text
+            );
 
             // Uncomment if images in sample pdf
             //assert!(!first_page.images.is_empty(), "Expected images on the first page");
@@ -488,10 +572,13 @@ async fn test_image_ocr_helper(test_file: &str, expected_text: &str) {
         expected_md_path.display()
     );
     assert!(
-        fs::read_to_string(&expected_md_path).await.expect("Failed to read output.md").len() > 0,
+        fs::read_to_string(&expected_md_path)
+            .await
+            .expect("Failed to read output.md")
+            .len()
+            > 0,
         "output.md should not be empty"
     );
-
 
     // Check images directory *if* images were expected and found
     let images_were_found = ocr_response.pages.iter().any(|p| !p.images.is_empty());
@@ -505,13 +592,17 @@ async fn test_image_ocr_helper(test_file: &str, expected_text: &str) {
         //let image_files = fs::read_dir(&expected_images_dir).expect("Could not read images dir").count();
         //assert!(image_files > 0, "Images directory is empty but images were expected");
     } else {
-        println!(" -> No images were extracted by OCR (or include_image_base64 was false), skipping image directory check.");
-        assert!(!expected_images_dir.exists(), "Images directory should not exist if no images were extracted.");
+        println!(
+            " -> No images were extracted by OCR (or include_image_base64 was false), skipping image directory check."
+        );
+        assert!(
+            !expected_images_dir.exists(),
+            "Images directory should not exist if no images were extracted."
+        );
     }
 
     println!("Integration test completed successfully!");
 }
-
 
 #[tokio::test]
 #[ignore]
@@ -537,9 +628,10 @@ async fn test_file_to_markdown(test_file: &str, expected_text: &str) {
 
     // Create a temporary directory for potential output saving
     let output_dir = get_output_dir(test_file);
-    let output_path: &Path = &output_dir.join(source_path.file_name().unwrap()).with_extension("md");
+    let output_path: &Path = &output_dir
+        .join(source_path.file_name().unwrap())
+        .with_extension("md");
     println!("Test output will be saved to: {}", output_path.display()); // Info for debugging
-
 
     let result = client.ocr_file_to_markdown(source_path, output_path).await;
 

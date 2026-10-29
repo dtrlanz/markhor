@@ -1,10 +1,10 @@
 use std::{cmp::Ordering, collections::HashSet};
 
 /// Permission that can be used to control access to resources
-/// 
+///
 /// Permissions may be applied to resources and actors. Resources with a given permission can only
 /// be accessed by actors with that permission or a higher one.
-/// 
+///
 /// See module-level documentation for more details.
 #[derive(Debug, Clone, Eq, Hash)]
 pub struct Permission {
@@ -16,7 +16,7 @@ pub struct Permission {
 
 impl Permission {
     /// Permission name
-    /// 
+    ///
     /// Must be unique across all permissions.
     pub fn name(&self) -> &str {
         self.name
@@ -33,7 +33,7 @@ impl Permission {
     }
 
     /// Permissions that are entailed by this permission
-    /// 
+    ///
     /// For example, if a permission "A" entails "B" and "C", then any actor with permission "A" also has permissions "B" and "C".
     pub fn entailed_permissions(&self) -> &[&Permission] {
         self.entailed
@@ -42,7 +42,7 @@ impl Permission {
     pub fn insert(vec: &mut Vec<Permission>, permission: Permission) {
         for i in 0..vec.len() {
             match permission.partial_cmp(&vec[i]) {
-                Some(Ordering::Less) => return,  // Higher permission already in the list
+                Some(Ordering::Less) => return, // Higher permission already in the list
                 Some(Ordering::Equal) => return, // Same permission already in the list
                 Some(Ordering::Greater) => {
                     // Lower permissions can be replaced with the higher one
@@ -64,8 +64,8 @@ impl Permission {
     }
 
     pub fn intersection(vec1: &[Permission], vec2: &[Permission]) -> Vec<Permission> {
-        // This is not the most efficient implementation, but it handles the complexity of 
-        // permission hierarchy in a way that's simple and easy to reason about. Optimize later 
+        // This is not the most efficient implementation, but it handles the complexity of
+        // permission hierarchy in a way that's simple and easy to reason about. Optimize later
         // if needed.
         let mut set1 = HashSet::new();
         for p in vec1 {

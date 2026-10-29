@@ -1,15 +1,15 @@
+use pulldown_cmark::{CowStr, Event, HeadingLevel, Parser, Tag, TagEnd, html};
+use serde::Deserialize;
 use std::fmt::{Debug, Display};
 use std::ops::{Deref, Range};
-use pulldown_cmark::{html, CowStr, HeadingLevel, Parser, Event, Tag, TagEnd};
-use serde::Deserialize;
 
-use crate::markdown::traversal::{TraversalEvent, Traversal};
+use crate::markdown::traversal::{Traversal, TraversalEvent};
 use crate::markdown::xml::XmlTag;
 
 mod display;
-mod xml;
 mod to_markdown;
 mod traversal;
+mod xml;
 
 pub use display::to_display_html;
 pub use to_markdown::ToMarkdown;
@@ -29,8 +29,9 @@ impl<'a> Markdown<'a> {
         &mut self.options
     }
 
-    pub fn metadata<'b, T: Deserialize<'b>>(&self) -> Result<T, serde_yaml_ng::Error> 
-        where 'a: 'b
+    pub fn metadata<'b, T: Deserialize<'b>>(&self) -> Result<T, serde_yaml_ng::Error>
+    where
+        'a: 'b,
     {
         let mut parser = self.parser().into_offset_iter();
         if let Some((Event::Start(Tag::MetadataBlock(..)), _)) = parser.next() {
@@ -48,11 +49,11 @@ impl<'a> Markdown<'a> {
                         start = range.start;
                     }
                     stop = range.end;
-                },
+                }
                 Event::End(TagEnd::MetadataBlock(..)) => {
                     return serde_yaml_ng::from_str(&self.content[start..stop]);
-                },
-                _ => {},
+                }
+                _ => {}
             }
         }
         unreachable!()
@@ -66,14 +67,14 @@ impl<'a> Markdown<'a> {
                 match event {
                     Event::End(TagEnd::MetadataBlock(..)) => {
                         inside_yaml = false;
-                    },
+                    }
                     Event::Start(_) if !inside_yaml => {
                         return Markdown {
                             content: &self.content[range.start..],
                             options: self.options.clone(),
                         };
-                    },
-                    _ => {},
+                    }
+                    _ => {}
                 }
             }
             if inside_yaml == false {
@@ -102,7 +103,12 @@ impl<'a> Markdown<'a> {
         }
     }
 
-    pub fn prepend_milestone(&self, unit: &str, value: &str, attrs: Vec<(&'a str, Option<&'a str>)>) -> String {
+    pub fn prepend_milestone(
+        &self,
+        unit: &str,
+        value: &str,
+        attrs: Vec<(&'a str, Option<&'a str>)>,
+    ) -> String {
         let mut attrs_str = String::new();
         for (attr_name, attr_value) in attrs {
             if let Some(attr_value) = attr_value {
@@ -111,7 +117,10 @@ impl<'a> Markdown<'a> {
                 attrs_str.push_str(&format!(" {}", attr_name));
             }
         }
-        let output = format!("<milestone unit=\"{}\" n=\"{}\"{} />\n{}", unit, value, attrs_str, self.content);
+        let output = format!(
+            "<milestone unit=\"{}\" n=\"{}\"{} />\n{}",
+            unit, value, attrs_str, self.content
+        );
         output
     }
 
@@ -148,7 +157,10 @@ pub struct Options<'a> {
 impl<'a> Debug for Options<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TraversalCfg")
-            .field("xml_filter", &self.xml_filter.as_ref().map(|_| "Some(filter)"))
+            .field(
+                "xml_filter",
+                &self.xml_filter.as_ref().map(|_| "Some(filter)"),
+            )
             .field("enable_milestones", &self.enable_milestones)
             .finish()
     }
@@ -166,12 +178,13 @@ pub const WITH_MILESTONES: Options<'static> = Options {
     md_options: pulldown_cmark::Options::ENABLE_GFM
         .union(pulldown_cmark::Options::ENABLE_HEADING_ATTRIBUTES)
         .union(pulldown_cmark::Options::ENABLE_YAML_STYLE_METADATA_BLOCKS),
-    xml_filter: Some(&|tag: &XmlTag<'_>| 
+    xml_filter: Some(&|tag: &XmlTag<'_>| {
         if let XmlTag::Empty { name, .. } = tag {
             *name == "milestone"
         } else {
             false
-        }),
+        }
+    }),
     enable_milestones: true,
 };
 
@@ -287,7 +300,6 @@ impl<'a> Deref for Region<'a> {
     fn deref(&self) -> &Self::Target {
         &self.md
     }
-    
 }
 
 pub struct Sections<'a> {
@@ -306,9 +318,14 @@ impl<'a> Iterator for Sections<'a> {
 
         while let Some((event, range)) = self.iter.next() {
             match event {
-                TraversalEvent::SectionStart { level, id, classes, attrs } => {
+                TraversalEvent::SectionStart {
+                    level,
+                    id,
+                    classes,
+                    attrs,
+                } => {
                     let section = Section {
-                        md: Markdown { 
+                        md: Markdown {
                             content: "",
                             options: self.iter.md.options.clone(),
                         },
@@ -319,7 +336,7 @@ impl<'a> Iterator for Sections<'a> {
                         range: range,
                     };
                     self.open.push(section);
-                },
+                }
                 TraversalEvent::SectionEnd { level } => {
                     if let Some(mut section) = self.open.pop() {
                         assert_eq!(section.level, level);
@@ -329,7 +346,7 @@ impl<'a> Iterator for Sections<'a> {
                         if self.open.len() == 0 {
                             return Some(section);
                         } else {
-                            // Pre-order traversal: Children should be yielded after their 
+                            // Pre-order traversal: Children should be yielded after their
                             // parents. Since children are closed first, we push them onto a
                             // stack to yield after the parent is yielded.
                             self.closed.push(section);
@@ -337,8 +354,8 @@ impl<'a> Iterator for Sections<'a> {
                         }
                     }
                     panic!("Mismatched section end");
-                },
-                _ => {},
+                }
+                _ => {}
             }
         }
         assert_eq!(self.open.len(), 0, "Unclosed sections remain");
@@ -362,12 +379,14 @@ impl<'a> Regions<'a> {
         let mut earliest_index = 0;
         for (i, region) in self.closed.iter().enumerate().skip(1) {
             let earliest = &self.closed[earliest_index];
-            if region.range.start < earliest.range.start ||
-               (region.range.start == earliest.range.start && region.range.end < earliest.range.end) {
+            if region.range.start < earliest.range.start
+                || (region.range.start == earliest.range.start
+                    && region.range.end < earliest.range.end)
+            {
                 earliest_index = i;
             }
         }
-        
+
         // Check if any currently open region started before this earliest closed region
         let earliest_closed = &self.closed[earliest_index];
         for region in &self.open {
@@ -390,9 +409,13 @@ impl<'a> Iterator for Regions<'a> {
 
         while let Some((event, range)) = self.iter.next() {
             match event {
-                TraversalEvent::RegionStart { unit, value, attributes } => {
+                TraversalEvent::RegionStart {
+                    unit,
+                    value,
+                    attributes,
+                } => {
                     let region = Region {
-                        md: Markdown { 
+                        md: Markdown {
                             content: "",
                             options: self.iter.md.options.clone(),
                         },
@@ -403,9 +426,9 @@ impl<'a> Iterator for Regions<'a> {
                         range: range.end..range.end,
                     };
                     self.open.push(region);
-                },
+                }
                 TraversalEvent::RegionEnd { unit } => {
-                    let unit_match = self.open.extract_if(.., |r| r.unit == unit ).nth(0);
+                    let unit_match = self.open.extract_if(.., |r| r.unit == unit).nth(0);
                     if let Some(mut region) = unit_match {
                         // Previous region ends *before* milestone
                         region.range.end = range.start;
@@ -417,8 +440,8 @@ impl<'a> Iterator for Regions<'a> {
                     } else {
                         panic!("Mismatched region end");
                     }
-                },
-                _ => {},
+                }
+                _ => {}
             }
         }
         assert_eq!(self.open.len(), 0, "Unclosed regions remain");
@@ -426,7 +449,6 @@ impl<'a> Iterator for Regions<'a> {
         None
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -456,16 +478,27 @@ And more."#;
         assert_eq!(sections.len(), 3);
         println!("{:#?}", sections[0]);
         assert_eq!(sections[0].level, HeadingLevel::H1);
-        assert_eq!(&text[sections[0].range.clone()], "# Heading 1\n\nSome paragraph text.\n\n## Heading 2\n\nMore text.\n\n");
+        assert_eq!(
+            &text[sections[0].range.clone()],
+            "# Heading 1\n\nSome paragraph text.\n\n## Heading 2\n\nMore text.\n\n"
+        );
         println!("{:#?}", sections[1]);
         assert_eq!(sections[1].level, HeadingLevel::H2);
-        assert_eq!(&text[sections[1].range.clone()], "## Heading 2\n\nMore text.\n\n");
-        assert_eq!(sections[1].to_html(), "<h2>Heading 2</h2>\n<p>More text.</p>\n");
+        assert_eq!(
+            &text[sections[1].range.clone()],
+            "## Heading 2\n\nMore text.\n\n"
+        );
+        assert_eq!(
+            sections[1].to_html(),
+            "<h2>Heading 2</h2>\n<p>More text.</p>\n"
+        );
         println!("{:#?}", sections[2]);
         assert_eq!(sections[2].level, HeadingLevel::H1);
         assert_eq!(&text[sections[2].range.clone()], "# Heading 1\n\nAnd more.");
-        assert_eq!(sections[2].to_html(), "<h1>Heading 1</h1>\n<p>And more.</p>\n");
-
+        assert_eq!(
+            sections[2].to_html(),
+            "<h1>Heading 1</h1>\n<p>And more.</p>\n"
+        );
     }
 
     #[test]
@@ -524,7 +557,6 @@ Some text."#;
 
     #[test]
     fn metadata_none() {
-
         let text = r#"Some text without metadata."#;
         let md = text.to_markdown(WITHOUT_XML);
         let metadata: Value = md.metadata().unwrap();
@@ -533,5 +565,4 @@ Some text."#;
         let skipped = md.skip_metadata();
         assert_eq!(skipped.content, text);
     }
-
 }

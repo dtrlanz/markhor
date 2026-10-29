@@ -1,9 +1,20 @@
-use std::{collections::HashMap, path::{Path, PathBuf}, sync::{Arc, Mutex}};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
-use crate::{embedding::EmbeddingModel, extension::Comp, library::{AccessLibraryError, Document, Folder, WORKSPACE_CONFIG_DIR, WORKSPACE_METADATA_FILENAME}, vector_store::VectorStore};
+use crate::{
+    embedding::EmbeddingModel,
+    extension::Comp,
+    library::{
+        AccessLibraryError, Document, Folder, WORKSPACE_CONFIG_DIR, WORKSPACE_METADATA_FILENAME,
+    },
+    vector_store::VectorStore,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
@@ -12,14 +23,15 @@ pub struct Workspace {
 
 impl Workspace {
     pub async fn create(path: impl AsRef<Path>) -> Result<Self, AccessLibraryError> {
-        // TODO: consider creating workspace config directory and files directly, or add options 
+        // TODO: consider creating workspace config directory and files directly, or add options
         // to control this behavior
         // TODO: add unit tests
-        let absolute_path = fs::canonicalize(path.as_ref()).await
-            .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound {
+        let absolute_path = fs::canonicalize(path.as_ref()).await.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
                 AccessLibraryError::DirectoryNotFound(path.as_ref().to_path_buf())
             } else {
                 AccessLibraryError::Io(e)
+            }
         })?;
         if let Some(ws) = find_workspace_descendant(&absolute_path).await? {
             return Err(AccessLibraryError::InWorkspace(ws));
@@ -48,11 +60,12 @@ impl Workspace {
     ///
     /// Loads workspace metadata from the config subdirectory if it exists.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, AccessLibraryError> {
-        let absolute_path = fs::canonicalize(path.as_ref()).await
-            .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound {
+        let absolute_path = fs::canonicalize(path.as_ref()).await.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
                 AccessLibraryError::DirectoryNotFound(path.as_ref().to_path_buf())
             } else {
                 AccessLibraryError::Io(e)
+            }
         })?;
         let path_metadata = fs::metadata(&absolute_path).await?;
         if !path_metadata.is_dir() {
@@ -66,9 +79,7 @@ impl Workspace {
         let wd_md_path = config_dir.join(WORKSPACE_METADATA_FILENAME);
         let metadata: WorkspaceMetadata = match fs::read_to_string(wd_md_path).await {
             Ok(content) => serde_yaml_ng::from_str(&content)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                WorkspaceMetadata::default()
-            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => WorkspaceMetadata::default(),
             Err(e) => {
                 return Err(AccessLibraryError::Io(e));
             }
@@ -84,18 +95,18 @@ impl Workspace {
     }
 
     /// Opens the folder with the specified name.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the folder cannot be opened or does not exist.
     pub async fn folder(&self, name: impl AsRef<Path>) -> Result<Folder, AccessLibraryError> {
         self.root().folder(name).await
     }
 
     /// Opens the document with the specified name.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the document cannot be opened or does not exist.
     pub async fn document(&self, name: impl AsRef<Path>) -> Result<Document, AccessLibraryError> {
         self.root().document(name).await
@@ -124,16 +135,18 @@ impl PartialEq for WorkspaceInner {
 impl Eq for WorkspaceInner {}
 
 /// Checks if a given path is a descendant of any workspace and returns its path if it is.
-/// 
-/// A workspace is considered to be a directory containing a workspace config directory. This 
-/// function is used to check for nested workspaces, which are currently disallowed. 
-/// 
+///
+/// A workspace is considered to be a directory containing a workspace config directory. This
+/// function is used to check for nested workspaces, which are currently disallowed.
+///
 /// Returns
-/// 
+///
 /// - `Some` if the path is a descendant of a workspace
 /// - `None` if the path is outside of any workspace
 /// - `None` if the path is a workspace itself (i.e., points to the root directory)
-pub(crate) async fn find_workspace_descendant(absolute_path: &Path) -> Result<Option<PathBuf>, AccessLibraryError> {
+pub(crate) async fn find_workspace_descendant(
+    absolute_path: &Path,
+) -> Result<Option<PathBuf>, AccessLibraryError> {
     if let Some(parent) = absolute_path.parent() {
         for ancestor in parent.ancestors() {
             let config_dir = ancestor.join(WORKSPACE_CONFIG_DIR);
@@ -142,10 +155,10 @@ pub(crate) async fn find_workspace_descendant(absolute_path: &Path) -> Result<Op
                     if metadata.is_dir() {
                         return Ok(Some(ancestor.to_path_buf()));
                     }
-                },
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     continue;
-                },
+                }
                 Err(e) => {
                     return Err(AccessLibraryError::Io(e));
                 }
@@ -160,7 +173,6 @@ pub struct WorkspaceMetadata {
     foo: String,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,7 +183,9 @@ mod tests {
         let mut dir = TempTree::new(fs_tree! {
             "file.txt" => "hello world",
             "child" => {},
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         // Open empty directory as workspace
         let ws = Workspace::open(&dir).await.unwrap();
@@ -181,26 +195,33 @@ mod tests {
         // Create config directory
         dir.add(fs_tree! {
             WORKSPACE_CONFIG_DIR => {},
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         // Open workspace with empty config directory
         let ws = Workspace::open(&dir).await.unwrap();
         assert_eq!(ws.path(), fs::canonicalize(&dir).await.unwrap());
         assert_eq!(ws.inner.metadata, WorkspaceMetadata::default());
-        
+
         // Create metadata file
         dir.add(fs_tree! {
             WORKSPACE_CONFIG_DIR => {
                 WORKSPACE_METADATA_FILENAME => "foo: bar",
             },
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         // Open workspace with metadata file
         let ws = Workspace::open(&dir).await.unwrap();
         assert_eq!(ws.path(), fs::canonicalize(&dir).await.unwrap());
-        assert_eq!(ws.inner.metadata, WorkspaceMetadata {
-            foo: "bar".to_string(),
-        });
+        assert_eq!(
+            ws.inner.metadata,
+            WorkspaceMetadata {
+                foo: "bar".to_string(),
+            }
+        );
 
         // Try opening workspace descendant as workspace
         let result = Workspace::open(&dir.join("child")).await;
@@ -208,7 +229,7 @@ mod tests {
             Err(AccessLibraryError::InWorkspace(path)) => {
                 let ws_path = fs::canonicalize(&dir).await.unwrap();
                 assert_eq!(path, ws_path);
-            },
+            }
             _ => {
                 panic!("Wrong error type: {:?}", result);
             }
@@ -220,7 +241,7 @@ mod tests {
         match result {
             Err(AccessLibraryError::DirectoryNotFound(path)) => {
                 assert_eq!(path, dir.join("fake"));
-            },
+            }
             _ => {
                 panic!("Wrong error type: {:?}", result);
             }
@@ -232,7 +253,7 @@ mod tests {
         match result {
             Err(AccessLibraryError::NotADirectory(path)) => {
                 assert_eq!(path, fs::canonicalize(dir.join("file.txt")).await.unwrap());
-            },
+            }
             _ => {
                 panic!("Wrong error type: {:?}", result);
             }
@@ -246,18 +267,26 @@ mod tests {
             "child" => {
                 "nested.md" => "nested",
             },
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         let ws = Workspace::open(&dir).await.unwrap();
         let doc = ws.document("doc.md").await.unwrap();
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.workspace().path(), ws.path());
-        assert_eq!(doc.text().await.unwrap().export(&mut None).as_deref(), Some("foo"));
+        assert_eq!(
+            doc.text().await.unwrap().export(&mut None).as_deref(),
+            Some("foo")
+        );
 
         let child = ws.folder("child").await.unwrap();
         let doc = child.document("nested.md").await.unwrap();
         assert_eq!(doc.path(), "child/nested.md");
         assert_eq!(doc.workspace().path(), ws.path());
-        assert_eq!(doc.text().await.unwrap().export(&mut None).as_deref(), Some("nested"));
+        assert_eq!(
+            doc.text().await.unwrap().export(&mut None).as_deref(),
+            Some("nested")
+        );
     }
 }

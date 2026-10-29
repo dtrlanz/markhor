@@ -352,10 +352,7 @@ mod tests {
     #[test]
     fn headings_lose_markers_and_show_their_level() {
         let html = "<h1>Title</h1><h3>Sub</h3><p>text</p>";
-        assert_eq!(
-            plain(html, 40),
-            vec!["# Title", "", "### Sub", "", "text"]
-        );
+        assert_eq!(plain(html, 40), vec!["# Title", "", "### Sub", "", "text"]);
         let styled = colored(html, 40);
         assert!(styled[0].contains('\x1b'));
         assert!(!styled[0].contains('\x01'));

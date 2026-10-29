@@ -1,30 +1,24 @@
-
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use base64::Engine;
 use markhor_core::chat::ChatError;
 use markhor_core::chat::chat::{
-    ChatModel, ChatOptions, ChatResponse, ChatStream, ContentPart, FinishReason,
-    Message, ModelInfo, ToolCallRequest, ToolChoice, ToolParameterSchema,
-    UsageInfo,
+    ChatModel, ChatOptions, ChatResponse, ChatStream, ContentPart, FinishReason, Message,
+    ModelInfo, ToolCallRequest, ToolChoice, ToolParameterSchema, UsageInfo,
 };
-use async_trait::async_trait;
 use markhor_core::extension::Extension;
 use reqwest::{Client, StatusCode};
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{debug, error, instrument, trace, warn};
 use uuid::Uuid;
-use secrecy::ExposeSecret;
 
 use crate::gemini::error::map_response_error;
 
 use super::error::GeminiError;
-use super::shared::{GeminiConfig, SharedGeminiClient, EXTENSION_URI};
-
-
-
-
+use super::shared::{EXTENSION_URI, GeminiConfig, SharedGeminiClient};
 
 // ============== Gemini Specific Request/Response Structs ==============
 // These structs mirror the Gemini API structure.
@@ -56,24 +50,30 @@ impl From<Message> for GeminiContent {
         match message {
             Message::System(parts) => {
                 // We only handle text system prompts for now
-                let combined_text = parts.into_iter()
+                let combined_text = parts
+                    .into_iter()
                     .filter_map(|p| p.into_text())
                     .collect::<Vec<_>>()
                     .join("\n");
 
                 GeminiContent {
                     role: "system".to_string(), // Role is ignored by API but struct needs it
-                    parts: vec![GeminiPart::Text{ text: combined_text }]
+                    parts: vec![GeminiPart::Text {
+                        text: combined_text,
+                    }],
                 }
             }
             Message::User(parts) => {
                 let gemini_parts = parts.into_iter().map(|p| p.into()).collect();
-                GeminiContent { 
-                    role: "user".to_string(), 
-                    parts: gemini_parts 
+                GeminiContent {
+                    role: "user".to_string(),
+                    parts: gemini_parts,
                 }
             }
-            Message::Assistant { content: parts, tool_calls } => {
+            Message::Assistant {
+                content: parts,
+                tool_calls,
+            } => {
                 // Convert standard content parts (Text, Image)
                 let mut gemini_parts: Vec<_> = parts.into_iter().map(|p| p.into()).collect();
 
@@ -85,7 +85,7 @@ impl From<Message> for GeminiContent {
                             name: call_request.name,
                             // 'args' is the structured JSON arguments - directly use the value
                             args: call_request.arguments,
-                        }
+                        },
                     });
                 }
 
@@ -96,22 +96,22 @@ impl From<Message> for GeminiContent {
             }
             Message::Tool(tool_results) => {
                 // Each ToolResult needs to be converted into a FunctionResponse part
-                let function_response_parts: Vec<GeminiPart> = tool_results.into_iter()
-                    .map(|result| {
-                        GeminiPart::FunctionResponse {
-                            function_response: GeminiFunctionResponse {
-                                name: result.name,
-                                response: result.content,
-                            }
-                        }
-                    }).collect();
+                let function_response_parts: Vec<GeminiPart> = tool_results
+                    .into_iter()
+                    .map(|result| GeminiPart::FunctionResponse {
+                        function_response: GeminiFunctionResponse {
+                            name: result.name,
+                            response: result.content,
+                        },
+                    })
+                    .collect();
 
                 GeminiContent {
                     role: "user".to_string(), // Gemini 3.x rejects the "function" role; tool results go under "user"
                     parts: function_response_parts,
                 }
             }
-        }        
+        }
     }
 }
 
@@ -140,9 +140,7 @@ enum GeminiPart {
 impl From<ContentPart> for GeminiPart {
     fn from(part: ContentPart) -> Self {
         match part {
-            ContentPart::Text(text) => {
-                GeminiPart::Text { text }
-            }
+            ContentPart::Text(text) => GeminiPart::Text { text },
             ContentPart::Image { mime_type, data } => {
                 // Base64 encode data for inlineData
                 let encoded_data = base64::engine::general_purpose::STANDARD.encode(data);
@@ -150,7 +148,7 @@ impl From<ContentPart> for GeminiPart {
                     inline_data: GeminiBlob {
                         mime_type: mime_type,
                         data: encoded_data,
-                    }
+                    },
                 }
             }
         }
@@ -234,9 +232,12 @@ impl From<ToolChoice> for GeminiFunctionCallingMode {
             ToolChoice::Required => GeminiFunctionCallingMode::Any,
             ToolChoice::None => GeminiFunctionCallingMode::None,
             ToolChoice::Tool { name } => {
-                warn!("Forcing use of a specific tool is not supported for Gemini (tool: '{}'). Using ANY", name);
+                warn!(
+                    "Forcing use of a specific tool is not supported for Gemini (tool: '{}'). Using ANY",
+                    name
+                );
                 GeminiFunctionCallingMode::Any
-            },
+            }
         }
     }
 }
@@ -259,7 +260,7 @@ struct GeminiGenerationConfig {
 }
 
 // --- Response Structs ---
-// 
+//
 // https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference#response
 
 #[derive(Deserialize, Debug)]
@@ -274,13 +275,16 @@ struct GeminiGenerateResponse {
 impl GeminiGenerateResponse {
     /// Converts Gemini response to Markhor's internal ChatResponse.
     /// Returns GeminiError on failure (e.g., base64 decoding).
-    pub fn into_chat_response(self, request_model_id: &str) -> Result<ChatResponse, GeminiError> { // Return GeminiError
+    pub fn into_chat_response(self, request_model_id: &str) -> Result<ChatResponse, GeminiError> {
+        // Return GeminiError
         let first_candidate = self.candidates.and_then(|mut c| c.into_iter().next()); // Use into_iter().next()
 
         let usage = self.usage_metadata.map(Into::into);
 
         if let Some(cand) = first_candidate {
-            let finish_reason = cand.finish_reason.map(Into::into)
+            let finish_reason = cand
+                .finish_reason
+                .map(Into::into)
                 .unwrap_or(FinishReason::Other("Unknown finish reason".to_string()));
 
             let mut content_parts = Vec::new();
@@ -329,7 +333,10 @@ impl GeminiGenerateResponse {
             }
 
             if content_parts.is_empty() && tool_calls.is_empty() {
-                debug!("Received response with no text content or tool calls (Finish Reason: {:?}).", finish_reason);
+                debug!(
+                    "Received response with no text content or tool calls (Finish Reason: {:?}).",
+                    finish_reason
+                );
                 // This might be normal (e.g., safety filter, stop sequence).
             }
 
@@ -340,7 +347,6 @@ impl GeminiGenerateResponse {
                 finish_reason: Some(finish_reason),
                 model_id: Some(request_model_id.to_string()),
             })
-
         } else {
             // No candidate received at all. This is unexpected for a successful API call.
             warn!("Gemini response contained no candidates.");
@@ -358,7 +364,6 @@ impl GeminiGenerateResponse {
         }
     }
 }
-
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -395,7 +400,9 @@ impl Into<FinishReason> for GeminiFinishReason {
             GeminiFinishReason::Blocklist => FinishReason::Other("Blocklist".to_string()),
             GeminiFinishReason::ProhibitedContent => FinishReason::ContentFilter,
             GeminiFinishReason::Spii => FinishReason::ContentFilter,
-            GeminiFinishReason::MalformedFunctionCall => FinishReason::Other("MalformedFunctionCall".to_string()),
+            GeminiFinishReason::MalformedFunctionCall => {
+                FinishReason::Other("MalformedFunctionCall".to_string())
+            }
             GeminiFinishReason::Other => FinishReason::Other("Unknown".to_string()),
             GeminiFinishReason::Unspecified => FinishReason::Unspecified,
         }
@@ -419,7 +426,7 @@ impl Into<UsageInfo> for GeminiUsageMetadata {
             prompt_tokens: self.prompt_token_count,
             completion_tokens: self.candidates_token_count, // Note: Gemini sums *all* candidates if > 1
             total_tokens: self.total_token_count,
-        }        
+        }
     }
 }
 
@@ -430,19 +437,22 @@ struct GeminiErrorResponse {
 
 impl GeminiErrorResponse {
     fn into_api_error(self, response_status: StatusCode) -> ChatError {
-        let msg = format!("{} (Status: {}, Code: {})", self.error.message, self.error.status, self.error.code);
+        let msg = format!(
+            "{} (Status: {}, Code: {})",
+            self.error.message, self.error.status, self.error.code
+        );
         match response_status.as_u16() {
             400 => ChatError::InvalidRequest(msg),
             401 | 403 => ChatError::Authentication(msg),
             404 => ChatError::ModelNotFound(msg), // Or potentially other 404 reasons
             429 => ChatError::RateLimited,
-            500..=599 => ChatError::Api { 
+            500..=599 => ChatError::Api {
                 status: Some(response_status.as_u16()),
                 message: msg,
                 source: None,
             },
-            _ => ChatError::Api { 
-                status: Some(response_status.as_u16()), 
+            _ => ChatError::Api {
+                status: Some(response_status.as_u16()),
                 message: msg,
                 source: None,
             },
@@ -477,7 +487,6 @@ struct GeminiModelInfo {
     // top_p: Option<f32>,
     // top_k: Option<f32>,
 }
-
 
 // ============== Gemini Client Implementation ==============
 
@@ -524,14 +533,13 @@ impl GeminiChatClient {
         shared_client: Arc<SharedGeminiClient>,
         default_model_id: Option<String>,
     ) -> Result<Self, GeminiError> {
-        
         let model_id = default_model_id.unwrap_or_else(|| DEFAULT_GEMINI_CHAT_MODEL.to_string());
         debug!(default_model_id = %model_id, "GeminiChatClient created.");
         Ok(Self {
             shared_client,
             default_model_id: model_id,
         })
-    }    
+    }
 
     // TO BE REMOVED/REPLACED
     /// Maps Gemini API errors (parsed from JSON or status codes) to our ChatError enum.
@@ -544,25 +552,23 @@ impl GeminiChatClient {
                 trace!(status = %status, error_body = %error_text, "Gemini API error response body");
                 // Try parsing Gemini's specific error format
                 match serde_json::from_str::<GeminiErrorResponse>(&error_text) {
-                    Ok(gemini_error) => {
-                        gemini_error.into_api_error(status)
-                    }
+                    Ok(gemini_error) => gemini_error.into_api_error(status),
                     Err(parse_err) => {
                         // Couldn't parse the specific error format, return generic API error
                         warn!(parse_error = %parse_err, body = %error_text, "Failed to parse Gemini error response JSON");
-                        ChatError::Api { 
-                            status: Some(status.as_u16()), 
-                            message: error_text, 
+                        ChatError::Api {
+                            status: Some(status.as_u16()),
+                            message: error_text,
                             source: Some(Box::new(parse_err)),
                         }
                     }
                 }
-            },
+            }
             Err(text_err) => {
                 // Failed even to read the error body text
                 error!(status = %status, text_error = %text_err, "Failed to read Gemini error response body text");
-                ChatError::Api { 
-                    status: Some(status.as_u16()), 
+                ChatError::Api {
+                    status: Some(status.as_u16()),
                     message: format!("Failed to read error response body: {}", text_err),
                     source: Some(Box::new(text_err)),
                 }
@@ -574,7 +580,8 @@ impl GeminiChatClient {
     /// Separates the system prompt.
     fn convert_messages(
         messages: &[Message],
-    ) -> Result<(Option<GeminiContent>, Vec<GeminiContent>), GeminiError> { // Return GeminiError
+    ) -> Result<(Option<GeminiContent>, Vec<GeminiContent>), GeminiError> {
+        // Return GeminiError
         let mut system_instruction: Option<GeminiContent> = None;
         let mut gemini_contents: Vec<GeminiContent> = Vec::with_capacity(messages.len());
         let mut system_message_found = false;
@@ -590,7 +597,8 @@ impl GeminiChatClient {
                     }
                     system_message_found = true;
                     // We only handle text system prompts for now
-                    let combined_text = parts.iter()
+                    let combined_text = parts
+                        .iter()
                         .filter_map(|part| part.clone().into_text())
                         .collect::<Vec<_>>()
                         .join("\n");
@@ -599,7 +607,9 @@ impl GeminiChatClient {
                         // Role is ignored by API for system_instruction, but struct needs it.
                         // Use "user" as per Gemini examples for system_instruction content.
                         role: "user".to_string(),
-                        parts: vec![GeminiPart::Text { text: combined_text }],
+                        parts: vec![GeminiPart::Text {
+                            text: combined_text,
+                        }],
                     });
                     // Do not add system message to the main contents list
                 }
@@ -612,15 +622,18 @@ impl GeminiChatClient {
         Ok((system_instruction, gemini_contents))
     }
 
-     /// Converts ChatOptions tool settings to Gemini format. (Error type not needed here)
+    /// Converts ChatOptions tool settings to Gemini format. (Error type not needed here)
     fn convert_tools(options: &ChatOptions) -> (Option<Vec<GeminiTool>>, Option<GeminiToolConfig>) {
-         let tools = options.tools.as_ref().map(|defs| {
+        let tools = options.tools.as_ref().map(|defs| {
             vec![GeminiTool {
-                function_declarations: defs.iter().map(|def| GeminiFunctionDeclaration {
-                    name: def.name.clone(),
-                    description: def.description.clone(),
-                    parameters: def.parameters.clone(), // Assuming ToolParameterSchema is compatible
-                }).collect(),
+                function_declarations: defs
+                    .iter()
+                    .map(|def| GeminiFunctionDeclaration {
+                        name: def.name.clone(),
+                        description: def.description.clone(),
+                        parameters: def.parameters.clone(), // Assuming ToolParameterSchema is compatible
+                    })
+                    .collect(),
             }]
         });
 
@@ -631,15 +644,25 @@ impl GeminiChatClient {
         // Mode FUNCTION (deprecated/internal?): Not directly exposed like this. Specifying allowed_function_names implies ANY mode.
         let tool_config = match options.tool_choice.as_ref() {
             None | Some(ToolChoice::Auto) => {
-                 if tools.is_some() {
+                if tools.is_some() {
                     // If tools are present, default to AUTO mode. No specific config needed for AUTO.
                     None // Omitting tool_config defaults to AUTO if tools are present
-                 } else {
-                     // No tools and no choice means no function calling.
-                     Some(GeminiToolConfig { function_calling_config: Some(GeminiFunctionCallingConfig { mode: GeminiFunctionCallingMode::None, allowed_function_names: None })})
-                 }
-            },
-            Some(ToolChoice::None) => Some(GeminiToolConfig { function_calling_config: Some(GeminiFunctionCallingConfig { mode: GeminiFunctionCallingMode::None, allowed_function_names: None }) }),
+                } else {
+                    // No tools and no choice means no function calling.
+                    Some(GeminiToolConfig {
+                        function_calling_config: Some(GeminiFunctionCallingConfig {
+                            mode: GeminiFunctionCallingMode::None,
+                            allowed_function_names: None,
+                        }),
+                    })
+                }
+            }
+            Some(ToolChoice::None) => Some(GeminiToolConfig {
+                function_calling_config: Some(GeminiFunctionCallingConfig {
+                    mode: GeminiFunctionCallingMode::None,
+                    allowed_function_names: None,
+                }),
+            }),
             Some(ToolChoice::Required) => {
                 if tools.is_none() || tools.as_ref().map_or(true, |t| t.is_empty()) {
                     // Cannot require a tool if none are defined. Log warning? Or error?
@@ -647,9 +670,14 @@ impl GeminiChatClient {
                     warn!("ToolChoice::Required specified but no tools were provided.");
                     None // Fallback to AUTO-like behavior (or potentially error?)
                 } else {
-                    Some(GeminiToolConfig { function_calling_config: Some(GeminiFunctionCallingConfig { mode: GeminiFunctionCallingMode::Any, allowed_function_names: None }) })
+                    Some(GeminiToolConfig {
+                        function_calling_config: Some(GeminiFunctionCallingConfig {
+                            mode: GeminiFunctionCallingMode::Any,
+                            allowed_function_names: None,
+                        }),
+                    })
                 }
-            },
+            }
             Some(ToolChoice::Tool { name }) => Some(GeminiToolConfig {
                 function_calling_config: Some(GeminiFunctionCallingConfig {
                     // Specifying allowed names requires ANY mode according to docs
@@ -701,7 +729,7 @@ impl GeminiChatClient {
 
             // 6. Parse JSON response
             let list_response: GeminiListModelsResponse = serde_json::from_str(&raw_body)
-                .map_err(|e| { 
+                .map_err(|e| {
                     error!(parse_error = %e, raw_body = %raw_body, "Failed to parse Gemini model list JSON");
                     GeminiError::ResponseParsing {
                         context: "Parsing model list".to_string(),
@@ -737,7 +765,7 @@ impl GeminiChatClient {
         }
         .await // Execute the inner async block
         .map_err(Into::into) // Convert GeminiError into ChatError at the boundary
-    }    
+    }
 }
 
 #[async_trait]
@@ -864,23 +892,20 @@ impl ChatModel for GeminiChatClient {
         // 6. Handling potential errors within the stream.
         // 7. Mapping the stream items to `Result<String, ChatError>`.
         warn!("Gemini streaming is not yet implemented.");
-        Err(ChatError::NotSupported("Streaming is not yet implemented for the Gemini client.".to_string()))
+        Err(ChatError::NotSupported(
+            "Streaming is not yet implemented for the Gemini client.".to_string(),
+        ))
     }
 }
-
 
 // Helper function to create a reqwest client (useful for examples/tests)
 // Consider moving this to a more central place if used by multiple clients
 pub fn create_default_http_client() -> Result<reqwest::Client, ChatError> {
     reqwest::Client::builder()
-       .timeout(std::time::Duration::from_secs(60)) // Example timeout
-       .build()
-       .map_err(|e| ChatError::Configuration(format!("Failed to build HTTP client: {}", e)))
+        .timeout(std::time::Duration::from_secs(60)) // Example timeout
+        .build()
+        .map_err(|e| ChatError::Configuration(format!("Failed to build HTTP client: {}", e)))
 }
-
-
-
-
 
 #[cfg(test)]
 mod tests {
@@ -893,101 +918,132 @@ mod tests {
         //let _ = tracing_subscriber::fmt::try_init();
     }
 
-     #[test]
-     fn test_convert_messages_basic() {
-         let messages = vec![
-             Message::system("Be helpful."),
-             Message::user("Hello"),
-             Message::assistant("Hi! How can I help?"),
-         ];
-         let (system_instr, contents) = GeminiChatClient::convert_messages(&messages).unwrap();
+    #[test]
+    fn test_convert_messages_basic() {
+        let messages = vec![
+            Message::system("Be helpful."),
+            Message::user("Hello"),
+            Message::assistant("Hi! How can I help?"),
+        ];
+        let (system_instr, contents) = GeminiChatClient::convert_messages(&messages).unwrap();
 
-         assert!(system_instr.is_some());
-         assert_eq!(system_instr.unwrap().parts.len(), 1); // Assuming combined text
+        assert!(system_instr.is_some());
+        assert_eq!(system_instr.unwrap().parts.len(), 1); // Assuming combined text
 
-         assert_eq!(contents.len(), 2);
-         assert_eq!(contents[0].role, "user");
-         assert!(matches!(contents[0].parts[0], GeminiPart::Text { ref text } if text == "Hello"));
-         assert_eq!(contents[1].role, "model");
-         assert!(matches!(contents[1].parts[0], GeminiPart::Text { ref text } if text == "Hi! How can I help?"));
-     }
+        assert_eq!(contents.len(), 2);
+        assert_eq!(contents[0].role, "user");
+        assert!(matches!(contents[0].parts[0], GeminiPart::Text { ref text } if text == "Hello"));
+        assert_eq!(contents[1].role, "model");
+        assert!(
+            matches!(contents[1].parts[0], GeminiPart::Text { ref text } if text == "Hi! How can I help?")
+        );
+    }
 
-     #[test]
-     fn test_convert_messages_tool_result() {
-         let messages = vec![
-             Message::user("What's the weather?"),
-             // Simulate assistant asking for tool (cannot represent call well)
-             Message::assistant("Okay, I can check that."),
-              // Provide tool result
-             Message::tool(vec![ToolResult {
-                 call_id: "123".to_string(),
-                 name: "get_weather".to_string(), // Matched by name in Gemini
-                 content: serde_json::json!({
-                     "temp": 25,
-                     "unit": "C",
-                 }),
-             }]),
-         ];
-         let (_system_instr, contents) = GeminiChatClient::convert_messages(&messages).unwrap();
+    #[test]
+    fn test_convert_messages_tool_result() {
+        let messages = vec![
+            Message::user("What's the weather?"),
+            // Simulate assistant asking for tool (cannot represent call well)
+            Message::assistant("Okay, I can check that."),
+            // Provide tool result
+            Message::tool(vec![ToolResult {
+                call_id: "123".to_string(),
+                name: "get_weather".to_string(), // Matched by name in Gemini
+                content: serde_json::json!({
+                    "temp": 25,
+                    "unit": "C",
+                }),
+            }]),
+        ];
+        let (_system_instr, contents) = GeminiChatClient::convert_messages(&messages).unwrap();
 
-         assert_eq!(contents.len(), 3); // user, model, user (function response)
-         assert_eq!(contents[0].role, "user");
-         assert_eq!(contents[1].role, "model");
-         assert_eq!(contents[2].role, "user");
-         assert_eq!(contents[2].parts.len(), 1);
-         match &contents[2].parts[0] {
-             GeminiPart::FunctionResponse { function_response } => {
-                 assert_eq!(function_response.name, "get_weather");
-                 assert!(function_response.response.is_object());
-                 assert_eq!(function_response.response["temp"], 25);
-             }
-             _ => panic!("Expected FunctionResponse part"),
-         }
-     }
+        assert_eq!(contents.len(), 3); // user, model, user (function response)
+        assert_eq!(contents[0].role, "user");
+        assert_eq!(contents[1].role, "model");
+        assert_eq!(contents[2].role, "user");
+        assert_eq!(contents[2].parts.len(), 1);
+        match &contents[2].parts[0] {
+            GeminiPart::FunctionResponse { function_response } => {
+                assert_eq!(function_response.name, "get_weather");
+                assert!(function_response.response.is_object());
+                assert_eq!(function_response.response["temp"], 25);
+            }
+            _ => panic!("Expected FunctionResponse part"),
+        }
+    }
 
-      #[test]
-      fn test_convert_tools_config() {
-           let tool_def = ToolDefinition {
-               name: "my_func".to_string(), description: "d".to_string(),
-               parameters: ToolParameterSchema{ schema_type: "object".to_string(), properties: Default::default(), required: vec![] }
-           };
+    #[test]
+    fn test_convert_tools_config() {
+        let tool_def = ToolDefinition {
+            name: "my_func".to_string(),
+            description: "d".to_string(),
+            parameters: ToolParameterSchema {
+                schema_type: "object".to_string(),
+                properties: Default::default(),
+                required: vec![],
+            },
+        };
 
-          // Auto (default when tools present)
-          let options_auto = ChatOptions { tools: Some(vec![tool_def.clone()]), tool_choice: None, ..Default::default() };
-          let (tools, cfg) = GeminiChatClient::convert_tools(&options_auto);
-          assert!(tools.is_some());
-          // Omitted tool_config means AUTO when tools are present
-          assert!(cfg.is_none());
-          //assert!(matches!(cfg.as_ref().unwrap().mode, GeminiToolChoiceMode::Auto));
+        // Auto (default when tools present)
+        let options_auto = ChatOptions {
+            tools: Some(vec![tool_def.clone()]),
+            tool_choice: None,
+            ..Default::default()
+        };
+        let (tools, cfg) = GeminiChatClient::convert_tools(&options_auto);
+        assert!(tools.is_some());
+        // Omitted tool_config means AUTO when tools are present
+        assert!(cfg.is_none());
+        //assert!(matches!(cfg.as_ref().unwrap().mode, GeminiToolChoiceMode::Auto));
 
-          // Explicit Auto
-          let options_explicit_auto = ChatOptions { tools: Some(vec![tool_def.clone()]), tool_choice: Some(ToolChoice::Auto), ..Default::default() };
-          let (_, cfg) = GeminiChatClient::convert_tools(&options_explicit_auto);
-          assert!(cfg.is_none());
-          //assert!(matches!(cfg.as_ref().unwrap().mode, GeminiToolChoiceMode::Auto));
+        // Explicit Auto
+        let options_explicit_auto = ChatOptions {
+            tools: Some(vec![tool_def.clone()]),
+            tool_choice: Some(ToolChoice::Auto),
+            ..Default::default()
+        };
+        let (_, cfg) = GeminiChatClient::convert_tools(&options_explicit_auto);
+        assert!(cfg.is_none());
+        //assert!(matches!(cfg.as_ref().unwrap().mode, GeminiToolChoiceMode::Auto));
 
-
-          // None
-          let options_none = ChatOptions { tools: Some(vec![tool_def.clone()]), tool_choice: Some(ToolChoice::None), ..Default::default() };
-           let (_, cfg) = GeminiChatClient::convert_tools(&options_none);
-          assert!(cfg.is_some());
+        // None
+        let options_none = ChatOptions {
+            tools: Some(vec![tool_def.clone()]),
+            tool_choice: Some(ToolChoice::None),
+            ..Default::default()
+        };
+        let (_, cfg) = GeminiChatClient::convert_tools(&options_none);
+        assert!(cfg.is_some());
         //   assert!(matches!(cfg.as_ref().unwrap().mode, GeminiToolChoiceMode::None));
 
-           // Required (Any)
-           let options_req = ChatOptions { tools: Some(vec![tool_def.clone()]), tool_choice: Some(ToolChoice::Required), ..Default::default() };
-           let (_, cfg) = GeminiChatClient::convert_tools(&options_req);
-          assert!(cfg.is_some());
+        // Required (Any)
+        let options_req = ChatOptions {
+            tools: Some(vec![tool_def.clone()]),
+            tool_choice: Some(ToolChoice::Required),
+            ..Default::default()
+        };
+        let (_, cfg) = GeminiChatClient::convert_tools(&options_req);
+        assert!(cfg.is_some());
         //   assert!(matches!(cfg.as_ref().unwrap().mode, GeminiToolChoiceMode::Any));
 
-           // Specific Tool
-           let options_tool = ChatOptions { tools: Some(vec![tool_def.clone()]), tool_choice: Some(ToolChoice::Tool { name: "my_func".to_string() }), ..Default::default() };
-           let (_, cfg) = GeminiChatClient::convert_tools(&options_tool);
-           assert!(cfg.is_some());
-           let config = cfg.unwrap();
+        // Specific Tool
+        let options_tool = ChatOptions {
+            tools: Some(vec![tool_def.clone()]),
+            tool_choice: Some(ToolChoice::Tool {
+                name: "my_func".to_string(),
+            }),
+            ..Default::default()
+        };
+        let (_, cfg) = GeminiChatClient::convert_tools(&options_tool);
+        assert!(cfg.is_some());
+        let config = cfg.unwrap();
         //    assert!(matches!(config.mode, GeminiToolChoiceMode::Function));
-           assert!(config.function_calling_config.is_some());
-           let func_cfg = config.function_calling_config.unwrap();
-           assert!(matches!(func_cfg.mode, GeminiFunctionCallingMode::Any));
-           assert_eq!(func_cfg.allowed_function_names, Some(vec!["my_func".to_string()]));
-      }
+        assert!(config.function_calling_config.is_some());
+        let func_cfg = config.function_calling_config.unwrap();
+        assert!(matches!(func_cfg.mode, GeminiFunctionCallingMode::Any));
+        assert_eq!(
+            func_cfg.allowed_function_names,
+            Some(vec!["my_func".to_string()])
+        );
+    }
 }

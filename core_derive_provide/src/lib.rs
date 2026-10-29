@@ -1,11 +1,11 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, Data, DeriveInput, Expr, Fields, Type};
+use syn::{Data, DeriveInput, Expr, Fields, Type, parse_macro_input};
 
 struct FieldConfig {
     // Each
     each: bool,
-    
+
     // Filtering
     filter: Option<Expr>,
     filter_map: Option<(Expr, Type)>, // Acts as both Filtering and Mapping
@@ -41,9 +41,9 @@ fn extract_source_type_from_closure(expr: &Expr) -> syn::Result<Type> {
         }
     }
     Err(syn::Error::new_spanned(
-        expr, 
+        expr,
         "This attribute requires a closure with an explicitly typed argument. \n\
-        Example: `#[provide(map = |x: SourceType| ...)]`"
+        Example: `#[provide(map = |x: SourceType| ...)]`",
     ))
 }
 
@@ -67,11 +67,11 @@ fn parse_struct_crate_path(attrs: &[syn::Attribute]) -> syn::Result<Option<syn::
 }
 
 fn parse_provide_attrs(field: &syn::Field) -> syn::Result<FieldConfig> {
-    let mut config = FieldConfig { 
-        each: false, 
-        filter: None, 
-        filter_map: None, 
-        map: None, 
+    let mut config = FieldConfig {
+        each: false,
+        filter: None,
+        filter_map: None,
+        map: None,
         key: None,
         sort_by: None,
         sort_by_key: None,
@@ -89,7 +89,7 @@ fn parse_provide_attrs(field: &syn::Field) -> syn::Result<FieldConfig> {
                 if meta.path.is_ident("each") {
                     config.each = true;
                     Ok(())
-                } 
+                }
                 // Filtering & Mapping
                 else if meta.path.is_ident("filter") {
                     config.filter = Some(meta.value()?.parse()?);
@@ -112,7 +112,7 @@ fn parse_provide_attrs(field: &syn::Field) -> syn::Result<FieldConfig> {
                     config.key = Some(meta.value()?.parse()?);
                     mapping_spans.push("key");
                     Ok(())
-                } 
+                }
                 // Sorting
                 else if meta.path.is_ident("sort_by") {
                     config.sort_by = Some(meta.value()?.parse()?);
@@ -126,8 +126,7 @@ fn parse_provide_attrs(field: &syn::Field) -> syn::Result<FieldConfig> {
                     config.sort_by_field = Some(meta.value()?.parse()?);
                     sorting_spans.push("sort_by_field");
                     Ok(())
-                } 
-                else {
+                } else {
                     Err(meta.error("unsupported provide attribute"))
                 }
             })?;
@@ -136,24 +135,51 @@ fn parse_provide_attrs(field: &syn::Field) -> syn::Result<FieldConfig> {
 
     // Mutually Exclusive Validations
     if filtering_spans.len() > 1 {
-        return Err(syn::Error::new_spanned(field, format!("Filtering attributes ({}) are mutually exclusive.", filtering_spans.join(", "))));
+        return Err(syn::Error::new_spanned(
+            field,
+            format!(
+                "Filtering attributes ({}) are mutually exclusive.",
+                filtering_spans.join(", ")
+            ),
+        ));
     }
     if mapping_spans.len() > 1 {
-        return Err(syn::Error::new_spanned(field, format!("Mapping attributes ({}) are mutually exclusive.", mapping_spans.join(", "))));
+        return Err(syn::Error::new_spanned(
+            field,
+            format!(
+                "Mapping attributes ({}) are mutually exclusive.",
+                mapping_spans.join(", ")
+            ),
+        ));
     }
     if sorting_spans.len() > 1 {
-        return Err(syn::Error::new_spanned(field, format!("Sorting attributes ({}) are mutually exclusive.", sorting_spans.join(", "))));
+        return Err(syn::Error::new_spanned(
+            field,
+            format!(
+                "Sorting attributes ({}) are mutually exclusive.",
+                sorting_spans.join(", ")
+            ),
+        ));
     }
 
     // Not Yet Implemented Checks
     if config.filter_map.is_some() {
-        return Err(syn::Error::new_spanned(field, "The `filter_map` attribute is not yet implemented."));
+        return Err(syn::Error::new_spanned(
+            field,
+            "The `filter_map` attribute is not yet implemented.",
+        ));
     }
     if config.sort_by_key.is_some() {
-        return Err(syn::Error::new_spanned(field, "The `sort_by_key` attribute is not yet implemented."));
+        return Err(syn::Error::new_spanned(
+            field,
+            "The `sort_by_key` attribute is not yet implemented.",
+        ));
     }
     if config.sort_by_field.is_some() {
-        return Err(syn::Error::new_spanned(field, "The `sort_by_field` attribute is not yet implemented."));
+        return Err(syn::Error::new_spanned(
+            field,
+            "The `sort_by_field` attribute is not yet implemented.",
+        ));
     }
 
     Ok(config)
@@ -178,68 +204,68 @@ fn find_hygiene_prefix(generics: &syn::Generics) -> String {
 
 /// Derives the `Provide` trait for a struct.
 ///
-/// This macro automatically implements dependency resolution for named structs, 
-/// tuple structs, and unit structs. By default, it eagerly provides exactly 
+/// This macro automatically implements dependency resolution for named structs,
+/// tuple structs, and unit structs. By default, it eagerly provides exactly
 /// one instance of each field using `<FieldType as Provide>::first(assets)`.
 ///
-/// You can customize how fields are iterated, filtered, mapped, and sorted 
+/// You can customize how fields are iterated, filtered, mapped, and sorted
 /// using the `#[provide(...)]` attribute.
 ///
 /// # Attribute Groups
-/// 
-/// Attributes are categorized into groups. You may combine attributes from 
-/// *different* groups on a single field, but combining multiple attributes 
+///
+/// Attributes are categorized into groups. You may combine attributes from
+/// *different* groups on a single field, but combining multiple attributes
 /// from the *same* group will result in a compile error.
 ///
 /// ## 1. Iteration (`each`)
-/// Normally, a field evaluates to a single instance. Marking a field with 
-/// `#[provide(each)]` transforms it into a loop, yielding every available 
+/// Normally, a field evaluates to a single instance. Marking a field with
+/// `#[provide(each)]` transforms it into a loop, yielding every available
 /// instance of that dependency.
-/// 
-/// - **Cartesian Products:** If multiple fields are marked with `each`, the 
+///
+/// - **Cartesian Products:** If multiple fields are marked with `each`, the
 ///   macro generates a lazy Cartesian product.
-/// - **Loop Order:** The order of fields in the struct defines the loop nesting. 
-///   The first `each` field forms the outermost loop, and the last `each` field 
+/// - **Loop Order:** The order of fields in the struct defines the loop nesting.
+///   The first `each` field forms the outermost loop, and the last `each` field
 ///   forms the innermost loop.
 ///
 /// ## 2. Filtering
 /// Filters the iterator before yielding items.
-/// - `filter = |item| ...`: Takes a closure returning a `bool`. Only items 
+/// - `filter = |item| ...`: Takes a closure returning a `bool`. Only items
 ///   returning `true` are kept.
 //X - `filter_map = |item: SourceType| ...` (Not yet implemented)
 ///
 /// ## 3. Mapping
 /// Transforms the dependency type into a different type.
 /// - `map = |item: SourceType| ...`: Maps the provided item to a new value.
-///   **Note:** Due to Rust's closure type inference limitations inside macros, 
+///   **Note:** Due to Rust's closure type inference limitations inside macros,
 ///   you must explicitly annotate the closure's input type.
-/// - `key = |item| ...`: A shorthand for mapping an item into a `(Key, Value)` 
-///   tuple (useful for `HashMap`). The closure takes a reference (`&item`) and 
+/// - `key = |item| ...`: A shorthand for mapping an item into a `(Key, Value)`
+///   tuple (useful for `HashMap`). The closure takes a reference (`&item`) and
 ///   returns the key.
 ///
 /// ## 4. Sorting
-/// Sorts the items before they are yielded. **Note:** Sorting forces eager 
+/// Sorts the items before they are yielded. **Note:** Sorting forces eager
 /// evaluation (collecting all items into a `Vec` internally).
 /// - `sort_by = |a, b| ...`: Takes a closure returning `std::cmp::Ordering`.
 //X - `sort_by_key = |item| ...` (Not yet implemented)
 //X - `sort_by_field = field_name` (Not yet implemented)
 ///
 /// # Evaluation Order
-/// If multiple attributes are applied to the same field, they are evaluated in 
+/// If multiple attributes are applied to the same field, they are evaluated in
 /// this order:
 /// 1. `filter` (operates on the original dependency type)
 /// 2. `map` / `key` (transforms the type)
 /// 3. `sort_by` (operates on the *mapped* output type)
 ///
 /// # Examples
-/// 
+///
 /// TODO: add nice examples
 #[proc_macro_derive(Provide, attributes(provide))]
 pub fn derive_provide(input: TokenStream) -> TokenStream {
     // Parse input tokens into a syntax tree
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
-    
+
     // `Provide` crate path (Defaults to `::markhor_core`)
     let crate_path = match parse_struct_crate_path(&input.attrs) {
         Ok(Some(path)) => path,
@@ -277,7 +303,7 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
 
                 let mut field_vars = Vec::new();
                 let mut field_init_prefixes = Vec::new();
-                
+
                 let mut non_each_inits = Vec::new();
                 let mut each_loops = Vec::new();
                 let mut normal_fields = Vec::new();
@@ -299,7 +325,7 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
                         Ok(a) => a,
                         Err(e) => return e.to_compile_error().into(),
                     };
-                    
+
                     let ty = &field.ty;
                     field_vars.push(var_ident.clone());
                     field_init_prefixes.push(init_prefix);
@@ -307,8 +333,8 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
                     // 1. Determine base iterator call and any map transformations
                     let (base_iter_call, map_step) = if let Some((map_expr, src_ty)) = &attrs.map {
                         (
-                            quote! { <#src_ty as #crate_path::dependencies::Provide>::iter(__assets)? }, 
-                            quote! { let __iter = ::std::iter::Iterator::map(__iter, #map_expr); }
+                            quote! { <#src_ty as #crate_path::dependencies::Provide>::iter(__assets)? },
+                            quote! { let __iter = ::std::iter::Iterator::map(__iter, #map_expr); },
                         )
                     } else if let Some((_filter_map_expr, _src_ty)) = &attrs.filter_map {
                         // TODO: Implement filter_map
@@ -323,7 +349,7 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
                                     < <<#ty as #crate_path::dependencies::Provide>::Item as __ProvideKeyTupleExtractor>::Value as #crate_path::dependencies::Provide >::iter(__assets)?
                                 }
                             },
-                            quote! { 
+                            quote! {
                                 let __iter = {
                                     // Helper function bridges the inference gap by locking the closure's inputs tightly to the iterator's outputs
                                     fn __apply_key_mapper<#g_i, #g_v, #g_k, #g_f>(
@@ -341,12 +367,12 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
                                     }
                                     __apply_key_mapper(__iter, #key_expr)
                                 };
-                            }
+                            },
                         )
                     } else {
                         (
-                            quote! { <<#ty as #crate_path::dependencies::Provide>::Item as #crate_path::dependencies::Provide>::iter(__assets)? }, 
-                            quote! {}
+                            quote! { <<#ty as #crate_path::dependencies::Provide>::Item as #crate_path::dependencies::Provide>::iter(__assets)? },
+                            quote! {},
                         )
                     };
 
@@ -422,7 +448,7 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
                     for (var_ident, init_prefix) in field_vars.iter().zip(&field_init_prefixes) {
                         struct_inits.push(quote! { #init_prefix #var_ident });
                     }
-                    
+
                     let construct_expr = if is_named {
                         quote! { Self { #( #struct_inits ),* } }
                     } else {
@@ -437,7 +463,7 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
                 } else {
                     let mut each_inits = Vec::new();
                     let mut each_fields = Vec::new();
-                    
+
                     // Setup the initial bindings (evaluating outer iterator once, caching inner loops)
                     for (i, (name, iter_expr)) in each_loops.iter().enumerate() {
                         each_fields.push(name.clone());
@@ -447,10 +473,10 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
                             each_inits.push(quote! { let #name = ::std::iter::Iterator::collect::<::std::vec::Vec<_>>(#iter_expr); });
                         }
                     }
-                    
+
                     let n = each_fields.len() - 1;
                     let innermost_field = &each_fields[n];
-                    
+
                     // Clone all fields inside instantiation except the innermost each field
                     let mut struct_inits = Vec::new();
                     for (var_ident, init_prefix) in field_vars.iter().zip(&field_init_prefixes) {
@@ -460,23 +486,23 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
                             struct_inits.push(quote! { #init_prefix #var_ident.clone() });
                         }
                     }
-                    
+
                     let mut current_expr = if is_named {
                         quote! { Self { #( #struct_inits ),* } }
                     } else {
                         quote! { Self ( #( #struct_inits ),* ) }
                     };
-                    
+
                     // Fold iterators backwards from innermost to outermost
                     for i in (0..=n).rev() {
                         let field_i = &each_fields[i];
-                        
+
                         let iter_i = if i == 0 {
                             quote! { #field_i }
                         } else {
                             quote! { ::std::iter::IntoIterator::into_iter(#field_i.clone()) }
                         };
-                        
+
                         if i == n {
                             // Innermost each loop is just a map
                             current_expr = quote! {
@@ -502,7 +528,7 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
                                     clones.push(quote! { let #f = #f.clone(); });
                                 }
                             }
-                            
+
                             current_expr = quote! {
                                 ::std::iter::Iterator::flat_map(#iter_i, move |#field_i| {
                                     #( #clones )*
@@ -511,7 +537,7 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
                             };
                         }
                     }
-                    
+
                     quote! {
                         #( #non_each_inits )*
                         #( #each_inits )*

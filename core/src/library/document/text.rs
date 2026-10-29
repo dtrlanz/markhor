@@ -1,9 +1,18 @@
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, ops::{Deref, DerefMut}, sync::OnceLock};
+use std::{
+    collections::HashMap,
+    ops::{Deref, DerefMut},
+    sync::OnceLock,
+};
 
 use tracing::{debug, info, instrument, trace, warn};
 
-use crate::{chunking::{Chunker, ChunkerError}, extension::Comp, library::{HashValue, document::chunks::ChunkCache}, markdown::{ToMarkdown, WITH_MILESTONES, WITHOUT_XML}};
+use crate::{
+    chunking::{Chunker, ChunkerError},
+    extension::Comp,
+    library::{HashValue, document::chunks::ChunkCache},
+    markdown::{ToMarkdown, WITH_MILESTONES, WITHOUT_XML},
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Text {
@@ -20,14 +29,18 @@ impl Text {
     }
 
     pub fn hash(&self) -> HashValue {
-        self.hash.get_or_init(|| {
-            let mut hasher = Sha256::new();
-            for part in &self.parts {
-                hasher.update(part.id.as_bytes());
-                hasher.update(part.content.as_bytes());
-            }
-            HashValue { value: hasher.finalize().into() }
-        }).clone()
+        self.hash
+            .get_or_init(|| {
+                let mut hasher = Sha256::new();
+                for part in &self.parts {
+                    hasher.update(part.id.as_bytes());
+                    hasher.update(part.content.as_bytes());
+                }
+                HashValue {
+                    value: hasher.finalize().into(),
+                }
+            })
+            .clone()
     }
 
     pub fn parts(&self) -> &[Part] {
@@ -64,13 +77,17 @@ impl Text {
                     id: String::new(),
                     content: text.to_string(),
                 }];
-            },
+            }
             // Text has multiple parts divided by XML milestones
             (Some(text), Some(_parts)) => {
                 self.parts.clear();
                 for r in text.to_markdown(WITH_MILESTONES).regions() {
                     if &*r.unit == "part" {
-                        let id = r.attribute("id").flatten().map(|s| s.to_string()).unwrap_or_default();
+                        let id = r
+                            .attribute("id")
+                            .flatten()
+                            .map(|s| s.to_string())
+                            .unwrap_or_default();
                         if self.parts.iter().any(|part| part.id == id) {
                             warn!("Duplicate text part id '{}', skipping", id);
                             continue;
@@ -81,11 +98,11 @@ impl Text {
                         });
                     }
                 }
-            },
+            }
             // No text
             (None, _) => {
                 self.parts.clear();
-            },
+            }
         }
     }
 
@@ -97,8 +114,12 @@ impl Text {
         } else {
             let mut text = String::new();
             for Part { id, content } in self.parts.iter() {
-                text.push_str(content.to_markdown(WITHOUT_XML)
-                    .prepend_milestone("part".into(), id, vec![]).as_ref());
+                text.push_str(
+                    content
+                        .to_markdown(WITHOUT_XML)
+                        .prepend_milestone("part".into(), id, vec![])
+                        .as_ref(),
+                );
                 text.push_str("\n");
             }
             Some(text)
@@ -133,9 +154,17 @@ impl Part {
     }
 
     #[instrument(skip(self, chunker, cached_chunks))]
-    pub(crate) fn validate_cached_chunks(&self, chunker: &Comp<dyn Chunker>, cached_chunks: &mut Vec<ChunkCache>) -> Result<(), ChunkerError> {
+    pub(crate) fn validate_cached_chunks(
+        &self,
+        chunker: &Comp<dyn Chunker>,
+        cached_chunks: &mut Vec<ChunkCache>,
+    ) -> Result<(), ChunkerError> {
         let chunks = chunker.chunk(&self.content)?;
-        debug!("Generated {} chunks for text part '{}'", chunks.len(), self.id);
+        debug!(
+            "Generated {} chunks for text part '{}'",
+            chunks.len(),
+            self.id
+        );
         cached_chunks.truncate(chunks.len());
         for (idx, chunk) in chunks.into_iter().enumerate() {
             let chunk_text = &self.content[chunk.text_range.clone()];

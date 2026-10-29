@@ -1,6 +1,5 @@
 use markhor_core::dependencies::{Assets, Provide, ResolveDependencyError, Session};
 
-
 #[test]
 fn provide_simple_struct() {
     #[derive(Debug, PartialEq, Eq, Provide)]
@@ -15,7 +14,6 @@ fn provide_simple_struct() {
     let foo: Foo = session.resolve().unwrap();
     assert_eq!(foo.bar, Bar);
 }
-
 
 #[cfg(test)]
 mod hygiene_tests {
@@ -34,9 +32,11 @@ mod hygiene_tests {
             Ok(std::iter::once(Dummy { value: 42 }))
         }
 
-        fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+        fn iter_from_items<I>(
+            items: I,
+        ) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
         where
-            I: Iterator<Item = Self::Item>
+            I: Iterator<Item = Self::Item>,
         {
             Ok(items)
         }
@@ -53,8 +53,8 @@ mod hygiene_tests {
         pub struct ShadowSession {
             // Does this shadow the `session: &Session` argument for the next field?
             pub session: Dummy,
-            
-            // If `session` was shadowed above, `<Dummy as Provide>::iter(session)?` 
+
+            // If `session` was shadowed above, `<Dummy as Provide>::iter(session)?`
             // will try to pass `Dummy` instead of `&Session`!
             pub next_field: Dummy,
         }
@@ -65,7 +65,7 @@ mod hygiene_tests {
             // Same as above, but creates `let session = ...` as an iterator or Vec!
             #[provide(each)]
             pub session: Dummy,
-            
+
             pub next_field: Dummy,
         }
     }
@@ -87,10 +87,10 @@ mod hygiene_tests {
             pub __item: Dummy,
             pub __k: Dummy,
             pub __vec: Dummy,
-            
+
             // Does the macro use `results` anywhere still? Let's check.
             pub results: Dummy,
-            
+
             // Tuple struct internal field names (`__field_0`, `__field_1`)
             pub __field_0: Dummy,
         }
@@ -128,17 +128,19 @@ mod hygiene_tests {
         use super::*;
 
         // Let's redefine standard library names the macro might rely on without absolute paths.
-        
+
         #[allow(dead_code, non_upper_case_globals)]
         const Ok: () = (); // Hijack `Ok`
-        
+
         #[allow(dead_code)]
-        enum Result { // Hijack `Result`
+        enum Result {
+            // Hijack `Result`
             SomethingElse,
         }
-        
+
         #[allow(dead_code)]
-        mod std { // Hijack `std` itself!
+        mod std {
+            // Hijack `std` itself!
             pub mod iter {
                 pub trait Iterator {}
             }
@@ -189,7 +191,7 @@ mod hygiene_tests {
             // If it creates it twice in the same scope, this will fail!
             #[provide(key = |d| d.value)]
             pub dummy_map_1: HashMap<usize, Dummy>,
-            
+
             #[provide(key = |d| d.value)]
             pub dummy_map_2: HashMap<usize, Dummy>,
         }
@@ -199,11 +201,11 @@ mod hygiene_tests {
     // 7. MISSING SCOPE (EXTERN CRATE HYGIENE)
     // =========================================================================
     mod missing_error_type {
+        use super::Provide;
         #[allow(unused_imports)]
         use super::Session;
-        use super::Provide;
         // Notice we explicitly DO NOT import `ResolveDependencyError` here!
-        
+
         #[allow(dead_code)]
         #[derive(Debug, Provide)]
         pub struct MissingErrorImport {
@@ -218,22 +220,22 @@ mod hygiene_tests {
     // =========================================================================
     mod renamed_imports {
         // We explicitly DO NOT use `super::*` so the original names aren't in scope.
+        use super::Dummy;
         use super::Provide as RenamedProvide;
         #[allow(unused_imports)]
-        use super::Session as RenamedSession;
-        #[allow(unused_imports)]
         use super::ResolveDependencyError as RenamedError;
-        use super::Dummy;
+        #[allow(unused_imports)]
+        use super::Session as RenamedSession;
 
         #[allow(dead_code)]
         #[derive(Debug, RenamedProvide)]
         pub struct RenamedMacroUsage {
             // Will fail because macro generates `impl Provide for RenamedMacroUsage`
             // instead of using the path the trait was actually imported under (or an absolute path).
-            
+
             // Will fail because macro generates `fn iter(session: &Session)`
             // but `Session` is not in scope!
-            
+
             // Will fail because macro calls `<Dummy as Provide>::iter(session)`
             // but `Provide` is not in scope!
             pub dummy: Dummy,

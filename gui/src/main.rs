@@ -2,7 +2,6 @@ fn main() {
     println!("Hello, world!");
 }
 
-
 // Draft Notes for Implementation:
 
 //     Framework:

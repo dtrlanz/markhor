@@ -4,8 +4,8 @@ use markhor_core::{chat::chat::ChatModel, embedding::EmbeddingModel, extension::
 
 mod chat;
 mod embed;
-mod shared;
 mod error;
+mod shared;
 
 const EXTENSION_URI: &str = "https://github.com/dtrlanz/markhor/tree/main/extensions/src/gemini";
 
@@ -54,20 +54,18 @@ impl Extension for GeminiClientExtension {
     }
 
     fn chat_models(&self) -> Vec<Box<dyn ChatModel>> {
-        let chat = GeminiChatClient::new_with_shared_client(
-            self.shared_client.clone(), 
-            None
-        ).unwrap();     // `new_with_shared_client` is infallible, so unwrap is safe here
+        let chat =
+            GeminiChatClient::new_with_shared_client(self.shared_client.clone(), None).unwrap(); // `new_with_shared_client` is infallible, so unwrap is safe here
         vec![Box::new(chat)]
     }
 
     fn embedding_models(&self) -> Vec<Box<dyn EmbeddingModel>> {
         let embedder = GeminiEmbedder::new_with_shared_client(
-            self.shared_client.clone(), 
+            self.shared_client.clone(),
             "text-embedding-004".into(),
             None,
-        ).unwrap();     // `new_with_shared_client` is infallible, so unwrap is safe here
+        )
+        .unwrap(); // `new_with_shared_client` is infallible, so unwrap is safe here
         vec![Box::new(embedder)]
     }
 }
-

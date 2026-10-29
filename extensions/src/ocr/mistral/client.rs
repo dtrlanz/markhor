@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::STANDARD as Base64Standard};
 use markhor_core::convert::{ConversionError, Converter};
 use markhor_core::extension::Extension;
 use mime::Mime;
@@ -10,10 +11,7 @@ use reqwest::multipart::{Form, Part};
 use reqwest::{Client, Response, StatusCode};
 use tokio::fs::{self, File};
 use tracing::{debug, error, info, instrument, warn};
-use url::Url;
-use base64::{engine::general_purpose::STANDARD as Base64Standard, Engine as _}; // For saving images
-
-
+use url::Url; // For saving images
 
 use crate::ocr::mistral::error::MistralApiErrorResponse;
 use crate::ocr::mistral::helpers::{DocumentInput, HttpValidationErrorResponse};
@@ -23,8 +21,6 @@ use super::error::{FileUploadError, OcrError, OcrToFileError, SignedUrlError};
 use super::helpers::{FileUploadResponse, OcrRequest, OcrResponse, SignedUrlResponse}; // Added instrument for tracing
 
 const MISTRAL_API_BASE: &str = "https://api.mistral.ai/v1";
-
-
 
 // Assume a client structure like this exists
 pub(crate) struct MistralClientInner {
@@ -39,10 +35,7 @@ impl MistralClientInner {
     /// The document source must be a public URL or a pre-signed URL
     /// obtained from Mistral's file upload service.
     #[instrument(skip(self, request), fields(model = %request.model))] // Added tracing span
-    pub async fn process_document(
-        &self,
-        request: &OcrRequest,
-    ) -> Result<OcrResponse, OcrError> {
+    pub async fn process_document(&self, request: &OcrRequest) -> Result<OcrResponse, OcrError> {
         let url = format!("{}/ocr", MISTRAL_API_BASE);
         debug!(target: "mistral_api::ocr", url = %url, "Sending OCR request");
 
@@ -69,7 +62,8 @@ impl MistralClientInner {
 
     /// Helper function to handle OCR success/error responses (REFINED)
     #[instrument(skip(response), fields(status = response.status().as_u16()))]
-    async fn handle_response(response: Response) -> Result<OcrResponse, OcrError> { // Returns OcrError now
+    async fn handle_response(response: Response) -> Result<OcrResponse, OcrError> {
+        // Returns OcrError now
         let status = response.status();
 
         if status.is_success() {
@@ -78,9 +72,9 @@ impl MistralClientInner {
             match response.json::<OcrResponse>().await {
                 Ok(ocr_response) => Ok(ocr_response),
                 Err(e) => {
-                     error!(target: "mistral_api::ocr", error = %e, "Failed to deserialize success response");
-                     // This indicates a problem even on success status - treat as request error
-                     Err(OcrError::RequestFailed(e)) // Or a more specific "UnexpectedResponseBody" error?
+                    error!(target: "mistral_api::ocr", error = %e, "Failed to deserialize success response");
+                    // This indicates a problem even on success status - treat as request error
+                    Err(OcrError::RequestFailed(e)) // Or a more specific "UnexpectedResponseBody" error?
                 }
             }
         } else {
@@ -88,11 +82,12 @@ impl MistralClientInner {
 
             // --- START REFINEMENT ---
             // Explicitly check for 422 Unprocessable Entity
-            if status == StatusCode::UNPROCESSABLE_ENTITY { // 422
-                 match response.json::<HttpValidationErrorResponse>().await {
+            if status == StatusCode::UNPROCESSABLE_ENTITY {
+                // 422
+                match response.json::<HttpValidationErrorResponse>().await {
                     Ok(validation_error) => {
                         error!(target: "mistral_api::ocr", ?validation_error, "Parsed validation error details");
-                         Err(OcrError::ValidationError {
+                        Err(OcrError::ValidationError {
                             status: status.as_u16(),
                             details: validation_error.detail,
                         })
@@ -100,29 +95,35 @@ impl MistralClientInner {
                     Err(e) => {
                         // Status was 422, but body didn't match expected structure
                         warn!(target: "mistral_api::ocr", error = %e, "Status was 422, but failed to parse HttpValidationErrorResponse");
-                         Err(OcrError::ErrorDeserializationFailed { status: status.as_u16(), source: e })
-                         // Optionally, try reading body as text and returning generic ApiError
+                        Err(OcrError::ErrorDeserializationFailed {
+                            status: status.as_u16(),
+                            source: e,
+                        })
+                        // Optionally, try reading body as text and returning generic ApiError
                     }
                 }
             } else {
                 // Handle other non-422 error statuses using the generic structure
                 match response.json::<MistralApiErrorResponse>().await {
-                     Ok(api_error) => {
+                    Ok(api_error) => {
                         error!(target: "mistral_api::ocr", ?api_error, "Parsed generic API error details");
-                         Err(OcrError::ApiError {
-                             status: status.as_u16(),
-                             code: api_error.code,
-                             message: api_error.message,
-                         })
-                     }
-                     Err(e) => {
+                        Err(OcrError::ApiError {
+                            status: status.as_u16(),
+                            code: api_error.code,
+                            message: api_error.message,
+                        })
+                    }
+                    Err(e) => {
                         error!(target: "mistral_api::ocr", error = %e, "Failed to deserialize generic error response body");
-                         Err(OcrError::ErrorDeserializationFailed { status: status.as_u16(), source: e })
+                        Err(OcrError::ErrorDeserializationFailed {
+                            status: status.as_u16(),
+                            source: e,
+                        })
                         // Optionally, try reading body as text for ApiError message
                         // let body_text = response.text().await.unwrap_or_else(|_| format!("API error status {}", status));
                         // Err(OcrError::ApiError { status: status.as_u16(), code: None, message: body_text })
-                     }
-                 }
+                    }
+                }
             }
             // --- END REFINEMENT ---
         }
@@ -168,11 +169,10 @@ impl MistralClientInner {
         // Use `with_length` hint if possible, otherwise reqwest chunks it.
         let file_size = file.metadata().await?.len();
         let stream = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
-        let file_part = Part::stream_with_length(stream, file_size)
-            .file_name(filename.clone());
-            // Might need to explicitly set MIME type if not inferred correctly,
-            // though reqwest often does a good job based on filename extension.
-            //.mime_str("application/pdf")?;
+        let file_part = Part::stream_with_length(stream, file_size).file_name(filename.clone());
+        // Might need to explicitly set MIME type if not inferred correctly,
+        // though reqwest often does a good job based on filename extension.
+        //.mime_str("application/pdf")?;
 
         // Build the multipart form
         let form = Form::new()
@@ -206,10 +206,13 @@ impl MistralClientInner {
 
     /// Helper function specific to handling file upload responses.
     #[instrument(skip(response), fields(status = response.status().as_u16()))]
-    async fn handle_file_upload_response(response: Response) -> Result<FileUploadResponse, FileUploadError> {
+    async fn handle_file_upload_response(
+        response: Response,
+    ) -> Result<FileUploadResponse, FileUploadError> {
         let status = response.status();
 
-        if status.is_success() { // Assuming 2xx is success (e.g., 200 OK or 201 Created)
+        if status.is_success() {
+            // Assuming 2xx is success (e.g., 200 OK or 201 Created)
             debug!(target: "mistral_api::files", "File upload successful");
             match response.json::<FileUploadResponse>().await {
                 Ok(upload_response) => Ok(upload_response),
@@ -223,7 +226,8 @@ impl MistralClientInner {
             error!(target: "mistral_api::files", "File upload returned error status");
 
             // Special handling for 422 Validation Error
-            if status == StatusCode::UNPROCESSABLE_ENTITY { // 422
+            if status == StatusCode::UNPROCESSABLE_ENTITY {
+                // 422
                 match response.json::<HttpValidationErrorResponse>().await {
                     Ok(validation_error) => {
                         error!(target: "mistral_api::files", ?validation_error, "Parsed validation error details");
@@ -236,7 +240,10 @@ impl MistralClientInner {
                         // Failed to parse the specific 422 structure, treat as generic error below
                         warn!(target: "mistral_api::files", error = %e, "Status was 422, but failed to parse HttpValidationErrorResponse");
                         // Fall through to generic error parsing attempt
-                        Err(FileUploadError::ErrorDeserializationFailed { status: status.as_u16(), source: e })
+                        Err(FileUploadError::ErrorDeserializationFailed {
+                            status: status.as_u16(),
+                            source: e,
+                        })
                         // Alternatively, try to read body as text and put in generic ApiError message?
                     }
                 }
@@ -253,7 +260,10 @@ impl MistralClientInner {
                     }
                     Err(e) => {
                         error!(target: "mistral_api::files", error = %e, "Failed to deserialize generic error response body");
-                        Err(FileUploadError::ErrorDeserializationFailed { status: status.as_u16(), source: e })
+                        Err(FileUploadError::ErrorDeserializationFailed {
+                            status: status.as_u16(),
+                            source: e,
+                        })
                         // Could also try reading body as text here for better error message
                         // let body_text = response.text().await.unwrap_or_else(|_| "Could not read error body".to_string());
                         // Err(FileUploadError::ApiError { status: status.as_u16(), code: None, message: body_text })
@@ -288,13 +298,14 @@ impl MistralClientInner {
 
         // Add expiry query parameter if provided
         if let Some(hours) = expiry_hours {
-            url.query_pairs_mut().append_pair("expiry", &hours.to_string());
+            url.query_pairs_mut()
+                .append_pair("expiry", &hours.to_string());
         }
 
         debug!(target: "mistral_api::files::url", url = %url, "Requesting signed URL");
 
         // Build and send the GET request
-        let response = self 
+        let response = self
             .client
             .get(url) // Use the constructed Url object
             .header(AUTHORIZATION, format!("Bearer {}", self.api_key))
@@ -314,7 +325,6 @@ impl MistralClientInner {
         Self::handle_signed_url_response(response, file_id).await // Pass file_id for better 404 errors
     }
 
-
     /// Helper function specific to handling signed URL responses.
     #[instrument(skip(response), fields(status = response.status().as_u16(), file_id = %file_id))]
     async fn handle_signed_url_response(
@@ -323,7 +333,8 @@ impl MistralClientInner {
     ) -> Result<SignedUrlResponse, SignedUrlError> {
         let status = response.status();
 
-        if status.is_success() { // Should be 200 OK
+        if status.is_success() {
+            // Should be 200 OK
             debug!(target: "mistral_api::files::url", "Signed URL request successful");
             match response.json::<SignedUrlResponse>().await {
                 Ok(url_response) => Ok(url_response),
@@ -337,12 +348,13 @@ impl MistralClientInner {
 
             // --- Specific Error Handling ---
             match status {
-                StatusCode::NOT_FOUND => { // Handle 404 specifically
+                StatusCode::NOT_FOUND => {
+                    // Handle 404 specifically
                     // Try to parse generic error body for message, but prioritize NotFound type
                     let api_error_opt = response.json::<MistralApiErrorResponse>().await.ok();
                     let message = api_error_opt.map_or_else(
                         || format!("File with ID '{}' not found.", file_id), // Default message
-                        |ae| ae.message // Use API message if available
+                        |ae| ae.message, // Use API message if available
                     );
                     error!(target: "mistral_api::files::url", %message, "File not found (404)");
                     Err(SignedUrlError::NotFound {
@@ -350,7 +362,8 @@ impl MistralClientInner {
                         message,
                     })
                 }
-                StatusCode::UNPROCESSABLE_ENTITY => { // Handle potential 422 for bad 'expiry'
+                StatusCode::UNPROCESSABLE_ENTITY => {
+                    // Handle potential 422 for bad 'expiry'
                     match response.json::<HttpValidationErrorResponse>().await {
                         Ok(validation_error) => {
                             error!(target: "mistral_api::files::url", ?validation_error, "Parsed validation error details");
@@ -361,11 +374,15 @@ impl MistralClientInner {
                         }
                         Err(e) => {
                             warn!(target: "mistral_api::files::url", error = %e, "Status was 422, but failed to parse HttpValidationErrorResponse");
-                            Err(SignedUrlError::ErrorDeserializationFailed { status: status.as_u16(), source: e })
+                            Err(SignedUrlError::ErrorDeserializationFailed {
+                                status: status.as_u16(),
+                                source: e,
+                            })
                         }
                     }
                 }
-                _ => { // Handle all other errors using the generic path
+                _ => {
+                    // Handle all other errors using the generic path
                     match response.json::<MistralApiErrorResponse>().await {
                         Ok(api_error) => {
                             error!(target: "mistral_api::files::url", ?api_error, "Parsed generic API error details");
@@ -377,7 +394,10 @@ impl MistralClientInner {
                         }
                         Err(e) => {
                             error!(target: "mistral_api::files::url", error = %e, "Failed to deserialize generic error response body");
-                            Err(SignedUrlError::ErrorDeserializationFailed { status: status.as_u16(), source: e })
+                            Err(SignedUrlError::ErrorDeserializationFailed {
+                                status: status.as_u16(),
+                                source: e,
+                            })
                         }
                     }
                 }
@@ -421,11 +441,12 @@ impl MistralClientInner {
         }
         if !target_md_path.to_string_lossy().ends_with(".md") {
             return Err(OcrToFileError::InvalidTargetPath(
-                "Target path must end with .md".to_string()
+                "Target path must end with .md".to_string(),
             ));
         }
-        let output_base_dir = target_md_path.parent().ok_or_else(|| OcrToFileError::NoParentDirectory(target_md_path.to_path_buf()))?;
-
+        let output_base_dir = target_md_path
+            .parent()
+            .ok_or_else(|| OcrToFileError::NoParentDirectory(target_md_path.to_path_buf()))?;
 
         // --- Determine Input Type from Extension ---
         let extension = source_path
@@ -446,13 +467,11 @@ impl MistralClientInner {
         };
         debug!(target: "mistral_api::convenience", %document_input_type, "Determined input type");
 
-
         // --- Step 1: Upload File ---
         debug!(target: "mistral_api::convenience", "Step 1: Uploading source file...");
         let upload_response = self.upload_file(source_path, "ocr").await?; // Propagates FileUploadError via From
         let file_id = upload_response.id;
         debug!(target: "mistral_api::convenience", %file_id, "Upload successful");
-
 
         // --- Step 2: Get Signed URL ---
         debug!(target: "mistral_api::convenience", "Step 2: Getting signed URL...");
@@ -461,12 +480,15 @@ impl MistralClientInner {
         let usable_url = signed_url_response.url;
         debug!(target: "mistral_api::convenience", "Signed URL obtained");
 
-
         // --- Step 3: Process Document/Image (OCR) ---
         debug!(target: "mistral_api::convenience", "Step 3: Calling OCR endpoint...");
         let document_input = match document_input_type {
-            "document" => DocumentInput::DocumentUrl { document_url: usable_url },
-            "image" => DocumentInput::ImageUrl { image_url: usable_url },
+            "document" => DocumentInput::DocumentUrl {
+                document_url: usable_url,
+            },
+            "image" => DocumentInput::ImageUrl {
+                image_url: usable_url,
+            },
             _ => unreachable!(), // Should have been handled above
         };
 
@@ -475,15 +497,26 @@ impl MistralClientInner {
             document: document_input,
             include_image_base64: Some(true), // Need images for saving
             // Reset page/image limits if it's an image - API might ignore anyway
-            pages: if document_input_type == "image" { None } else { None }, // Or keep None always? Test API behavior.
-            image_limit: if document_input_type == "image" { None } else { None },
-            image_min_size: if document_input_type == "image" { None } else { None },
+            pages: if document_input_type == "image" {
+                None
+            } else {
+                None
+            }, // Or keep None always? Test API behavior.
+            image_limit: if document_input_type == "image" {
+                None
+            } else {
+                None
+            },
+            image_min_size: if document_input_type == "image" {
+                None
+            } else {
+                None
+            },
             id: None,
         };
 
         let ocr_response = self.process_document(&ocr_request).await?; // Propagates OcrError via From
         debug!(target: "mistral_api::convenience", "OCR processing successful");
-
 
         // --- Step 4: Save Output (Custom Logic) ---
         debug!(target: "mistral_api::convenience", "Step 4: Saving results...");
@@ -493,7 +526,6 @@ impl MistralClientInner {
             .await
             .map_err(OcrToFileError::SaveIo)?;
         debug!(target: "mistral_api::convenience", path = %output_base_dir.display(), "Ensured output base directory exists");
-
 
         // 4a. Combine and write Markdown to the target path
         let mut combined_markdown = String::new();
@@ -511,7 +543,6 @@ impl MistralClientInner {
             .await
             .map_err(OcrToFileError::SaveIo)?;
         debug!(target: "mistral_api::convenience", path = %target_md_path.display(), "Wrote Markdown file");
-
 
         // 4b. Decode and write images to parent/images/ directory
         let images_dir = output_base_dir.join("images");
@@ -565,10 +596,7 @@ impl MistralClientInner {
         info!(target: "mistral_api::convenience", "OCR conversion to file completed successfully.");
         Ok(())
     }
-
-
 }
-
 
 pub struct MistralClient {
     inner: Arc<MistralClientInner>,

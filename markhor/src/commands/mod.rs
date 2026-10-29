@@ -1,10 +1,16 @@
-
-use std::{path::{Path, PathBuf}, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 // Import argument structs from the cli module
-use crate::{app::Markhor, cli::{
-    ChatArgs, ConfigArgs, ConfigCommands, ImportArgs, InstallArgs, OpenArgs, SearchArgs, ShowArgs, WorkspaceArgs, WorkspaceCommands
-}};
+use crate::{
+    app::Markhor,
+    cli::{
+        ChatArgs, ConfigArgs, ConfigCommands, ImportArgs, InstallArgs, OpenArgs, SearchArgs,
+        ShowArgs, WorkspaceArgs, WorkspaceCommands,
+    },
+};
 use anyhow::Result;
 use markhor_core::library::Workspace;
 use tracing::{error, info};
@@ -42,7 +48,9 @@ pub async fn handle_chat(args: ChatArgs, markhor: Markhor) -> Result<()> {
     // - Manage chat history
     // - Handle plugins (args.plugins)
 
-    let paths = args.scope.iter()
+    let paths = args
+        .scope
+        .iter()
         .map(|s| PathBuf::from(s))
         .collect::<Vec<_>>();
 
@@ -59,10 +67,13 @@ pub async fn handle_show(args: ShowArgs, markhor: Markhor) -> Result<()> {
             }
             Err(_) => {
                 println!("Executing show command for document: {}", doc_arg);
-                markhor.workspace?.document(&*PathBuf::from(doc_arg)).await?
+                markhor
+                    .workspace?
+                    .document(&*PathBuf::from(doc_arg))
+                    .await?
             }
         };
-        
+
         let metadata = doc.metadata();
         println!("  Document Path: {:?}", doc.path().display());
         println!("  Document ID: {:?}", doc.id());
@@ -86,13 +97,12 @@ pub async fn handle_show(args: ShowArgs, markhor: Markhor) -> Result<()> {
             //     println!("  Embedding model: {}", embedder.model_name());
             //     for &file in files.iter() {
             //         if let Some(file_embeddings) = metadata.file(file)
-            //             .and_then(|md| md.embeddings(&embedder)) 
+            //             .and_then(|md| md.embeddings(&embedder))
             //         {
             //             println!();
             //             println!("  File: {}", file);
             //             println!("    No. |     Range    | Bytes | Tokens | Heading");
             //             println!("    ----|--------------|-------|--------|-------------------------------------------------------------------");
-                        
 
             //             for (idx, (_, chunk_data)) in file_embeddings.iter().enumerate() {
             //                 print!("   {:4} | {:5?} | {:5} | ", idx, chunk_data.text_range, chunk_data.text_range.len());
@@ -120,7 +130,6 @@ pub async fn handle_show(args: ShowArgs, markhor: Markhor) -> Result<()> {
             // }
             unimplemented!("Embedding display not implemented");
         }
-        
     } else {
         println!("Executing show command for workspace info.");
         // TODO: Implement logic to show workspace overview
@@ -138,7 +147,9 @@ pub async fn handle_open(args: OpenArgs) -> Result<()> {
 }
 
 pub async fn handle_search(args: SearchArgs, markhor: Markhor) -> Result<()> {
-    let paths = args.scope.iter()
+    let paths = args
+        .scope
+        .iter()
         .map(|s| PathBuf::from(s))
         .collect::<Vec<_>>();
 
@@ -170,11 +181,14 @@ pub async fn handle_config(args: ConfigArgs) -> Result<()> {
             // - Handle key not found
         }
         ConfigCommands::Set { key, value, global } => {
-             println!("  Setting config key: '{}' to '{}', global: {}", key, value, global);
-             // TODO: Implement config set logic
-             // - Load appropriate config
-             // - Update or add key/value
-             // - Save config file
+            println!(
+                "  Setting config key: '{}' to '{}', global: {}",
+                key, value, global
+            );
+            // TODO: Implement config set logic
+            // - Load appropriate config
+            // - Update or add key/value
+            // - Save config file
         }
         ConfigCommands::List { global } => {
             println!("  Listing config, global: {}", global);
@@ -197,13 +211,16 @@ pub async fn handle_workspace(args: WorkspaceArgs, markhor: Markhor) -> Result<(
         WorkspaceCommands::Create { path, name } => {
             if markhor.workspace.is_ok() {
                 error!("Cannot create a new workspace while in an existing one.");
-                return Err(anyhow::anyhow!("Cannot create a new workspace while in an existing one."));
+                return Err(anyhow::anyhow!(
+                    "Cannot create a new workspace while in an existing one."
+                ));
             }
 
             // Check if any descendant directories already contain workspaces
             // Todo
 
-            let mut target_path = path.unwrap_or_else(|| std::env::current_dir().expect("Cannot get current dir"));
+            let mut target_path =
+                path.unwrap_or_else(|| std::env::current_dir().expect("Cannot get current dir"));
             info!("Creating workspace at: {}", target_path.display());
             println!("  Creating workspace at: {}", target_path.display());
             if let Some(n) = name {
@@ -221,18 +238,23 @@ pub async fn handle_workspace(args: WorkspaceArgs, markhor: Markhor) -> Result<(
         }
         WorkspaceCommands::Delete { target, force } => {
             println!("  Deleting workspace: {}", target);
-            if force { println!("  Forcing deletion (no confirmation)."); }
+            if force {
+                println!("  Forcing deletion (no confirmation).");
+            }
             // TODO: Implement workspace deletion
             // - Resolve target (path or name)
             // - Ask for confirmation if not forced
             // - Remove `.markhor` directory and potentially global registration (deferred)
             unimplemented!("Workspace deletion not implemented yet");
         }
-        WorkspaceCommands::Info{ target } => {
+        WorkspaceCommands::Info { target } => {
             if let Ok(ws) = markhor.workspace {
                 println!("  Current workspace: {}", ws.path().display());
             } else {
-                println!("  No current workspace found.\n{}", markhor.workspace.err().unwrap());
+                println!(
+                    "  No current workspace found.\n{}",
+                    markhor.workspace.err().unwrap()
+                );
             }
         }
     }

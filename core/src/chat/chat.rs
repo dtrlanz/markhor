@@ -11,7 +11,6 @@ use std::pin::Pin;
 use super::ChatError;
 pub use super::common::{ContentPart, ToolCallRequest, ToolResult};
 
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] // Removed Eq due to ToolCallRequest -> JsonValue
 pub enum Message {
     System(Vec<ContentPart>),
@@ -28,7 +27,7 @@ impl Message {
     pub fn system(text: impl Into<String>) -> Self {
         Message::System(vec![ContentPart::Text(text.into())])
     }
-    
+
     pub fn user(text: impl Into<String>) -> Self {
         Message::User(vec![ContentPart::Text(text.into())])
     }
@@ -42,8 +41,11 @@ impl Message {
 
     // Assistant message potentially with content and tool calls
     pub fn assistant_response(content: Vec<ContentPart>, tool_calls: Vec<ToolCallRequest>) -> Self {
-        Message::Assistant { content, tool_calls }
-    }    
+        Message::Assistant {
+            content,
+            tool_calls,
+        }
+    }
 
     pub fn tool(results: Vec<ToolResult>) -> Self {
         Message::Tool(results)
@@ -58,7 +60,6 @@ impl Message {
         }
     }
 }
-
 
 // ============== Tool Use Structures ==============
 
@@ -112,10 +113,8 @@ pub struct ChatOptions {
     /// Controls how the model selects tools (if any are provided).
     #[serde(default)]
     pub tool_choice: Option<ToolChoice>,
-
     // Add other common options like presence_penalty, frequency_penalty, user_id if desired
 }
-
 
 // ============== Response Structures ==============
 
@@ -153,7 +152,6 @@ pub struct ChatResponse {
     pub usage: Option<UsageInfo>,
     pub finish_reason: Option<FinishReason>,
     pub model_id: Option<String>,
-
     // Provider-specific metadata could go here, e.g., using Option<JsonValue>
     // Moderation results could go here
 }
@@ -198,11 +196,13 @@ pub enum StreamChunk {
 
     /// An error reported by the provider *within* the stream content itself
     /// (distinct from transport/parsing errors covered by the outer Result).
-    StreamError { message: String, code: Option<String> },
+    StreamError {
+        message: String,
+        code: Option<String>,
+    },
 
     /// Placeholder for other provider-specific structured events.
     ProviderSpecific { kind: String, data: JsonValue },
-
     // Could add others like: RoleChange(String), Citations(Vec<CitationInfo>), etc.
 }
 
@@ -210,9 +210,7 @@ pub type ChatStream = Pin<Box<dyn Stream<Item = Result<StreamChunk, ChatError>> 
 
 //pub type ChatStream = Pin<Box<dyn Stream<Item = Result<String, ApiError>> + Send>>;
 
-
 // ============== The Trait ==============
-
 
 #[async_trait]
 pub trait ChatModel: Send + Sync {
@@ -236,7 +234,11 @@ pub trait ChatModel: Send + Sync {
     /// # Returns
     /// A `ChatResponse` which may contain an assistant message, tool call requests, or both,
     /// along with metadata.
-    async fn generate(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatResponse, ChatError>;
+    async fn generate(
+        &self,
+        messages: &[Message],
+        options: &ChatOptions,
+    ) -> Result<ChatResponse, ChatError>;
 
     /// Generates a chat response as a stream of text deltas.
     ///
@@ -254,5 +256,9 @@ pub trait ChatModel: Send + Sync {
     ///
     /// # Returns
     /// A `Stream` yielding `Result<String, ApiError>` for text deltas.
-    async fn generate_stream(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatStream, ChatError>;
+    async fn generate_stream(
+        &self,
+        messages: &[Message],
+        options: &ChatOptions,
+    ) -> Result<ChatStream, ChatError>;
 }

@@ -9,17 +9,15 @@ pub use derive_provide::Provide;
 pub trait Provide {
     type Item;
 
-    fn first(assets: &Assets) -> Result<Self, ResolveDependencyError> 
-    where 
-        Self: Sized
+    fn first(assets: &Assets) -> Result<Self, ResolveDependencyError>
+    where
+        Self: Sized,
     {
-        Self::iter(assets)?
-            .next()
-            .ok_or_else(|| {
-                // Get name of the missing struct
-                let name = type_name::<Self>().to_string();
-                ResolveDependencyError::DependencyNotAvailable(name)
-            })
+        Self::iter(assets)?.next().ok_or_else(|| {
+            // Get name of the missing struct
+            let name = type_name::<Self>().to_string();
+            ResolveDependencyError::DependencyNotAvailable(name)
+        })
     }
 
     fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>;
@@ -32,14 +30,13 @@ pub trait Provide {
 impl<T> Provide for std::marker::PhantomData<T> {
     type Item = Self;
 
-    fn iter(_assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
-    {
+    fn iter(_assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
         Ok(std::iter::once(std::marker::PhantomData))
     }
 
     fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
     where
-        I: Iterator<Item = Self::Item>
+        I: Iterator<Item = Self::Item>,
     {
         let iter = items.map(|_| std::marker::PhantomData);
         Ok(iter)
@@ -49,15 +46,14 @@ impl<T> Provide for std::marker::PhantomData<T> {
 impl<T: Provide> Provide for Box<T> {
     type Item = T;
 
-    fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
-    {
+    fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
         let items = T::iter(assets)?;
         Self::iter_from_items(items)
     }
 
     fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
     where
-        I: Iterator<Item = Self::Item>
+        I: Iterator<Item = Self::Item>,
     {
         let iter = items.map(|item| Box::new(item));
         Ok(iter)
@@ -67,15 +63,14 @@ impl<T: Provide> Provide for Box<T> {
 impl<T: Provide> Provide for Arc<T> {
     type Item = T;
 
-    fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
-    {
+    fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
         let items = T::iter(assets)?;
         Self::iter_from_items(items)
     }
 
     fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
     where
-        I: Iterator<Item = Self::Item>
+        I: Iterator<Item = Self::Item>,
     {
         let iter = items.map(|item| Arc::new(item));
         Ok(iter)
@@ -85,8 +80,7 @@ impl<T: Provide> Provide for Arc<T> {
 impl<T: Provide> Provide for Option<T> {
     type Item = T;
 
-    fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
-    {
+    fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
         let items = T::iter(assets)?;
         Self::iter_from_items(items)
     }
@@ -101,10 +95,10 @@ impl<T: Provide> Provide for Option<T> {
 }
 
 /// Iterator that yields at least one item.
-/// 
+///
 /// Helper struct used by `impl<T: Provide> Provide for Option<T>`.
 /// Yields items of type `Option<T>`, always yielding  `Some` at least once.
-/// 
+///
 /// - If the original iterator is empty: `Some(None)`, `None`, `None`, ...
 /// - If the original iterator has items: `Some(Some(item1))`, `Some(Some(item2))`, ..., `None`, `None`, ...
 struct OnceOrMore<T, I: Iterator<Item = T>>(Option<Option<T>>, I);
@@ -131,8 +125,7 @@ impl<T, I: Iterator<Item = T>> Iterator for OnceOrMore<T, I> {
 impl<T: Provide> Provide for Vec<T> {
     type Item = T;
 
-    fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
-    {
+    fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
         let items = T::iter(assets)?;
         Self::iter_from_items(items)
     }
@@ -152,19 +145,20 @@ where
 {
     type Item = (K, V);
 
-    fn iter(_assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
-    {
+    fn iter(_assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
         // TODO: It would probably be better to introduce a specific error variant to be returned
         // in such cases. Or we could panic.
-        // Regardless, the solution is not ideal. It would be much more Rustaceous to get a 
+        // Regardless, the solution is not ideal. It would be much more Rustaceous to get a
         // compiler error.
-        warn!("Keys cannot be provided, so HashMap will be empty. Use a mapping function to generate key-value tuples.");
+        warn!(
+            "Keys cannot be provided, so HashMap will be empty. Use a mapping function to generate key-value tuples."
+        );
         Self::iter_from_items(std::iter::empty())
     }
 
     fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
     where
-        I: Iterator<Item = Self::Item>
+        I: Iterator<Item = Self::Item>,
     {
         let map = items.collect();
         Ok(std::iter::once(map))
@@ -177,18 +171,18 @@ macro_rules! impl_provide_for_tuple {
             type Item = ($($name,)*);
 
             #[allow(unused_variables)]
-            fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
+            fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
             {
                 // Only resolving a single tuple instance here because it's simpler.
-                // Tuples need to `impl Provide` primarily for their use with `Session::resolve`, 
+                // Tuples need to `impl Provide` primarily for their use with `Session::resolve`,
                 // in which case one instance is sufficient (unlike the derive macro `Provide`,
                 // where you might be using the `each` attribute, relying on multiple instances,
-                // etc.). So we can avoid the non-trivial effort of producing cartesian products 
-                // of multiple iterators here, at least until someone produces a compelling use 
+                // etc.). So we can avoid the non-trivial effort of producing cartesian products
+                // of multiple iterators here, at least until someone produces a compelling use
                 // case for it.
-                $( 
+                $(
                     #[allow(non_snake_case)]
-                    let $name = $name::first(assets)?; 
+                    let $name = $name::first(assets)?;
                 )*
                 Self::iter_from_items(std::iter::once(($($name,)*)))
             }
@@ -224,15 +218,14 @@ impl_provide_for_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P);
 impl<T: Provide> Provide for std::sync::Mutex<T> {
     type Item = T;
 
-    fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
-    {
+    fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
         let items = T::iter(assets)?;
         Self::iter_from_items(items)
     }
 
     fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
     where
-        I: Iterator<Item = Self::Item>
+        I: Iterator<Item = Self::Item>,
     {
         let iter = items.map(|item| std::sync::Mutex::new(item));
         Ok(iter)
@@ -245,12 +238,11 @@ pub enum ResolveDependencyError {
     DependencyNotAvailable(String),
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::fmt::Debug;
 
-use super::*;
+    use super::*;
 
     mod simple {
         use super::*;
@@ -292,7 +284,7 @@ use super::*;
         assert_eq!(vec[0].baz, simple::Baz);
 
         // --- Tuple struct ---
-        
+
         let foo_tuple = simple::FooTuple::first(&assets).unwrap();
         assert_eq!(foo_tuple.0, simple::Bar);
         assert_eq!(foo_tuple.1, simple::Baz);
@@ -327,8 +319,7 @@ use super::*;
         impl Provide for Foo {
             type Item = Self;
 
-            fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> 
-            {
+            fn iter(assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
                 let items = (0..5).map(|idx| {
                     let bar = Bar::first(assets).unwrap();
                     Self { idx, bar }
@@ -336,9 +327,11 @@ use super::*;
                 Self::iter_from_items(items)
             }
 
-            fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+            fn iter_from_items<I>(
+                items: I,
+            ) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
             where
-                I: Iterator<Item = Self::Item>
+                I: Iterator<Item = Self::Item>,
             {
                 Ok(items)
             }
@@ -354,14 +347,17 @@ use super::*;
         impl Provide for Blank {
             type Item = Self;
 
-            fn iter(_assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
-            {
+            fn iter(
+                _assets: &Assets,
+            ) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
                 Ok(std::iter::empty())
             }
 
-            fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+            fn iter_from_items<I>(
+                items: I,
+            ) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
             where
-                I: Iterator<Item = Self::Item>
+                I: Iterator<Item = Self::Item>,
             {
                 Ok(items)
             }
@@ -386,10 +382,10 @@ use super::*;
 
         // Vec should collect all 5 Foos
         assert_eq!(result.all_foos.len(), 5);
-        
+
         // Option should just grab the first one (idx 0)
         assert_eq!(result.first_foo.unwrap().idx, 0);
-        
+
         // Option<Blank> should swallow the Blank error and return None
         assert!(result.missing_blank.is_none());
 
@@ -397,12 +393,12 @@ use super::*;
 
         #[derive(Debug, Provide)]
         #[provide(crate = "crate")]
-        struct TestNoFilter1 (
+        struct TestNoFilter1(
             Vec<enumerated::Foo>,
             Option<enumerated::Foo>,
             Option<enumerated::Blank>,
         );
-        
+
         let result = TestNoFilter1::first(&assets).expect("Failed to build TestNoFilter1");
 
         // Same assertions as above
@@ -429,7 +425,7 @@ use super::*;
         }
 
         let session = Session::new();
-        
+
         // Success case
         let assets = Assets::new_for_resolve_call(&session);
         let result = TestBareFilter::first(&assets).expect("Failed to build TestBareFilter");
@@ -437,8 +433,11 @@ use super::*;
 
         // Failure case (predicate matches nothing)
         let fail_result = TestBareFilterFail::first(&assets);
-        assert!(fail_result.is_err(), "Expected an error because no Foo has idx 99");
-        
+        assert!(
+            fail_result.is_err(),
+            "Expected an error because no Foo has idx 99"
+        );
+
         if let Err(ResolveDependencyError::DependencyNotAvailable(name)) = fail_result {
             assert!(name.contains("Foo"));
         } else {
@@ -453,7 +452,7 @@ use super::*;
         struct TestOptionFilter {
             #[provide(filter = |f| f.idx == 3)]
             target_foo: Option<enumerated::Foo>,
-            
+
             #[provide(filter = |f| f.idx == 99)]
             missing_foo: Option<enumerated::Foo>, // Should silently become None
         }
@@ -464,7 +463,7 @@ use super::*;
 
         // Should find the specific target
         assert_eq!(result.target_foo.unwrap().idx, 3);
-        
+
         // Should swallow the error and return None because nothing matches 99
         assert!(result.missing_foo.is_none());
     }
@@ -567,7 +566,7 @@ use super::*;
         use enumerated::Foo;
 
         // --- Classic structs ---
-        
+
         #[derive(Debug, Provide)]
         #[provide(crate = "crate")]
         struct TestMapMap0 {
@@ -606,10 +605,7 @@ use super::*;
 
         #[derive(Debug, Provide)]
         #[provide(crate = "crate")]
-        struct TestMapMap2 (
-            #[provide(key = |f| f.idx)]
-            std::collections::HashMap<usize, Foo>,
-        );
+        struct TestMapMap2(#[provide(key = |f| f.idx)] std::collections::HashMap<usize, Foo>);
 
         let result = TestMapMap2::first(&assets).expect("Failed to build TestMapMap2");
 
@@ -650,19 +646,17 @@ use super::*;
     impl Provide for Letter {
         type Item = Self;
 
-        fn iter(_assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
-        {
+        fn iter(_assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
             // Yields exactly two letters
-            let letters = vec![
-                Self { ch: 'A' },
-                Self { ch: 'B' },
-            ];
+            let letters = vec![Self { ch: 'A' }, Self { ch: 'B' }];
             Self::iter_from_items(letters.into_iter())
         }
 
-        fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+        fn iter_from_items<I>(
+            items: I,
+        ) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
         where
-            I: Iterator<Item = Self::Item>
+            I: Iterator<Item = Self::Item>,
         {
             Ok(items)
         }
@@ -676,15 +670,14 @@ use super::*;
             // Outer loop: 5 iterations
             #[provide(each)]
             foo: enumerated::Foo,
-            
-            // Standard field: Fetched freshly on every iteration. 
-            bar: enumerated::Bar, 
-        }
 
+            // Standard field: Fetched freshly on every iteration.
+            bar: enumerated::Bar,
+        }
 
         let session = Session::new();
         let assets = Assets::new_for_resolve_call(&session);
-        
+
         // Provide iterator should yield multiple items
         let results: Vec<_> = SingleEach::iter(&assets)
             .expect("Failed to build SingleEach")
@@ -692,11 +685,11 @@ use super::*;
 
         // Foo yields 5 items, so we expect 5 SingleEach instances
         assert_eq!(results.len(), 5);
-        
+
         // Verify the loop executed correctly
         assert_eq!(results[0].foo.idx, 0);
         assert_eq!(results[4].foo.idx, 4);
-        
+
         // Verify standard fields are present
         assert_eq!(results[0].bar, enumerated::Bar);
     }
@@ -709,12 +702,11 @@ use super::*;
             // Outer loop: 2 iterations
             #[provide(each)]
             letter: Letter,
-            
+
             // Inner loop: 5 iterations
             #[provide(each)]
             foo: enumerated::Foo,
         }
-
 
         let session = Session::new();
         let assets = Assets::new_for_resolve_call(&session);
@@ -730,13 +722,13 @@ use super::*;
         // Therefore, we expect all 5 'A's, followed by all 5 'B's.
         assert_eq!(results[0].letter.ch, 'A');
         assert_eq!(results[0].foo.idx, 0);
-        
+
         assert_eq!(results[4].letter.ch, 'A');
         assert_eq!(results[4].foo.idx, 4);
 
         assert_eq!(results[5].letter.ch, 'B');
         assert_eq!(results[5].foo.idx, 0);
-        
+
         assert_eq!(results[9].letter.ch, 'B');
         assert_eq!(results[9].foo.idx, 4);
     }
@@ -749,7 +741,7 @@ use super::*;
             // Filtered loop: Only yields 3 items (idx 0, 2, 4)
             #[provide(each, filter = |f: &enumerated::Foo| f.idx % 2 == 0)]
             even_foo: enumerated::Foo,
-            
+
             // Inner loop: 2 iterations
             #[provide(each)]
             letter: Letter,
@@ -757,7 +749,7 @@ use super::*;
 
         let session = Session::new();
         let assets = Assets::new_for_resolve_call(&session);
-        
+
         let results: Vec<_> = FilteredEach::iter(&assets)
             .expect("Failed to build FilteredEach")
             .collect();

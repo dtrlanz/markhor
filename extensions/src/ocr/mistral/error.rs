@@ -13,7 +13,7 @@ pub enum OcrError {
     // For specific 422 errors
     #[error("API Validation Error (422): {details:?}")]
     ValidationError {
-        status: u16, // Should always be 422
+        status: u16,                         // Should always be 422
         details: Vec<ValidationErrorDetail>, // Reusing struct from file uploads
     },
 
@@ -27,15 +27,11 @@ pub enum OcrError {
 
     // For cases where the error body *itself* can't be parsed
     #[error("Failed to deserialize API error response (Status={status}): {source}")]
-    ErrorDeserializationFailed {
-        status: u16,
-        source: reqwest::Error,
-    },
+    ErrorDeserializationFailed { status: u16, source: reqwest::Error },
 
-     #[error("Invalid input: {0}")]
-     InvalidInput(String), // For client-side validation if needed
+    #[error("Invalid input: {0}")]
+    InvalidInput(String), // For client-side validation if needed
 }
-
 
 /// Structure to attempt deserializing API error responses.
 /// Adjust fields based on actual error responses from Mistral.
@@ -50,8 +46,6 @@ pub struct MistralApiErrorResponse {
     // type: Option<String>, // Sometimes APIs include an error type
     // param: Option<String>, // Sometimes they indicate the problematic parameter
 }
-
-
 
 #[derive(Debug, thiserror::Error)]
 pub enum OcrOutputError {
@@ -95,14 +89,10 @@ pub enum FileUploadError {
     },
 
     #[error("Failed to deserialize API error response (Status={status}): {source}")]
-    ErrorDeserializationFailed {
-        status: u16,
-        source: reqwest::Error,
-    },
-     #[error("Failed to extract filename from path: {0}")]
-     FileNameError(PathBuf),
+    ErrorDeserializationFailed { status: u16, source: reqwest::Error },
+    #[error("Failed to extract filename from path: {0}")]
+    FileNameError(PathBuf),
 }
-
 
 /// Represents errors that can occur when fetching a signed URL.
 #[derive(Debug, thiserror::Error)]
@@ -137,14 +127,10 @@ pub enum SignedUrlError {
 
     // Error for when the error body itself cannot be parsed
     #[error("Failed to deserialize API error response (Status={status}): {source}")]
-    ErrorDeserializationFailed {
-        status: u16,
-        source: reqwest::Error,
-    },
+    ErrorDeserializationFailed { status: u16, source: reqwest::Error },
 }
 
 // Assuming FileUploadError, SignedUrlError, OcrError, OcrOutputError are defined and accessible
-
 
 /// Represents errors that can occur during the high-level OCR-to-file conversion.
 #[derive(Debug, thiserror::Error)]
@@ -179,8 +165,8 @@ pub enum OcrToFileError {
     #[error("Unsupported source file type extension: {0}")]
     UnsupportedFileType(String),
 
-     #[error("Could not determine parent directory for target path: {0}")]
-     NoParentDirectory(PathBuf),
+    #[error("Could not determine parent directory for target path: {0}")]
+    NoParentDirectory(PathBuf),
 }
 
 // We might need From implementations if SaveIo/SaveBase64 don't auto-convert cleanly later

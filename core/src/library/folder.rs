@@ -1,4 +1,4 @@
-use std::{path::{Path, PathBuf}};
+use std::path::{Path, PathBuf};
 
 use tokio::fs::{self, ReadDir};
 use tracing::instrument;
@@ -21,17 +21,25 @@ impl Folder {
     /// Creates a Folder instance. Intended for internal use.
     /// Assumes the path already points to a valid, existing directory *inside* the workspace.
     pub(crate) fn new(absolute_path: PathBuf, workspace: Workspace) -> Self {
-        Folder { absolute_path, workspace }
+        Folder {
+            absolute_path,
+            workspace,
+        }
     }
 
     /// Returns the relative path to the folder within its workspace.
     pub fn path(&self) -> &Path {
-        self.absolute_path.strip_prefix(&self.workspace.path()).unwrap()
+        self.absolute_path
+            .strip_prefix(&self.workspace.path())
+            .unwrap()
     }
 
     /// Returns the name of the folder.
     pub fn name(&self) -> &str {
-        self.absolute_path.file_name().unwrap().to_str()
+        self.absolute_path
+            .file_name()
+            .unwrap()
+            .to_str()
             .expect("Not supported: Folder name is not valid UTF-8")
     }
 
@@ -40,7 +48,7 @@ impl Folder {
         &self.workspace
     }
 
-    /// Returns a stream over the entries in this folder. Each entry is either a Folder or a 
+    /// Returns a stream over the entries in this folder. Each entry is either a Folder or a
     /// Document.
     pub async fn read(&self) -> Result<Read, std::io::Error> {
         let read_dir = fs::read_dir(&self.absolute_path).await?;
@@ -52,19 +60,17 @@ impl Folder {
 
     pub async fn read_recursive(&self) -> Result<ReadRecursive, std::io::Error> {
         let read = self.read().await?;
-        Ok(ReadRecursive {
-            vec: vec![read],
-        })
+        Ok(ReadRecursive { vec: vec![read] })
     }
 
     /// Opens the specified directory as a workspace folder.
-    /// 
-    /// If the directory is located inside of an explicit workspace (with a workspace config 
+    ///
+    /// If the directory is located inside of an explicit workspace (with a workspace config
     /// directory), the directory is opened as a folder of that workspace. If no such workspace
     /// exists, the directory is opened as the root folder of an implicit workspace.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the directory cannot be opened or does not exist.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, AccessLibraryError> {
         let path = std::path::absolute(path)?;
@@ -75,24 +81,29 @@ impl Folder {
                 let ws = Workspace::open(ws).await?;
                 println!("Opened workspace: {:?}", ws);
                 ws.folder(path).await
-            },
+            }
             Err(e) => Err(e),
         }
     }
 
-    pub async fn create_document(&self, name: impl AsRef<str>) -> Result<Document, AccessLibraryError> {
+    pub async fn create_document(
+        &self,
+        name: impl AsRef<str>,
+    ) -> Result<Document, AccessLibraryError> {
         let name = name.as_ref();
         if name.contains(std::path::MAIN_SEPARATOR) {
-            todo!("Handle error or otherwise handle situation where document name contains path separator");
+            todo!(
+                "Handle error or otherwise handle situation where document name contains path separator"
+            );
         }
         let path = self.absolute_path.join(name);
         Document::create(self.workspace.clone(), &path).await
     }
 
     /// Opens the folder with the specified name.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the folder cannot be opened or does not exist.
     pub async fn folder(&self, name: impl AsRef<Path>) -> Result<Folder, AccessLibraryError> {
         let path = name.as_ref();
@@ -105,9 +116,9 @@ impl Folder {
     }
 
     /// Opens the document with the specified name.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the document cannot be opened or does not exist.
     #[instrument(skip(self), fields(folder_path = %self.absolute_path.display(), name = %name.as_ref().display()))]
     pub async fn document(&self, name: impl AsRef<Path>) -> Result<Document, AccessLibraryError> {
@@ -126,11 +137,12 @@ async fn open_folder(
     workspace: Workspace,
 ) -> Result<Folder, AccessLibraryError> {
     // Check if path exists and all that
-    let absolute_path = fs::canonicalize(&absolute_path).await
-        .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound {
+    let absolute_path = fs::canonicalize(&absolute_path).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
             AccessLibraryError::DirectoryNotFound(absolute_path)
         } else {
             AccessLibraryError::Io(e)
+        }
     })?;
     // Check if path is inside of workspace
     if !absolute_path.starts_with(&workspace.path()) {
@@ -166,17 +178,19 @@ impl Read {
                         ReadEntry::Folder(folder)
                     } else if metadata.is_file() {
                         // Include source files only, ignore metadata files
-                        if path.extension().and_then(|ext| ext.to_str()) == Some(crate::library::METADATA_EXTENSION) {
+                        if path.extension().and_then(|ext| ext.to_str())
+                            == Some(crate::library::METADATA_EXTENSION)
+                        {
                             continue;
                         }
-                            let document = Document::open(self.workspace.clone(), &path).await?;
-                            ReadEntry::Document(document)
+                        let document = Document::open(self.workspace.clone(), &path).await?;
+                        ReadEntry::Document(document)
                     } else {
                         // Ignore other types of entries (symlinks, etc.)
                         continue;
                     };
                     return Ok(Some(entry));
-                },
+                }
                 None => return Ok(None),
             }
         }
@@ -206,20 +220,18 @@ impl ReadRecursive {
     pub async fn next_entry(&mut self) -> Result<Option<Document>, AccessLibraryError> {
         while let Some(read) = self.vec.last_mut() {
             match read.next_entry().await? {
-                Some(entry) => {
-                    match entry {
-                        ReadEntry::Folder(folder) => {
-                            let read = folder.read().await?;
-                            self.vec.push(read);
-                        },
-                        ReadEntry::Document(document) => {
-                            return Ok(Some(document));
-                        },
+                Some(entry) => match entry {
+                    ReadEntry::Folder(folder) => {
+                        let read = folder.read().await?;
+                        self.vec.push(read);
+                    }
+                    ReadEntry::Document(document) => {
+                        return Ok(Some(document));
                     }
                 },
                 None => {
                     self.vec.pop();
-                },
+                }
             }
         }
         Ok(None)
@@ -234,11 +246,10 @@ impl ReadRecursive {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use crate::library::fs_test_utils::{TempTree, fs_tree};
     use crate::library::WORKSPACE_CONFIG_DIR;
+    use crate::library::fs_test_utils::{TempTree, fs_tree};
 
     use super::*;
 
@@ -248,25 +259,29 @@ mod tests {
             "child" => {
                 "doc.md" => "foo",
             },
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         // Open path in implicit workspace
         let folder = Folder::open(&dir).await.unwrap();
         let ws_path = folder.workspace().path();
         assert_eq!(folder.path(), "");
         assert_eq!(
-            fs::canonicalize(ws_path).await.unwrap(), 
+            fs::canonicalize(ws_path).await.unwrap(),
             fs::canonicalize(&dir).await.unwrap()
         );
 
         // Open path as root of explict workspace
         dir.add(fs_tree! {
             WORKSPACE_CONFIG_DIR => {},
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         let folder = Folder::open(&dir).await.unwrap();
         assert_eq!(folder.path(), "");
         assert_eq!(
-            fs::canonicalize(ws_path).await.unwrap(), 
+            fs::canonicalize(ws_path).await.unwrap(),
             fs::canonicalize(&dir).await.unwrap()
         );
 
@@ -276,7 +291,7 @@ mod tests {
         assert_eq!(folder.path(), "child");
         let ws_path = folder.workspace().path();
         assert_eq!(
-            fs::canonicalize(ws_path).await.unwrap(), 
+            fs::canonicalize(ws_path).await.unwrap(),
             fs::canonicalize(&dir).await.unwrap()
         );
     }
@@ -289,7 +304,9 @@ mod tests {
                     "doc.md" => "foo",
                 },
             },
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         let folder = Folder::open(&dir).await.unwrap();
         let child = folder.folder("child").await.unwrap();
@@ -298,7 +315,10 @@ mod tests {
         assert_eq!(child.path(), "child");
         let nested = child.folder("nested").await.unwrap();
         assert_eq!(nested.path(), "child/nested");
-        let nested = child.folder(dir.join("child").join("nested")).await.unwrap();
+        let nested = child
+            .folder(dir.join("child").join("nested"))
+            .await
+            .unwrap();
         assert_eq!(nested.path(), "child/nested");
 
         let root = folder.folder(".").await.unwrap();
@@ -312,13 +332,18 @@ mod tests {
         // Document without metadata
         let dir = TempTree::new(fs_tree! {
             "doc.md" => "foo",
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         let folder = Folder::open(&dir).await.unwrap();
         let doc = folder.document("doc.md").await.unwrap();
         assert_eq!(doc.path(), "doc.md");
         assert_eq!(doc.workspace(), folder.workspace());
-        assert_eq!(doc.text().await.unwrap().export(&mut None).as_deref(), Some("foo"));
+        assert_eq!(
+            doc.text().await.unwrap().export(&mut None).as_deref(),
+            Some("foo")
+        );
     }
 
     #[tokio::test]
@@ -328,7 +353,9 @@ mod tests {
             "child" => {
                 "nested.md" => "nested",
             },
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         let folder = Folder::open(&dir).await.unwrap();
         let mut entries = folder.read().await.unwrap().into_vec().await.unwrap();
@@ -344,14 +371,17 @@ mod tests {
             ReadEntry::Folder(folder) => {
                 assert_eq!(folder.path(), "child");
                 assert_eq!(folder.name(), "child");
-            },
+            }
             _ => panic!("Expected folder"),
         }
         match &entries[1] {
             ReadEntry::Document(doc) => {
                 assert_eq!(doc.path(), "doc.md");
-                assert_eq!(doc.text().await.unwrap().export(&mut None).as_deref(), Some("foo"));
-            },
+                assert_eq!(
+                    doc.text().await.unwrap().export(&mut None).as_deref(),
+                    Some("foo")
+                );
+            }
             _ => panic!("Expected document"),
         }
     }
@@ -363,19 +393,31 @@ mod tests {
             "child" => {
                 "nested.md" => "nested",
             },
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         let folder = Folder::open(&dir).await.unwrap();
-        let mut docs = folder.read_recursive().await.unwrap().into_vec().await.unwrap();
+        let mut docs = folder
+            .read_recursive()
+            .await
+            .unwrap()
+            .into_vec()
+            .await
+            .unwrap();
         assert_eq!(docs.len(), 2);
 
         // Order of entries is not guaranteed, so we need to sort them
         docs.sort_by_key(|doc| doc.path().to_owned());
 
         assert_eq!(docs[0].path(), "child/nested.md");
-        assert_eq!(docs[0].text().await.unwrap().export(&mut None).as_deref(), Some("nested"));
+        assert_eq!(
+            docs[0].text().await.unwrap().export(&mut None).as_deref(),
+            Some("nested")
+        );
         assert_eq!(docs[1].path(), "doc.md");
-        assert_eq!(docs[1].text().await.unwrap().export(&mut None).as_deref(), Some("foo"));
+        assert_eq!(
+            docs[1].text().await.unwrap().export(&mut None).as_deref(),
+            Some("foo")
+        );
     }
-
-        
 }

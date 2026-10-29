@@ -1,14 +1,24 @@
-use std::{fs, path::{Path, PathBuf}, sync::{Arc, atomic::{AtomicBool, Ordering}}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
-use markhor_core::{chat::chat::Message, extension::Extension, library::{Document, Folder, Part, Workspace}};
+use console::Term;
+use markhor_core::{
+    chat::chat::Message,
+    extension::Extension,
+    library::{Document, Folder, Part, Workspace},
+};
 use markhor_extensions::cli::CliExtension;
+use textwrap::wrap;
 use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
 use tracing::error;
-use console::Term;
-use textwrap::wrap;
 
 use crate::cli::ChatArgs;
-
 
 pub struct Markhor {
     pub workspace: anyhow::Result<Arc<Workspace>>,
@@ -20,7 +30,9 @@ impl Markhor {
     /// Opens documents in the workspace.
     pub async fn open_documents(&self, docs: Vec<String>) -> Result<Vec<Document>, anyhow::Error> {
         let mut documents = Vec::new();
-        let ws = self.workspace.as_ref()
+        let ws = self
+            .workspace
+            .as_ref()
             .map_err(|e| anyhow::anyhow!("Error getting workspace: {}", e))?;
         for doc in docs {
             let doc = ws.document(&Path::new(&doc)).await?;
@@ -28,7 +40,6 @@ impl Markhor {
         }
         Ok(documents)
     }
-
 
     pub async fn import(&self, file: &Path) -> Result<Document, anyhow::Error> {
         let folder = if let Some(folder) = &self.folder {
@@ -62,7 +73,7 @@ impl Markhor {
         unimplemented!();
         // let input = file.to_path_buf();
         // let output_type = "text/markdown".parse().unwrap();
-        // let job: Job<Vec<Box<dyn AsyncRead + Unpin>>, _> = 
+        // let job: Job<Vec<Box<dyn AsyncRead + Unpin>>, _> =
         //     Job::new(async |assets| {
         //         let output = assets.convert(input, output_type).await?;
         //         Ok(output)
@@ -152,11 +163,16 @@ impl Markhor {
         if !args.plugins.is_empty() {
             anyhow::bail!("Plugins are not yet implemented");
         }
-        let ChatArgs { prompt, docs, scope, .. } = args;
+        let ChatArgs {
+            prompt,
+            docs,
+            scope,
+            ..
+        } = args;
 
         println!();
         let printer = MessagePrinter::new();
-        
+
         // Prep messages
         let mut messages = vec![Message::system("You are a helpful assistant.")];
         if let Some(prompt) = prompt {
@@ -166,8 +182,8 @@ impl Markhor {
         unimplemented!();
 
         // let mut job  = job::chat(
-        //         messages, 
-        //         |msg| printer.print_message(msg), 
+        //         messages,
+        //         |msg| printer.print_message(msg),
         //         |docs| printer.print_attachment(docs),
         //     ).with_extensions(self.extensions.iter().cloned());
 
@@ -176,7 +192,7 @@ impl Markhor {
         // for doc in docs {
         //     job.add_document(doc);
         // }
-        
+
         // let _messages = job.run().await?;
 
         // Ok(())
@@ -192,7 +208,7 @@ impl MessagePrinter {
 
     fn print_message(&self, msg: &Message) {
         match msg {
-            Message::Assistant {..} => {
+            Message::Assistant { .. } => {
                 println!();
                 let term_width = Term::stdout().size().1 as usize;
                 for line in wrap(&msg.text_content(), term_width) {
@@ -200,7 +216,7 @@ impl MessagePrinter {
                 }
             }
             Message::User(..) => {
-                // We don't need to print user messages since they are already printed by the 
+                // We don't need to print user messages since they are already printed by the
                 // prompter.
             }
             _ => (),

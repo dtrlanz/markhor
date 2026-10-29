@@ -1,7 +1,6 @@
-use std::{ops::Range, fmt::Display};
 use serde::{Deserialize, Serialize};
+use std::{fmt::Display, ops::Range};
 use thiserror::Error;
-
 
 /// Trait for algorithms that split source text into logical chunks.
 ///
@@ -36,8 +35,6 @@ pub trait Chunker: Send + Sync {
     fn chunk(&self, source_text: &str) -> Result<Vec<ChunkData>, ChunkerError>;
 }
 
-
-
 /// Represents the raw output of a `Chunker` implementation,
 /// referencing a contiguous slice of the original source text.
 /// The calling library is responsible for materializing this into
@@ -59,7 +56,6 @@ pub struct ChunkData {
     /// compute or provide this. If `None`, the calling library may
     /// need to calculate it after materializing the text.
     pub token_count: Option<usize>,
-
     // --- Potential Future Metadata ---
     // /// Optional start/end line numbers in the original source
     // pub line_range: Option<Range<usize>>,
@@ -69,8 +65,8 @@ pub struct ChunkData {
 
 impl ChunkData {
     /// Creates a new `ChunkData` instance with the specified source text.
-    /// 
-    /// The text passed as `source_text` must be the source text used when creating this 
+    ///
+    /// The text passed as `source_text` must be the source text used when creating this
     /// `ChunkData` instance. Otherwise the result is meaningless.
     pub fn to_chunk<'a>(&'a self, source_text: &'a str) -> Chunk<'a> {
         Chunk {
@@ -146,7 +142,9 @@ pub(crate) mod test_chunker {
     impl Chunker for FixedSizeChunker {
         fn chunk(&self, source_text: &str) -> Result<Vec<ChunkData>, ChunkerError> {
             if self.chunk_size == 0 {
-                return Err(ChunkerError::Configuration("chunk_size must be greater than 0".to_string()));
+                return Err(ChunkerError::Configuration(
+                    "chunk_size must be greater than 0".to_string(),
+                ));
             }
 
             let mut chunks = Vec::new();
@@ -196,4 +194,3 @@ pub(crate) mod test_chunker {
         }
     }
 }
-

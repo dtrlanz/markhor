@@ -3,7 +3,10 @@ use std::collections::{HashMap, hash_map::Entry};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{embedding::Embedding, library::{HashValue, document::text::Part}};
+use crate::{
+    embedding::Embedding,
+    library::{HashValue, document::text::Part},
+};
 
 pub struct Chunks<'a> {
     pub(crate) chunker_id: String,
@@ -120,22 +123,30 @@ pub struct ChunkIdx {
 // Used in unit tests to create chunk indices without needing a chunker or document
 #[cfg(test)]
 impl ChunkIdx {
-    pub(crate) fn new(chunker_id: impl Into<String>, text_part_id: impl Into<String>, chunk_idx: usize) -> Self {
-        Self { chunker_id: chunker_id.into(), text_part_id: text_part_id.into(), chunk_idx }
+    pub(crate) fn new(
+        chunker_id: impl Into<String>,
+        text_part_id: impl Into<String>,
+        chunk_idx: usize,
+    ) -> Self {
+        Self {
+            chunker_id: chunker_id.into(),
+            text_part_id: text_part_id.into(),
+            chunk_idx,
+        }
     }
 }
 
 #[derive(Debug, Error)]
 pub enum GetChunkError {
     #[error("No such text part in document: '{}'", .0)]
-    NoSuchTextPart(String),   // text_part_id
+    NoSuchTextPart(String), // text_part_id
 
     #[error("Cache not loaded for chunker '{}'", .0)]
-    CacheNotLoaded(String),    // chunker_id
-    
+    CacheNotLoaded(String), // chunker_id
+
     #[error("Text part not found for chunker '{}' and text part '{}'", .0, .1)]
-    TextPartNotChunked(String, String),   // chunker_id, text_part_id
+    TextPartNotChunked(String, String), // chunker_id, text_part_id
 
     #[error("Chunk index {} out of bounds for chunker '{}' and text part '{}'", .2, .0, .1)]
-    ChunkIdxOutOfBounds(String, String, usize),   // chunker_id, text_part_id, chunk_idx
+    ChunkIdxOutOfBounds(String, String, usize), // chunker_id, text_part_id, chunk_idx
 }

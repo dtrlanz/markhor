@@ -88,7 +88,6 @@ pub enum GeminiError {
         /// The actual batch size provided.
         actual: usize, // Actual size required
     },
-
     // Add other specific internal errors as needed
 }
 
@@ -109,7 +108,10 @@ pub enum GeminiError {
 /// reading the response body fails entirely.
 pub(crate) async fn map_response_error(response: reqwest::Response) -> GeminiError {
     let status = response.status();
-    debug_assert!(!status.is_success(), "map_response_error called with success status");
+    debug_assert!(
+        !status.is_success(),
+        "map_response_error called with success status"
+    );
 
     // Try to read the body, capturing potential network error during read
     let body_text_result = response.text().await;
@@ -155,10 +157,6 @@ pub(crate) async fn map_response_error(response: reqwest::Response) -> GeminiErr
     }
 }
 
-
-
-
-
 // ============== From<GeminiError> for ChatError ==============
 
 impl From<GeminiError> for ChatError {
@@ -185,7 +183,11 @@ impl From<GeminiError> for ChatError {
                 // Error parsing a *successful* response.
                 ChatError::Parsing(Box::new(source)) // Keep the original parsing error
             }
-            GeminiError::ApiError { status, detail, body_text } => {
+            GeminiError::ApiError {
+                status,
+                detail,
+                body_text,
+            } => {
                 // Map based on HTTP status code, using detail message if available.
                 let message = detail
                     .map(|d| format!("{} (Status: {}, Code: {})", d.message, d.status, d.code))
@@ -234,12 +236,13 @@ impl From<GeminiError> for ChatError {
             GeminiError::BatchTooLarge { .. } => {
                 // Batch size is not applicable to chat calls.
                 // Map to Provider error.
-                ChatError::Provider(format!("Unexpected batch size error during chat operation: {}", err).into())
+                ChatError::Provider(
+                    format!("Unexpected batch size error during chat operation: {}", err).into(),
+                )
             }
         }
     }
 }
-
 
 // ============== From<GeminiError> for EmbeddingError ==============
 
@@ -255,7 +258,11 @@ impl From<GeminiError> for EmbeddingError {
             GeminiError::ResponseParsing { context, source } => {
                 EmbeddingError::Parsing(Box::new(source))
             }
-            GeminiError::ApiError { status, detail, body_text } => {
+            GeminiError::ApiError {
+                status,
+                detail,
+                body_text,
+            } => {
                 let message = detail
                     .map(|d| format!("{} (Status: {}, Code: {})", d.message, d.status, d.code))
                     .unwrap_or_else(|| body_text.clone());
@@ -271,7 +278,7 @@ impl From<GeminiError> for EmbeddingError {
                         // if detail.as_ref().map_or(false, |d| d.message.contains("size limit")) {
                         //    EmbeddingError::BatchTooLarge { limit: None, actual: 0 /* How to get? Needs more context */ }
                         // } else {
-                           EmbeddingError::InvalidRequest(message)
+                        EmbeddingError::InvalidRequest(message)
                         // }
                     }
                     StatusCode::UNAUTHORIZED => EmbeddingError::Authentication(message),
@@ -281,19 +288,18 @@ impl From<GeminiError> for EmbeddingError {
                     StatusCode::INTERNAL_SERVER_ERROR
                     | StatusCode::BAD_GATEWAY
                     | StatusCode::SERVICE_UNAVAILABLE
-                    | StatusCode::GATEWAY_TIMEOUT
-                     => EmbeddingError::Api {
+                    | StatusCode::GATEWAY_TIMEOUT => EmbeddingError::Api {
                         status: Some(status.as_u16()),
                         message,
                         source: None,
-                     },
+                    },
 
                     // --- Fallback ---
                     _ => EmbeddingError::Api {
                         status: Some(status.as_u16()),
                         message,
                         source: None,
-                    }
+                    },
                 }
             }
             GeminiError::InvalidConfiguration(msg) => EmbeddingError::Configuration(msg),
@@ -309,10 +315,16 @@ impl From<GeminiError> for EmbeddingError {
             GeminiError::Streaming(_) => {
                 // Streaming is not applicable to the standard embedding call.
                 // Map to Provider error.
-                EmbeddingError::Provider(format!("Unexpected streaming error during embedding operation: {}", err).into())
+                EmbeddingError::Provider(
+                    format!(
+                        "Unexpected streaming error during embedding operation: {}",
+                        err
+                    )
+                    .into(),
+                )
             }
             GeminiError::BatchTooLarge { limit, actual } => {
-                EmbeddingError::BatchTooLarge { limit , actual }
+                EmbeddingError::BatchTooLarge { limit, actual }
             }
         }
     }

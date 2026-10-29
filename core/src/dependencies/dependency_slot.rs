@@ -1,4 +1,7 @@
-use std::sync::{Arc, Weak, atomic::{AtomicUsize, Ordering}};
+use std::sync::{
+    Arc, Weak,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use crate::permissions::{Authorized, Permission};
 
@@ -10,12 +13,18 @@ pub struct DependencySlot<T> {
 
 impl<T> DependencySlot<T> {
     pub fn new(item: T, permissions_granted: Vec<Permission>) -> Self {
-        Self { item, permissions_granted, tracker: Arc::new(AtomicUsize::new(0)) }
+        Self {
+            item,
+            permissions_granted,
+            tracker: Arc::new(AtomicUsize::new(0)),
+        }
     }
 
     pub fn track_one(&self) -> TrackingGuard {
         self.tracker.fetch_add(1, Ordering::AcqRel);
-        TrackingGuard { tracker: Some(Arc::downgrade(&self.tracker)) }
+        TrackingGuard {
+            tracker: Some(Arc::downgrade(&self.tracker)),
+        }
     }
 
     pub fn is_active(&self) -> bool {
@@ -68,7 +77,9 @@ impl Clone for TrackingGuard {
                 counter.fetch_add(1, Ordering::AcqRel);
             }
         }
-        Self { tracker: self.tracker.clone() }
+        Self {
+            tracker: self.tracker.clone(),
+        }
     }
 }
 

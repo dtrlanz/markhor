@@ -1,7 +1,15 @@
-use std::{fmt::Debug, sync::{Arc, atomic::{AtomicBool, Ordering}}};
+use std::{
+    fmt::Debug,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
-use crate::{dependencies::{Provide, ResolveDependencyError, TrackingGuard}, permissions::{Authorized, Permission}};
-
+use crate::{
+    dependencies::{Provide, ResolveDependencyError, TrackingGuard},
+    permissions::{Authorized, Permission},
+};
 
 #[derive(Clone)]
 pub struct ApiKey {
@@ -40,12 +48,12 @@ impl ApiKey {
     }
 
     /// Checks if the API key is associated with the given provider.
-    /// 
+    ///
     /// Unlike `==`, the comparison is case-insensitive.
     pub fn provider_is(&self, provider: &str) -> bool {
         self.provider.eq_ignore_ascii_case(provider)
     }
-    
+
     pub fn project(&self) -> &str {
         &self.project
     }
@@ -54,7 +62,10 @@ impl ApiKey {
 impl Debug for ApiKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ApiKey")
-            .field("key", &format!("...{}", &self.key[self.key.len().saturating_sub(4)..]))
+            .field(
+                "key",
+                &format!("...{}", &self.key[self.key.len().saturating_sub(4)..]),
+            )
             .field("provider", &self.provider)
             .field("project", &self.project)
             .finish()
@@ -65,12 +76,15 @@ impl Provide for ApiKey {
     type Item = Self;
 
     fn iter(assets: &super::Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
-        Ok(assets.api_keys().into_iter().map(|slot| slot.item.tracked(slot.track_one())))
+        Ok(assets
+            .api_keys()
+            .into_iter()
+            .map(|slot| slot.item.tracked(slot.track_one())))
     }
 
     fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
     where
-        I: Iterator<Item = Self::Item>
+        I: Iterator<Item = Self::Item>,
     {
         Ok(items)
     }
@@ -150,4 +164,3 @@ mod tests {
         assert!(provided_keys.iter().any(|k| k.key() == "abcdef1234567890"));
     }
 }
-
