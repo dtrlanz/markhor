@@ -6,6 +6,9 @@ struct FieldConfig {
     // Each
     each: bool,
 
+    // Default (exclusive with all other attributes)
+    default: bool,
+
     // Filtering
     filter: Option<Expr>,
     filter_map: Option<(Expr, Type)>, // Acts as both Filtering and Mapping
@@ -69,6 +72,7 @@ fn parse_struct_crate_path(attrs: &[syn::Attribute]) -> syn::Result<Option<syn::
 fn parse_provide_attrs(field: &syn::Field) -> syn::Result<FieldConfig> {
     let mut config = FieldConfig {
         each: false,
+        default: false,
         filter: None,
         filter_map: None,
         map: None,
@@ -88,6 +92,11 @@ fn parse_provide_attrs(field: &syn::Field) -> syn::Result<FieldConfig> {
                 // Each
                 if meta.path.is_ident("each") {
                     config.each = true;
+                    Ok(())
+                }
+                // Default
+                else if meta.path.is_ident("default") {
+                    config.default = true;
                     Ok(())
                 }
                 // Filtering & Mapping
@@ -130,6 +139,26 @@ fn parse_provide_attrs(field: &syn::Field) -> syn::Result<FieldConfig> {
                     Err(meta.error("unsupported provide attribute"))
                 }
             })?;
+        }
+    }
+
+    // `default` bypasses dependency resolution, so it cannot be combined with anything else
+    if config.default {
+        let mut others = Vec::new();
+        if config.each {
+            others.push("each");
+        }
+        others.extend(filtering_spans.iter().copied());
+        others.extend(mapping_spans.iter().copied());
+        others.extend(sorting_spans.iter().copied());
+        if !others.is_empty() {
+            return Err(syn::Error::new_spanned(
+                field,
+                format!(
+                    "The `default` attribute cannot be combined with other provide attributes ({}).",
+                    others.join(", ")
+                ),
+            ));
         }
     }
 
@@ -215,7 +244,8 @@ fn find_hygiene_prefix(generics: &syn::Generics) -> String {
 ///
 /// Attributes are categorized into groups. You may combine attributes from
 /// *different* groups on a single field, but combining multiple attributes
-/// from the *same* group will result in a compile error.
+/// from the *same* group will result in a compile error. The `default`
+/// attribute cannot be combined with any other attribute.
 ///
 /// ## 1. Iteration (`each`)
 /// Normally, a field evaluates to a single instance. Marking a field with
@@ -249,6 +279,11 @@ fn find_hygiene_prefix(generics: &syn::Generics) -> String {
 /// - `sort_by = |a, b| ...`: Takes a closure returning `std::cmp::Ordering`.
 //X - `sort_by_key = |item| ...` (Not yet implemented)
 //X - `sort_by_field = field_name` (Not yet implemented)
+///
+/// ## 5. Default
+/// `#[provide(default)]` skips dependency resolution entirely and initializes
+/// the field with `Default::default()`. The field type must implement
+/// `Default`, but does not need to implement `Provide`.
 ///
 /// # Evaluation Order
 /// If multiple attributes are applied to the same field, they are evaluated in
@@ -423,7 +458,9 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
                         each_loops.push((var_ident.clone(), iter_expr));
                     } else {
                         // Standard field logic
-                        let init_tokens = if needs_custom_iter {
+                        let init_tokens = if attrs.default {
+                            quote! { ::std::default::Default::default() }
+                        } else if needs_custom_iter {
                             quote! {
                                 {
                                     let mut __field_iter = #iter_expr;

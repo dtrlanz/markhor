@@ -15,6 +15,36 @@ fn provide_simple_struct() {
     assert_eq!(foo.bar, Bar);
 }
 
+#[test]
+fn provide_default_attribute() {
+    // Implements `Default` but not `Provide`, so it can only be built via `#[provide(default)]`
+    #[derive(Debug, PartialEq, Eq)]
+    struct Config {
+        retries: u32,
+    }
+
+    impl Default for Config {
+        fn default() -> Self {
+            Config { retries: 3 }
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq, Provide)]
+    struct Bar;
+
+    #[derive(Debug, PartialEq, Eq, Provide)]
+    struct Holder {
+        #[provide(default)]
+        config: Config,
+        bar: Bar,
+    }
+
+    let session = Session::new();
+    let holder: Holder = session.resolve().unwrap();
+    assert_eq!(holder.config, Config::default());
+    assert_eq!(holder.bar, Bar);
+}
+
 #[cfg(test)]
 mod hygiene_tests {
     use super::*;
