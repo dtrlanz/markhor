@@ -297,6 +297,8 @@ pub(super) mod thread_builder {
                 content: vec![ContentPart::Text(text.into())],
                 tool_calls,
                 model: ModelId::new("spiff-3-nano", "zygomorphic-labs"),
+                reasoning_content: Default::default(),
+                metadata: Default::default(),
             })
         }
 
@@ -426,6 +428,8 @@ mod tests {
                 content: vec![ContentPart::Text("Hello! How can I help you today?".into())],
                 tool_calls: vec![],
                 model: ModelId::new("spiff-3-nano", "zygomorphic-labs"),
+                reasoning_content: Default::default(),
+                metadata: Default::default(),
             })
             .unwrap();
 

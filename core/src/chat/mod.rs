@@ -13,4 +13,4 @@ pub use chat_ui::{
 pub use error::ChatError;
 pub use group::{AddMemberError, AppendMessageError, Group, InitContext};
 pub use member::{Member, MemberId};
-pub use msg::{IterMsg, Msg};
+pub use msg::{IterMsg, Msg, ReasoningContent};

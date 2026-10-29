@@ -26,6 +26,8 @@ pub enum Msg {
         content: Vec<ContentPart>,
         tool_calls: Vec<ToolCallRequest>,
         model: ModelId,
+        reasoning_content: Option<ReasoningContent>,
+        metadata: Value, // token usage, etc.
     },
     Direct {
         sender: MemberId,
@@ -65,6 +67,13 @@ impl Msg {
             _ => false,
         }
     }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+pub struct ReasoningContent {
+    trace: String,
+    summaries: Vec<String>, // support text only for now
+    opaque: Value,
 }
 
 pub trait IterMsg: Iterator<Item = Msg> + Sized {
@@ -520,6 +529,8 @@ mod tests {
                 content: vec![ContentPart::Text("hey".into())],
                 tool_calls: vec![],
                 model: ModelId::new("spiff-3-nano", "zygomorphic-labs"),
+                reasoning_content: Default::default(),
+                metadata: Default::default(),
             })
             .unwrap();
         (me, ai)
@@ -550,6 +561,8 @@ mod tests {
                     content: vec![ContentPart::Text("hey".into())],
                     tool_calls: vec![],
                     model: ModelId::new("spiff-3-nano", "zygomorphic-labs"),
+                    reasoning_content: Default::default(),
+                    metadata: Default::default(),
                 },
             ]
         );
@@ -580,6 +593,8 @@ mod tests {
                     content: vec![ContentPart::Text("changed".into())],
                     tool_calls: vec![],
                     model: ModelId::new("spiff-3-nano", "zygomorphic-labs"),
+                    reasoning_content: Default::default(),
+                    metadata: Default::default(),
                 },
             ]
         );

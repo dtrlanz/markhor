@@ -117,6 +117,8 @@ impl Member {
                     content,
                     tool_calls,
                     model,
+                    reasoning_content,
+                    metadata,
                 } => {
                     if sender == &self.id {
                         Some(Msg::Agent {
@@ -125,6 +127,8 @@ impl Member {
                             content: content.clone(),
                             tool_calls: tool_calls.clone(),
                             model: model.clone(),
+                            reasoning_content: reasoning_content.clone(),
+                            metadata: metadata.clone(),
                         })
                     } else {
                         Some(Msg::Agent {
@@ -139,6 +143,8 @@ impl Member {
                                 tool_calls.clone()
                             },
                             model: model.clone(),
+                            reasoning_content: reasoning_content.clone(),
+                            metadata: metadata.clone(),
                         })
                     }
                 }

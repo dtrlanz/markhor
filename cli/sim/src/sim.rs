@@ -422,6 +422,8 @@ impl Simulation {
                 content: vec![ContentPart::Text(body)],
                 tool_calls,
                 model: ModelId::new("sim-7-pro", "simulator"),
+                reasoning_content: Default::default(),
+                metadata: Default::default(),
             },
         ));
         id

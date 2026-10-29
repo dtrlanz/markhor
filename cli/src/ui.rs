@@ -1213,6 +1213,8 @@ mod tests {
             content: vec![ContentPart::Text(text.to_string())],
             tool_calls: vec![],
             model: ModelId::new("spiff-3-nano", "zygomorphic-labs"),
+            reasoning_content: Default::default(),
+            metadata: Default::default(),
         }
     }
 
@@ -1493,6 +1495,8 @@ mod tests {
                 arguments: json!({}),
             }],
             model: ModelId::new("spiff-3-nano", "zygomorphic-labs"),
+            reasoning_content: Default::default(),
+            metadata: Default::default(),
         };
         ui.handle_message(&MsgEvent::Begin(MsgId(1), agent()));
         ui.handle_message(&MsgEvent::Full(MsgId(1), msg));
