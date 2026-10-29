@@ -144,8 +144,12 @@ pub(crate) const GDPR: Permission = Permission {
 
 pub(crate) fn all_permissions() -> Vec<Permission> {
     #[cfg(test)]
-    return vec![ON_DEVICE, GDPR];
+    return vec![ON_DEVICE, NOT_USED_FOR_TRAINING, PUBLIC, GDPR];
     vec![ON_DEVICE, NOT_USED_FOR_TRAINING, PUBLIC]
+}
+
+pub(crate) fn permission_by_name(name: &str) -> Option<Permission> {
+    all_permissions().into_iter().find(|p| p.name() == name)
 }
 
 #[cfg(test)]
