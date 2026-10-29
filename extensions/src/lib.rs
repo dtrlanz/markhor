@@ -1,5 +1,6 @@
 pub mod chunking;
 pub mod cli;
+pub mod google;
 pub mod ocr;
 pub mod plugin;
 
