@@ -282,8 +282,10 @@ fn find_hygiene_prefix(generics: &syn::Generics) -> String {
 ///
 /// ## 5. Default
 /// `#[provide(default)]` skips dependency resolution entirely and initializes
-/// the field with `Default::default()`. The field type must implement
-/// `Default`, but does not need to implement `Provide`.
+/// the field with `<FieldType as Default>::default()`. The field type must
+/// implement `Default`, but does not need to implement `Provide`. If the struct
+/// also has `each` fields, the type must additionally implement `Clone`, like
+/// any other non-`each` field.
 ///
 /// # Evaluation Order
 /// If multiple attributes are applied to the same field, they are evaluated in
@@ -459,7 +461,7 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
                     } else {
                         // Standard field logic
                         let init_tokens = if attrs.default {
-                            quote! { ::std::default::Default::default() }
+                            quote! { <#ty as ::std::default::Default>::default() }
                         } else if needs_custom_iter {
                             quote! {
                                 {
