@@ -706,16 +706,28 @@ mod tests {
                 inner: live_inner(),
                 model_name: model,
             };
-            let response = client
-                .generate(
-                    &[
-                        Msg::Platform("Answer in one word.".into()),
-                        user("What is the capital of France?"),
-                    ],
-                    &ChatOptions::default(),
-                )
-                .await
-                .unwrap();
+            let messages = [
+                Msg::Platform("Answer in one word.".into()),
+                user("What is the capital of France?"),
+            ];
+
+            // Gemma endpoints are flaky (intermittent 500s and dropped connections), so retry.
+            let mut attempt = 1;
+            let response = loop {
+                match client.generate(&messages, &ChatOptions::default()).await {
+                    Err(ChatError::Api {
+                        status: Some(500..=599),
+                        ..
+                    })
+                    | Err(ChatError::Network(_))
+                        if attempt < 6 =>
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(500 * attempt)).await;
+                        attempt += 1;
+                    }
+                    result => break result.unwrap(),
+                }
+            };
             let text: String = response
                 .content
                 .into_iter()

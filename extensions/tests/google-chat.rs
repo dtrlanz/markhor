@@ -100,3 +100,38 @@ async fn resolved_chat_model_can_generate() {
         .collect();
     assert!(text.contains("Paris"), "unexpected answer: {text:?}");
 }
+
+/// Deliberately has no retry, so that transient errors from Gemini endpoints show up (to compare
+/// against Gemma). Uses a single request to stay within free-tier rate limits.
+#[tokio::test]
+#[ignore = "requires GOOGLE_API_KEY and network access"]
+async fn gemini_model_can_generate() {
+    let session = session_with_google().await;
+
+    let wanted = std::env::var("GOOGLE_GEMINI_MODEL").unwrap_or("gemini-flash-lite-latest".into());
+    let models: Vec<Comp<dyn ChatModel>> = session.resolve().unwrap();
+    let model = models
+        .into_iter()
+        .find(|m| m.model_name() == wanted)
+        .unwrap_or_else(|| panic!("model {wanted} should be listed"));
+
+    let messages = [
+        Msg::Platform("Answer with a single word.".into()),
+        Msg::User {
+            sender: MemberId::new("tester", true),
+            timestamp: None,
+            content: vec![ContentPart::Text("What is the capital of France?".into())],
+        },
+    ];
+    let response = model
+        .generate(&messages, &ChatOptions::default())
+        .await
+        .unwrap_or_else(|e| panic!("{wanted} failed: {e:?}"));
+
+    let text: String = response
+        .content
+        .into_iter()
+        .filter_map(ContentPart::into_text)
+        .collect();
+    assert!(text.contains("Paris"), "unexpected answer: {text:?}");
+}
