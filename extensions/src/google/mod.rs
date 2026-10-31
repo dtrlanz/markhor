@@ -7,6 +7,7 @@ use markhor_core::{
     extension::{Extension, InitExtensionError},
 };
 
+mod api;
 mod chat;
 
 pub use chat::ChatClient;
