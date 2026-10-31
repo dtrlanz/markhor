@@ -52,12 +52,13 @@ async fn model_list_is_initialized() {
 async fn resolved_chat_model_can_generate() {
     let session = session_with_google().await;
 
-    // A single `Comp` resolves to the first listed model, but the API also lists models that
-    // are no longer available to new users (e.g. `gemini-2.5-flash` returns 404). Prefer a
-    // Gemma 4 model, which has more generous rate limits for development testing.
+    // `*-latest` aliases are sorted first, so a single `Comp` resolves to one of them rather
+    // than a retired model (e.g. `gemini-2.5-flash` is listed but returns 404).
     let first: Comp<dyn ChatModel> = session.resolve().unwrap();
     println!("first listed model: {}", first.model_name());
+    assert!(first.model_name().ends_with("-latest"));
 
+    // Use a Gemma 4 model, which has more generous rate limits for development testing.
     let models: Vec<Comp<dyn ChatModel>> = session.resolve().unwrap();
     let model = models
         .into_iter()
@@ -74,15 +75,18 @@ async fn resolved_chat_model_can_generate() {
         },
     ];
 
-    // Gemma endpoints intermittently return 500s, so retry server errors.
+    // Gemma endpoints are flaky (intermittent 500s and dropped connections), so retry those.
     let mut attempt = 1;
     let response = loop {
         match model.generate(&messages, &ChatOptions::default()).await {
             Err(ChatError::Api {
                 status: Some(500..=599),
                 ..
-            }) if attempt < 4 => {
-                println!("attempt {attempt} hit a server error; retrying");
+            })
+            | Err(ChatError::Network(_))
+                if attempt < 4 =>
+            {
+                println!("attempt {attempt} hit a transient error; retrying");
                 attempt += 1;
             }
             result => break result.unwrap(),

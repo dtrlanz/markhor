@@ -122,7 +122,7 @@ impl Extension for Client {
         // `InitExtensionError` has no variant for network/API failures. Until it does, a
         // failed listing is logged and leaves the extension without chat models.
         match self.inner.list_chat_models().await {
-            Ok(models) => self.model_list = models,
+            Ok(models) => self.model_list = self.inner.config.select_models(models),
             Err(error) => tracing::warn!(%error, "failed to list Google chat models"),
         }
         Ok(())
@@ -144,12 +144,110 @@ impl Extension for Client {
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
     pub api_base_url: Option<String>,
+
+    /// If non-empty, only models matching one of these patterns are offered.
+    ///
+    /// The API lists models that can't actually be used (e.g., retired ones that return 404),
+    /// so this is the way to restrict the list to known-good models. Patterns are exact ids or
+    /// ids with a single leading or trailing `*` (e.g., `gemma-4*`).
+    pub allow_models: Vec<String>,
+
+    /// Models matching any of these patterns are never offered, even if allowed.
+    pub deny_models: Vec<String>,
 }
 
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
             api_base_url: Some(DEFAULT_GOOGLE_API_BASE_URL.to_string()),
+            allow_models: vec![],
+            deny_models: vec![],
         }
+    }
+}
+
+impl ClientConfig {
+    /// Applies the allow/deny lists and orders the result so that the best default comes first.
+    ///
+    /// `*-latest` aliases come first, since Google keeps them pointed at current models.
+    /// Otherwise the API's order is preserved.
+    fn select_models(&self, mut ids: Vec<String>) -> Vec<String> {
+        ids.retain(|id| {
+            (self.allow_models.is_empty() || self.allow_models.iter().any(|p| model_matches(p, id)))
+                && !self.deny_models.iter().any(|p| model_matches(p, id))
+        });
+        ids.sort_by_key(|id| !id.ends_with("-latest"));
+        ids
+    }
+}
+
+/// Matches a model id against a pattern: either an exact id, or an id with a single leading
+/// or trailing `*` wildcard (e.g., `gemini-2.5-*` or `*-tts`).
+fn model_matches(pattern: &str, id: &str) -> bool {
+    if let Some(suffix) = pattern.strip_prefix('*') {
+        id.ends_with(suffix)
+    } else if let Some(prefix) = pattern.strip_suffix('*') {
+        id.starts_with(prefix)
+    } else {
+        pattern == id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ids(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn patterns() {
+        assert!(model_matches("gemma-4-31b-it", "gemma-4-31b-it"));
+        assert!(!model_matches("gemma-4", "gemma-4-31b-it"));
+        assert!(model_matches("gemma-4*", "gemma-4-31b-it"));
+        assert!(model_matches("*-tts", "gemini-2.5-flash-preview-tts"));
+        assert!(!model_matches("*-tts", "gemini-2.5-flash"));
+    }
+
+    #[test]
+    fn default_keeps_everything_with_latest_aliases_first() {
+        let selected = ClientConfig::default().select_models(ids(&[
+            "gemini-2.5-flash",
+            "gemini-flash-latest",
+            "gemma-4-31b-it",
+            "gemini-pro-latest",
+        ]));
+        assert_eq!(
+            selected,
+            ["gemini-flash-latest", "gemini-pro-latest", "gemini-2.5-flash", "gemma-4-31b-it"]
+        );
+    }
+
+    #[test]
+    fn allow_list_restricts() {
+        let config = ClientConfig {
+            allow_models: vec!["gemma-4*".into()],
+            ..Default::default()
+        };
+        let selected =
+            config.select_models(ids(&["gemini-2.5-flash", "gemma-4-31b-it", "gemma-4-26b-a4b-it"]));
+        assert_eq!(selected, ["gemma-4-31b-it", "gemma-4-26b-a4b-it"]);
+    }
+
+    #[test]
+    fn deny_list_wins_over_allow_list() {
+        let config = ClientConfig {
+            allow_models: vec!["gemini-*".into()],
+            deny_models: vec!["gemini-2.5-*".into(), "*-tts".into()],
+            ..Default::default()
+        };
+        let selected = config.select_models(ids(&[
+            "gemini-2.5-flash",
+            "gemini-3-flash-preview",
+            "gemini-3-flash-tts",
+            "gemma-4-31b-it",
+        ]));
+        assert_eq!(selected, ["gemini-3-flash-preview"]);
     }
 }

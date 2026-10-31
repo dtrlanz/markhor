@@ -287,6 +287,7 @@ mod tests {
             api_key: ApiKey::new("test-key".into(), "google".into(), "proj".into()),
             config: Arc::new(ClientConfig {
                 api_base_url: Some(format!("{}/v1beta/", server.uri())),
+                ..Default::default()
             }),
             http_client: Arc::new(reqwest::Client::new()),
         })
@@ -624,6 +625,7 @@ mod tests {
                     api_key: ApiKey::new("test-key".into(), "google".into(), "proj".into()),
                     config: Arc::new(ClientConfig {
                         api_base_url: Some("http://127.0.0.1:1".into()),
+                        ..Default::default()
                     }),
                     http_client: Arc::new(reqwest::Client::new()),
                 }),
