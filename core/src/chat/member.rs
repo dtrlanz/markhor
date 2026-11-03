@@ -78,9 +78,18 @@ impl Member {
     ///   will return true, so that downstream code can format the context in
     ///   first-person perspective as needed.
     pub fn context(&self) -> impl Iterator<Item = Msg> + '_ {
+        self.context_until(usize::MAX)
+    }
+
+    /// Returns an iterator over the messages in this member's context up to
+    /// the given index.
+    ///
+    /// Like [`Member::context`], but only includes messages whose thread index
+    /// is less than `end`.
+    pub fn context_until(&self, end: usize) -> impl Iterator<Item = Msg> + '_ {
         let first_person = self.id.to_first_person();
         self.thread
-            .iter()
+            .iter_until(end)
             .filter_map(move |entry| match entry.value() {
                 // Messages with specific recipients are only visible to those
                 // recipients; all other messages are visible to everyone.

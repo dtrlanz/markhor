@@ -171,19 +171,31 @@ impl Thread {
         self.items.insert(idx, message);
     }
 
-    pub(super) fn iter(&'_ self) -> impl Iterator<Item = Entry<'_, usize, Msg>> + '_ {
-        // Include previous list segments
+    /// Iterates over messages with indices less than `end`, including
+    /// messages inherited from previous segments.
+    pub(super) fn iter_until(
+        &'_ self,
+        end: usize,
+    ) -> impl Iterator<Item = Entry<'_, usize, Msg>> + '_ {
+        // Include previous list segments, each clamped to `end`
         let mut stack = Vec::new();
-        let mut current = Some((self, usize::MAX));
+        let mut current = Some((self, end));
         while let Some((list, stop)) = current {
             stack.push((list.items.iter(), stop));
-            current = list.previous.as_ref().map(|(arc, s)| (&**arc, *s));
+            current = list
+                .previous
+                .as_ref()
+                .map(|(arc, s)| (&**arc, (*s).min(end)));
         }
         // Start at beginning
         stack
             .into_iter()
             .rev()
             .flat_map(|(iter, stop)| iter.take_while(move |e| *e.key() < stop))
+    }
+
+    pub fn len(&self) -> usize {
+        self.len.load(Ordering::Acquire)
     }
 }
 
@@ -345,8 +357,8 @@ mod tests {
 
     impl<'a> PartialEq for History<'a> {
         fn eq(&self, other: &Self) -> bool {
-            let mut lhs = self.0.iter();
-            let mut rhs = other.0.iter();
+            let mut lhs = self.0.iter_until(usize::MAX);
+            let mut rhs = other.0.iter_until(usize::MAX);
             loop {
                 match (lhs.next(), rhs.next()) {
                     (Some(l), Some(r)) => {
@@ -363,7 +375,7 @@ mod tests {
 
     impl<'a> Debug for History<'a> {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            Vec::from_iter(self.0.iter().map(|e| e.value().clone())).fmt(f)
+            Vec::from_iter(self.0.iter_until(usize::MAX).map(|e| e.value().clone())).fmt(f)
         }
     }
 
@@ -474,7 +486,7 @@ mod tests {
                 "Temperature: 18°C, Chance of rain: 20%",
             )
             .as_ref()
-            .iter()
+            .iter_until(usize::MAX)
             .map(|e| e.value().clone())
             .collect::<Vec<_>>();
 
@@ -500,5 +512,98 @@ mod tests {
         assert!(!ai_cx[1].belongs_to_first_person());
         assert!(ai_cx[2].belongs_to_first_person());
         assert!(!ai_cx[3].belongs_to_first_person());
+    }
+
+    fn keys(thread: &Thread, end: usize) -> Vec<usize> {
+        thread.iter_until(end).map(|e| *e.key()).collect()
+    }
+
+    #[test]
+    fn iter_until_prefix() {
+        let t: Arc<Thread> = ThreadBuilder::new()
+            .developer("a")
+            .developer("b")
+            .developer("c")
+            .into();
+
+        assert_eq!(keys(&t, 0), Vec::<usize>::new());
+        assert_eq!(keys(&t, 1), vec![0]);
+        assert_eq!(keys(&t, 2), vec![0, 1]);
+        assert_eq!(keys(&t, 3), vec![0, 1, 2]);
+        assert_eq!(keys(&t, 100), vec![0, 1, 2]);
+        assert_eq!(
+            History(&t)
+                .0
+                .iter_until(usize::MAX)
+                .map(|e| *e.key())
+                .collect::<Vec<_>>(),
+            keys(&t, usize::MAX)
+        );
+    }
+
+    #[test]
+    fn iter_until_clamps_parent_segments_at_fork() {
+        let root = ThreadBuilder::new().developer("a").developer("b");
+        let fork_builder = root.fork();
+        let root: Arc<Thread> = root.developer("c").into();
+        let fork: Arc<Thread> = fork_builder.developer("d").into();
+
+        // Fork inherits parent's [0, 1] and then its own message at index 2.
+        assert_eq!(keys(&fork, usize::MAX), vec![0, 1, 2]);
+        // Ending before the fork point must not leak parent messages past `end`.
+        assert_eq!(keys(&fork, 1), vec![0]);
+        assert_eq!(keys(&fork, 0), Vec::<usize>::new());
+        // Parent is unaffected by the fork's messages.
+        assert_eq!(keys(&root, usize::MAX), vec![0, 1, 2]);
+        assert_eq!(keys(&root, 2), vec![0, 1]);
+    }
+
+    #[tokio::test]
+    async fn member_context_until() {
+        let group = Group::new();
+        let human = group.add_member(MemberId::new("Gloria", true)).unwrap();
+        let ai = group.add_member(MemberId::new("Robbie", false)).unwrap();
+
+        let msg_vec = ThreadBuilder::new()
+            .developer("You are a Gloria's personal assistant. She lives in Paris.")
+            .user(human.id.id(), "Will it rain today?")
+            .agent(
+                ai.id.id(),
+                "Let me check the weather for you.",
+                vec![ToolCallRequest {
+                    id: "call_1".into(),
+                    name: "get_weather".into(),
+                    arguments: serde_json::json!({"location": "Paris"}),
+                }],
+            )
+            .tool_result(
+                ai.id.id(),
+                "call_1".into(),
+                "Temperature: 18°C, Chance of rain: 20%",
+            )
+            .as_ref()
+            .iter_until(usize::MAX)
+            .map(|e| e.value().clone())
+            .collect::<Vec<_>>();
+
+        for msg in &msg_vec {
+            group.append(msg.clone()).unwrap();
+        }
+
+        let human_cx = human.context_until(2).collect::<Vec<_>>();
+        assert_eq!(human_cx, msg_vec[0..2]);
+        assert!(!human_cx[0].belongs_to_first_person());
+        assert!(human_cx[1].belongs_to_first_person());
+
+        let ai_cx = ai.context_until(3).collect::<Vec<_>>();
+        assert_eq!(ai_cx, msg_vec[0..3]);
+        assert!(ai_cx[2].belongs_to_first_person());
+
+        assert_eq!(ai.context_until(0).count(), 0);
+        assert_eq!(ai.context_until(100).count(), 4);
+        assert_eq!(
+            ai.context_until(usize::MAX).collect::<Vec<_>>(),
+            ai.context().collect::<Vec<_>>()
+        );
     }
 }
