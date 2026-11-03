@@ -11,6 +11,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+use thiserror::Error;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -21,7 +22,7 @@ pub struct Group {
 }
 
 impl Group {
-    pub(super) fn new() -> Arc<Self> {
+    pub fn new() -> Arc<Self> {
         Arc::new(Self {
             members: Default::default(),
             primary: Arc::new(Thread::new()),
@@ -109,8 +110,9 @@ impl Group {
     }
 }
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum AddMemberError {
+    #[error("Member with id '{}' already exists in the group", .0.id())]
     AlreadyExists(Member),
 }
 
