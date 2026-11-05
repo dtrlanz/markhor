@@ -101,32 +101,43 @@ pub trait Listener<T>: Send + Sync {
     fn invoke(&self, payload: &T);
 }
 
-impl<F> Listener<()> for F
-where
-    F: Fn() + Send + Sync,
-{
-    fn invoke(&self, _payload: &()) {
-        self();
-    }
+// Implements `Listener` for closures taking `&T1, ..., &Tn` for the given tuple type.
+macro_rules! impl_listener {
+    ($($T:ident),* $(,)?) => {
+        impl<F, $($T),*> Listener<($($T,)*)> for F
+        where
+            F: Fn($(&$T),*) + Send + Sync,
+        {
+            #[allow(non_snake_case)]
+            fn invoke(&self, payload: &($($T,)*)) {
+                let ($(ref $T,)*) = *payload;
+                self($($T),*);
+            }
+        }
+    };
 }
 
-impl<F, A> Listener<(A,)> for F
-where
-    F: Fn(&A) + Send + Sync,
-{
-    fn invoke(&self, payload: &(A,)) {
-        self(&payload.0);
-    }
-}
-
-impl<F, A, B> Listener<(A, B)> for F
-where
-    F: Fn(&A, &B) + Send + Sync,
-{
-    fn invoke(&self, payload: &(A, B)) {
-        self(&payload.0, &payload.1);
-    }
-}
+impl_listener!();
+impl_listener!(T1);
+impl_listener!(T1, T2);
+impl_listener!(T1, T2, T3);
+impl_listener!(T1, T2, T3, T4);
+impl_listener!(T1, T2, T3, T4, T5);
+impl_listener!(T1, T2, T3, T4, T5, T6);
+impl_listener!(T1, T2, T3, T4, T5, T6, T7);
+impl_listener!(T1, T2, T3, T4, T5, T6, T7, T8);
+impl_listener!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
+impl_listener!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
+impl_listener!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
+impl_listener!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
+impl_listener!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13);
+impl_listener!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14);
+impl_listener!(
+    T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15
+);
+impl_listener!(
+    T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16
+);
 
 /// Generates a struct whose fields are `Event`s, with a `Default` impl.
 ///
@@ -267,6 +278,76 @@ mod tests {
         event.dispatch(&(AlienInfo { id: 0 },));
 
         assert_eq!(*order.lock().unwrap(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn dispatch_supports_sixteen_payload_fields() {
+        type P = (
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+        );
+        let event: Event<P> = Event::new();
+        let sum = Arc::new(AtomicUsize::new(0));
+        let s = sum.clone();
+        let _sub = event.add_listener(
+            move |a: &u32,
+                  b: &u32,
+                  c: &u32,
+                  d: &u32,
+                  e: &u32,
+                  f: &u32,
+                  g: &u32,
+                  h: &u32,
+                  i: &u32,
+                  j: &u32,
+                  k: &u32,
+                  l: &u32,
+                  m: &u32,
+                  n: &u32,
+                  o: &u32,
+                  p: &u32| {
+                let total = [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p]
+                    .iter()
+                    .map(|x| **x as usize)
+                    .sum::<usize>();
+                s.store(total, Ordering::SeqCst);
+            },
+        );
+
+        event.dispatch(&(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16));
+
+        assert_eq!(sum.load(Ordering::SeqCst), 136);
+    }
+
+    #[test]
+    fn dispatch_with_no_payload_calls_listener() {
+        let event: Event<()> = Event::new();
+        let (count, callback) = {
+            let count = Arc::new(AtomicUsize::new(0));
+            let c = count.clone();
+            (count, move || {
+                c.fetch_add(1, Ordering::SeqCst);
+            })
+        };
+        let _sub = event.add_listener(callback);
+
+        event.dispatch(&());
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
     #[test]
