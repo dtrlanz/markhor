@@ -162,7 +162,7 @@ impl Thread {
     /// `Subscription` is alive.
     pub fn on_message_appended(
         &self,
-        callback: impl Fn(&(Msg, usize)) + Send + Sync + 'static,
+        callback: impl Fn(&Msg, &usize) + Send + Sync + 'static,
     ) -> Subscription {
         self.events.message_appended.add_listener(callback)
     }
@@ -636,11 +636,9 @@ mod tests {
 
         let seen = Arc::new(Mutex::new(Vec::new()));
         let s = seen.clone();
-        let _sub = group
-            .primary
-            .on_message_appended(move |(msg, idx): &(Msg, usize)| {
-                s.lock().unwrap().push((msg.clone(), *idx));
-            });
+        let _sub = group.primary.on_message_appended(move |msg, idx| {
+            s.lock().unwrap().push((msg.clone(), *idx));
+        });
 
         let first = Msg::Developer("You are a helpful assistant.".into());
         let second = Msg::User {
@@ -671,11 +669,11 @@ mod tests {
         let primary_count = Arc::new(AtomicUsize::new(0));
         let other_count = Arc::new(AtomicUsize::new(0));
         let pc = primary_count.clone();
-        let _primary_sub = group.primary.on_message_appended(move |_| {
+        let _primary_sub = group.primary.on_message_appended(move |_, _| {
             pc.fetch_add(1, Ordering::SeqCst);
         });
         let oc = other_count.clone();
-        let _other_sub = other.on_message_appended(move |_| {
+        let _other_sub = other.on_message_appended(move |_, _| {
             oc.fetch_add(1, Ordering::SeqCst);
         });
 
@@ -699,7 +697,7 @@ mod tests {
         let thread: Arc<Thread> = ThreadBuilder::new().into();
         let count = Arc::new(AtomicUsize::new(0));
         let c = count.clone();
-        let sub = thread.on_message_appended(move |_| {
+        let sub = thread.on_message_appended(move |_, _| {
             c.fetch_add(1, Ordering::SeqCst);
         });
 
@@ -716,14 +714,14 @@ mod tests {
         let root: Arc<Thread> = ThreadBuilder::new().developer("a").into();
         let root_count = Arc::new(AtomicUsize::new(0));
         let rc = root_count.clone();
-        let _root_sub = root.on_message_appended(move |_| {
+        let _root_sub = root.on_message_appended(move |_, _| {
             rc.fetch_add(1, Ordering::SeqCst);
         });
 
         let fork = root.fork();
         let fork_count = Arc::new(AtomicUsize::new(0));
         let fc = fork_count.clone();
-        let _fork_sub = fork.on_message_appended(move |_| {
+        let _fork_sub = fork.on_message_appended(move |_, _| {
             fc.fetch_add(1, Ordering::SeqCst);
         });
 
@@ -743,7 +741,7 @@ mod tests {
         let weak = Arc::downgrade(&thread);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let s = seen.clone();
-        let _sub = thread.on_message_appended(move |(msg, idx): &(Msg, usize)| {
+        let _sub = thread.on_message_appended(move |msg, idx| {
             let thread = weak.upgrade().unwrap();
             let stored = thread
                 .iter_until(usize::MAX)
