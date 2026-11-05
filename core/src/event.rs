@@ -141,11 +141,13 @@ impl_listener!(
 
 /// Generates a struct whose fields are `Event`s, with a `Default` impl.
 ///
+/// For each event type, specify listener arguments in form of a tuple.
+///
 /// ```ignore
 /// events! {
 ///     pub struct FooEvents {
-///         alien_invasion: AlienInfo,
-///         zombie_apocalypse: ZombieInfo,
+///         alien_invasion: (AlienInfo,),
+///         zombie_apocalypse: (ZombieInfo,),
 ///     }
 /// }
 /// ```
@@ -268,7 +270,7 @@ mod tests {
     fn dispatch_calls_listeners_in_registration_order() {
         let event: Event<(AlienInfo,)> = Event::new();
         let order = Arc::new(Mutex::new(Vec::new()));
-        let subs: Vec<Subscription> = (1..=3)
+        let _subs: Vec<Subscription> = (1..=3)
             .map(|n| {
                 let order = order.clone();
                 event.add_listener(move |_: &AlienInfo| order.lock().unwrap().push(n))
