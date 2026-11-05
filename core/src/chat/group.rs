@@ -2,6 +2,7 @@ use super::{
     Msg,
     member::{Member, MemberId},
 };
+use crate::{event::Subscription, events};
 use crossbeam_skiplist::{SkipMap, map::Entry};
 use std::{
     collections::HashMap,
@@ -128,12 +129,19 @@ pub enum InitContext {
     Fork,
 }
 
+events! {
+    struct ThreadEvents {
+        message_appended: (Msg, usize),
+    }
+}
+
 pub struct Thread {
     id: Uuid,
     items: SkipMap<usize, Msg>,
     len: AtomicUsize,
     previous: Option<(Arc<Thread>, usize)>,
     forks: Mutex<Vec<Weak<Thread>>>,
+    events: ThreadEvents,
 }
 
 impl Thread {
@@ -144,7 +152,19 @@ impl Thread {
             len: AtomicUsize::new(0),
             previous: None,
             forks: Mutex::new(Vec::new()),
+            events: ThreadEvents::default(),
         }
+    }
+
+    /// Registers a listener that is called with `(message, index)` after a
+    /// message has been appended to this thread and is readable via `len` and
+    /// `iter_until`. The listener stays registered while the returned
+    /// `Subscription` is alive.
+    pub fn on_message_appended(
+        &self,
+        callback: impl Fn(&(Msg, usize)) + Send + Sync + 'static,
+    ) -> Subscription {
+        self.events.message_appended.add_listener(callback)
     }
 
     /// The unique identifier of this thread. Threads compare equal iff their
@@ -161,6 +181,7 @@ impl Thread {
             len: AtomicUsize::new(len),
             previous: Some((self.clone(), len)),
             forks: Mutex::new(Vec::new()),
+            events: ThreadEvents::default(),
         });
         self.forks.lock().unwrap().push(Arc::downgrade(&fork));
         fork
@@ -168,7 +189,8 @@ impl Thread {
 
     fn append(&self, message: Msg) {
         let idx = self.len.fetch_add(1, Ordering::AcqRel);
-        self.items.insert(idx, message);
+        self.items.insert(idx, message.clone());
+        self.events.message_appended.dispatch(&(message, idx));
     }
 
     /// Iterates over messages with indices less than `end`, including
@@ -605,5 +627,137 @@ mod tests {
             ai.context_until(usize::MAX).collect::<Vec<_>>(),
             ai.context().collect::<Vec<_>>()
         );
+    }
+
+    #[tokio::test]
+    async fn message_appended_passes_message_and_index_in_order() {
+        let group = Group::new();
+        let human = group.add_member(MemberId::new("Gloria", true)).unwrap();
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let _sub = group
+            .primary
+            .on_message_appended(move |(msg, idx): &(Msg, usize)| {
+                s.lock().unwrap().push((msg.clone(), *idx));
+            });
+
+        let first = Msg::Developer("You are a helpful assistant.".into());
+        let second = Msg::User {
+            sender: human.id.clone(),
+            timestamp: None,
+            content: vec![ContentPart::Text("Good morning".into())],
+        };
+        group
+            .append(first.clone())
+            .unwrap()
+            .append(second.clone())
+            .unwrap();
+
+        assert_eq!(*seen.lock().unwrap(), vec![(first, 0), (second, 1)]);
+    }
+
+    #[tokio::test]
+    async fn message_appended_fires_once_per_thread_for_multi_recipient_message() {
+        let group = Group::new();
+        let a = group.add_member(MemberId::new("A", true)).unwrap();
+        let b = group.add_member(MemberId::new("B", false)).unwrap();
+        // C lives on a separate thread, so a message to A and C reaches two threads.
+        let other = Arc::new(Thread::new());
+        let c = group
+            .add_member_with_thread(MemberId::new("C", false), &other)
+            .unwrap();
+
+        let primary_count = Arc::new(AtomicUsize::new(0));
+        let other_count = Arc::new(AtomicUsize::new(0));
+        let pc = primary_count.clone();
+        let _primary_sub = group.primary.on_message_appended(move |_| {
+            pc.fetch_add(1, Ordering::SeqCst);
+        });
+        let oc = other_count.clone();
+        let _other_sub = other.on_message_appended(move |_| {
+            oc.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // A and B share the primary thread, so the primary thread gets one copy.
+        group
+            .append(Msg::Direct {
+                sender: b.id.clone(),
+                timestamp: None,
+                tool_call_id: String::new(),
+                recipients: smallvec::smallvec![a.id.clone(), b.id.clone(), c.id.clone()],
+                content: vec![ContentPart::Text("psst".into())],
+            })
+            .unwrap();
+
+        assert_eq!(primary_count.load(Ordering::SeqCst), 1);
+        assert_eq!(other_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn dropping_message_appended_subscription_stops_listener() {
+        let thread: Arc<Thread> = ThreadBuilder::new().into();
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        let sub = thread.on_message_appended(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+
+        thread.append(Msg::Developer("one".into()));
+        drop(sub);
+        thread.append(Msg::Developer("two".into()));
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(thread.len(), 2);
+    }
+
+    #[test]
+    fn fork_has_its_own_message_appended_listeners() {
+        let root: Arc<Thread> = ThreadBuilder::new().developer("a").into();
+        let root_count = Arc::new(AtomicUsize::new(0));
+        let rc = root_count.clone();
+        let _root_sub = root.on_message_appended(move |_| {
+            rc.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let fork = root.fork();
+        let fork_count = Arc::new(AtomicUsize::new(0));
+        let fc = fork_count.clone();
+        let _fork_sub = fork.on_message_appended(move |_| {
+            fc.fetch_add(1, Ordering::SeqCst);
+        });
+
+        fork.append(Msg::Developer("fork only".into()));
+        assert_eq!(root_count.load(Ordering::SeqCst), 0);
+        assert_eq!(fork_count.load(Ordering::SeqCst), 1);
+
+        root.append(Msg::Developer("root only".into()));
+        assert_eq!(root_count.load(Ordering::SeqCst), 1);
+        assert_eq!(fork_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn message_appended_listener_sees_stored_message() {
+        let thread: Arc<Thread> = ThreadBuilder::new().into();
+        // Weak avoids a reference cycle through the listener's captured handle.
+        let weak = Arc::downgrade(&thread);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let _sub = thread.on_message_appended(move |(msg, idx): &(Msg, usize)| {
+            let thread = weak.upgrade().unwrap();
+            let stored = thread
+                .iter_until(usize::MAX)
+                .find(|e| e.key() == idx)
+                .map(|e| e.value().clone());
+            s.lock().unwrap().push((stored, msg.clone()));
+        });
+
+        thread.append(Msg::Developer("hello".into()));
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        let (stored, msg) = &seen[0];
+        assert_eq!(stored.as_ref(), Some(msg));
+        assert_eq!(thread.len(), 1);
     }
 }
