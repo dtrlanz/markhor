@@ -125,7 +125,10 @@ pub enum InitUserError {
 mod tests {
     use super::*;
     use crate::test_utils::session_with_mocks;
-    use markhor_core::{chat::ChatUi, dependencies::Session};
+    use markhor_core::{
+        chat::{ChatUi, Msg},
+        dependencies::Session,
+    };
 
     fn ui(session: &Session) -> Comp<dyn ChatUi> {
         session.resolve().unwrap()
@@ -152,5 +155,31 @@ mod tests {
             .unwrap();
         let second = UserBuilder::new(&group, ui(&session)).id("alice").spawn();
         assert!(matches!(second, Err(InitUserError::IdCollision(_))));
+    }
+
+    #[tokio::test]
+    async fn responder_task_stays_alive_while_user_exists() {
+        let session = session_with_mocks().await;
+        let group = Group::new();
+        let user = UserBuilder::new(&group, ui(&session)).spawn().unwrap();
+        tokio::task::yield_now().await;
+        assert!(!user.handle.is_finished());
+    }
+
+    #[tokio::test]
+    async fn appending_after_responder_stopped_does_not_panic() {
+        let session = session_with_mocks().await;
+        let group = Group::new();
+        let user = UserBuilder::new(&group, ui(&session)).spawn().unwrap();
+        user.handle.abort();
+        tokio::task::yield_now().await;
+        let msg = Msg::Direct {
+            sender: MemberId::new("assistant", false),
+            timestamp: None,
+            tool_call_id: String::new(),
+            recipients: std::iter::once(user.inner.member.id().clone()).collect(),
+            content: vec![],
+        };
+        group.append(msg).unwrap();
     }
 }

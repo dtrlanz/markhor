@@ -162,7 +162,7 @@ pub enum InitAgentError {
 mod tests {
     use super::*;
     use crate::test_utils::session_with_mocks;
-    use markhor_core::dependencies::Session;
+    use markhor_core::{chat::Msg, dependencies::Session};
 
     fn model(session: &Session) -> Comp<dyn ChatModel> {
         session.resolve().unwrap()
@@ -188,5 +188,31 @@ mod tests {
             .unwrap();
         let second = AgentBuilder::new(&group, model(&session)).id("bot").spawn();
         assert!(matches!(second, Err(InitAgentError::IdCollision(_))));
+    }
+
+    #[tokio::test]
+    async fn responder_task_stays_alive_while_agent_exists() {
+        let session = session_with_mocks().await;
+        let group = Group::new();
+        let agent = AgentBuilder::new(&group, model(&session)).spawn().unwrap();
+        tokio::task::yield_now().await;
+        assert!(!agent.handle.is_finished());
+    }
+
+    #[tokio::test]
+    async fn appending_after_responder_stopped_does_not_panic() {
+        let session = session_with_mocks().await;
+        let group = Group::new();
+        let agent = AgentBuilder::new(&group, model(&session)).spawn().unwrap();
+        agent.handle.abort();
+        tokio::task::yield_now().await;
+        let msg = Msg::Direct {
+            sender: MemberId::new("alice", true),
+            timestamp: None,
+            tool_call_id: String::new(),
+            recipients: std::iter::once(agent.inner.member.id().clone()).collect(),
+            content: vec![],
+        };
+        group.append(msg).unwrap();
     }
 }
