@@ -82,11 +82,11 @@ impl AgentBuilder {
             }
         };
 
-        let (tx, rx) = watch::channel(0);
+        let (tx, rx) = watch::channel(None);
         let id = member.id().clone();
         let sub = member.thread().on_message_appended(move |msg, idx| {
             if self.attn.attends_to(&id, msg) {
-                tx.send(idx).unwrap();
+                tx.send_replace(Some(idx));
             }
         });
 
@@ -98,7 +98,7 @@ impl AgentBuilder {
         });
         let cloned = inner.clone();
         let handle = task::spawn(async move {
-            cloned.run(rx);
+            cloned.run(rx).await;
         });
         Ok(Agent {
             inner,
@@ -122,13 +122,12 @@ struct AgentInner {
 }
 
 impl AgentInner {
-    async fn run(&self, mut rx: watch::Receiver<usize>) {
-        loop {
-            let Ok(msg_idx) = rx.wait_for(|i| *i > 0).await.map(|r| *r) else {
-                break;
-            };
-
-            self.respond(msg_idx).await;
+    async fn run(&self, mut rx: watch::Receiver<Option<usize>>) {
+        while rx.changed().await.is_ok() {
+            let msg_idx = *rx.borrow_and_update();
+            if let Some(msg_idx) = msg_idx {
+                self.respond(msg_idx).await;
+            }
         }
     }
 

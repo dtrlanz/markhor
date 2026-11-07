@@ -62,11 +62,11 @@ impl UserBuilder {
             }
         };
 
-        let (tx, rx) = watch::channel(0);
+        let (tx, rx) = watch::channel(None);
         let id = member.id().clone();
         // TODO: add other events needed consumed by `ChatUi`
         let sub = member.thread().on_message_appended(move |_, idx| {
-            tx.send(idx).unwrap();
+            tx.send_replace(Some(idx));
         });
 
         let inner = Arc::new(UserInner {
@@ -75,7 +75,7 @@ impl UserBuilder {
         });
         let cloned = inner.clone();
         let handle = task::spawn(async move {
-            cloned.run(rx);
+            cloned.run(rx).await;
         });
         Ok(User {
             inner,
@@ -97,13 +97,12 @@ struct UserInner {
 }
 
 impl UserInner {
-    async fn run(&self, mut rx: watch::Receiver<usize>) {
-        loop {
-            let Ok(msg_idx) = rx.wait_for(|i| *i > 0).await.map(|r| *r) else {
-                break;
-            };
-
-            self.respond(msg_idx).await;
+    async fn run(&self, mut rx: watch::Receiver<Option<usize>>) {
+        while rx.changed().await.is_ok() {
+            let msg_idx = *rx.borrow_and_update();
+            if let Some(msg_idx) = msg_idx {
+                self.respond(msg_idx).await;
+            }
         }
     }
 
