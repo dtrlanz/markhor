@@ -2,7 +2,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use markhor_core::{
-    chat::{ChatUi, Group, chat::ChatModel},
+    chat::{ChatModel, ChatUi, Group},
     dependencies::{ResolveDependencyError, Session},
     extension::Comp,
 };

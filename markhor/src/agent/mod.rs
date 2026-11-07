@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use markhor_core::{
-    chat::{AddMemberError, Group, IterMsg, Member, MemberId, chat::ChatModel},
+    chat::{AddMemberError, ChatModel, Group, IterMsg, Member, MemberId},
     event::Subscription,
     extension::Comp,
     tool::Tool,
