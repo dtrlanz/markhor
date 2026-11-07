@@ -120,3 +120,37 @@ pub enum InitUserError {
     #[error("Error adding new member to group: {0}")]
     IdCollision(#[from] AddMemberError),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::session_with_mocks;
+    use markhor_core::{chat::ChatUi, dependencies::Session};
+
+    fn ui(session: &Session) -> Comp<dyn ChatUi> {
+        session.resolve().unwrap()
+    }
+
+    #[tokio::test]
+    async fn default_id_gets_numeric_suffix_and_is_human() {
+        let session = session_with_mocks().await;
+        let group = Group::new();
+        let first = UserBuilder::new(&group, ui(&session)).spawn().unwrap();
+        let second = UserBuilder::new(&group, ui(&session)).spawn().unwrap();
+        assert_eq!(first.inner.member.id().id(), "user");
+        assert_eq!(second.inner.member.id().id(), "user1");
+        assert!(first.inner.member.human());
+    }
+
+    #[tokio::test]
+    async fn explicit_id_collision_is_an_error() {
+        let session = session_with_mocks().await;
+        let group = Group::new();
+        let _first = UserBuilder::new(&group, ui(&session))
+            .id("alice")
+            .spawn()
+            .unwrap();
+        let second = UserBuilder::new(&group, ui(&session)).id("alice").spawn();
+        assert!(matches!(second, Err(InitUserError::IdCollision(_))));
+    }
+}

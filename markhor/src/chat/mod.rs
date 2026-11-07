@@ -52,3 +52,30 @@ pub enum InitChatError {
     #[error("Dependency unavailable: {0}")]
     Dependency(#[from] ResolveDependencyError),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::session_with_mocks;
+    use markhor_core::chat::{AddMemberError, MemberId};
+
+    fn is_taken(group: &Arc<Group>, id: &str) -> bool {
+        matches!(
+            group.add_member(MemberId::new(id, false)),
+            Err(AddMemberError::AlreadyExists(_))
+        )
+    }
+
+    #[tokio::test]
+    async fn with_user_id_registers_user_and_assistant() {
+        let chat = Simple::with_user_id(session_with_mocks().await, "alice").unwrap();
+        assert!(is_taken(&chat.group, "alice"));
+        assert!(is_taken(&chat.group, "Assistant"));
+    }
+
+    #[test]
+    fn missing_chat_ui_is_reported_as_dependency_error() {
+        let result = Simple::new(Session::new());
+        assert!(matches!(result, Err(InitChatError::Dependency(_))));
+    }
+}

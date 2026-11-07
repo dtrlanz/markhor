@@ -22,3 +22,6 @@ uuid = "1.16.0"
 console = "0.15.11"
 textwrap = "0.16.2"
 thiserror = "1"
+
+[dev-dependencies]
+async-trait = "0.1.88"

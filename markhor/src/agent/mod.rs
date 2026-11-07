@@ -157,3 +157,36 @@ pub enum InitAgentError {
     #[error("Error adding new member to group: {0}")]
     IdCollision(#[from] AddMemberError),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::session_with_mocks;
+    use markhor_core::dependencies::Session;
+
+    fn model(session: &Session) -> Comp<dyn ChatModel> {
+        session.resolve().unwrap()
+    }
+
+    #[tokio::test]
+    async fn default_id_gets_numeric_suffix_on_collision() {
+        let session = session_with_mocks().await;
+        let group = Group::new();
+        let first = AgentBuilder::new(&group, model(&session)).spawn().unwrap();
+        let second = AgentBuilder::new(&group, model(&session)).spawn().unwrap();
+        assert_eq!(first.inner.member.id().id(), "assistant");
+        assert_eq!(second.inner.member.id().id(), "assistant1");
+    }
+
+    #[tokio::test]
+    async fn explicit_id_collision_is_an_error() {
+        let session = session_with_mocks().await;
+        let group = Group::new();
+        let _first = AgentBuilder::new(&group, model(&session))
+            .id("bot")
+            .spawn()
+            .unwrap();
+        let second = AgentBuilder::new(&group, model(&session)).id("bot").spawn();
+        assert!(matches!(second, Err(InitAgentError::IdCollision(_))));
+    }
+}
