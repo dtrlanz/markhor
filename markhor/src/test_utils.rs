@@ -11,10 +11,11 @@ use std::{
 use async_trait::async_trait;
 use markhor_core::{
     chat::{
-        ChatError, ChatModel, ChatOptions, ChatResponse, ChatUi, Msg, MsgEvent, ReasoningEvent,
-        ToolCallEvent, WorkerEvent,
+        ChatError, ChatModel, ChatOptions, ChatResponse, ChatUi, Member, Msg, MsgEvent,
+        ReasoningEvent, ToolCallEvent, WorkerEvent, common::ContentPart,
     },
     dependencies::Session,
+    event::Subscription,
     extension::Extension,
 };
 use tokio::sync::watch;
@@ -176,7 +177,10 @@ impl ChatUi for ScriptedChatUi {
 }
 
 #[derive(Clone)]
-struct ScriptedExtension(ScriptedChatUi);
+struct ScriptedExtension {
+    ui: ScriptedChatUi,
+    model: ScriptedChatModel,
+}
 
 impl Extension for ScriptedExtension {
     fn uri(&self) -> &str {
@@ -188,20 +192,99 @@ impl Extension for ScriptedExtension {
     }
 
     fn description(&self) -> &str {
-        "Scripted chat UI for unit tests"
+        "Scripted chat UI and model for unit tests"
+    }
+
+    fn chat_models(&self) -> Vec<Box<dyn ChatModel>> {
+        vec![Box::new(self.model.clone())]
     }
 
     fn chat_uis(&self) -> Vec<Box<dyn ChatUi>> {
-        vec![Box::new(self.0.clone())]
+        vec![Box::new(self.ui.clone())]
     }
 }
 
-/// Returns a session with `ui` registered as the chat UI.
-pub(crate) async fn session_with_ui(ui: &ScriptedChatUi) -> Session {
+/// Returns a session with `ui` and `model` registered.
+pub(crate) async fn session_with(ui: &ScriptedChatUi, model: &ScriptedChatModel) -> Session {
     let mut session = Session::new();
+    let ext = ScriptedExtension {
+        ui: ui.clone(),
+        model: model.clone(),
+    };
     session
-        .add_extension::<_, ScriptedExtension>(ScriptedExtension(ui.clone()), Default::default())
+        .add_extension::<_, ScriptedExtension>(ext, Default::default())
         .await
         .unwrap();
     session
+}
+
+/// Returns a session with `ui` registered as the chat UI and an empty model
+/// script.
+pub(crate) async fn session_with_ui(ui: &ScriptedChatUi) -> Session {
+    session_with(ui, &ScriptedChatModel::new(&[])).await
+}
+
+/// A `ChatModel` that replies from a fixed script (`Ok` for a reply, `Err`
+/// for a failure) and records every request it receives. Clones share state.
+#[derive(Clone)]
+pub(crate) struct ScriptedChatModel {
+    script: Arc<Mutex<VecDeque<Result<String, String>>>>,
+    requests: Arc<Mutex<Vec<Vec<Msg>>>>,
+}
+
+impl ScriptedChatModel {
+    pub(crate) fn new(script: &[Result<&str, &str>]) -> Self {
+        let script = script
+            .iter()
+            .map(|r| r.map(String::from).map_err(String::from))
+            .collect();
+        Self {
+            script: Arc::new(Mutex::new(script)),
+            requests: Default::default(),
+        }
+    }
+
+    pub(crate) fn requests(&self) -> Vec<Vec<Msg>> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl ChatModel for ScriptedChatModel {
+    fn model_name(&self) -> &str {
+        "scripted"
+    }
+
+    async fn generate(
+        &self,
+        messages: &[Msg],
+        _options: &ChatOptions,
+    ) -> Result<ChatResponse, ChatError> {
+        self.requests.lock().unwrap().push(messages.to_vec());
+        let next = self.script.lock().unwrap().pop_front();
+        match next {
+            Some(Ok(text)) => Ok(ChatResponse {
+                content: vec![ContentPart::Text(text)],
+                tool_calls: vec![],
+                usage: None,
+                finish_reason: None,
+                model_id: None,
+            }),
+            Some(Err(text)) => Err(ChatError::Authentication(text)),
+            // As with `ScriptedChatUi`, block rather than panic in a spawned task.
+            None => std::future::pending().await,
+        }
+    }
+}
+
+pub(crate) type Recorded = Arc<Mutex<Vec<Msg>>>;
+
+/// Records every message appended to `member`'s thread.
+pub(crate) fn record_messages(member: &Member) -> (Subscription, Recorded) {
+    let seen: Recorded = Default::default();
+    let sink = seen.clone();
+    let sub = member
+        .thread()
+        .on_message_appended(move |msg, _| sink.lock().unwrap().push(msg.clone()));
+    (sub, seen)
 }

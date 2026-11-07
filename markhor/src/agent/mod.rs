@@ -160,8 +160,14 @@ pub enum InitAgentError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::session_with_mocks;
-    use markhor_core::{chat::Msg, dependencies::Session};
+    use crate::test_utils::{
+        ScriptedChatModel, ScriptedChatUi, eventually, record_messages, session_with,
+        session_with_mocks,
+    };
+    use markhor_core::{
+        chat::{Msg, common::ContentPart},
+        dependencies::Session,
+    };
 
     fn model(session: &Session) -> Comp<dyn ChatModel> {
         session.resolve().unwrap()
@@ -213,5 +219,90 @@ mod tests {
             content: vec![],
         };
         group.append(msg).unwrap();
+    }
+
+    fn say(group: &Group, sender: &Member, text: &str) {
+        group
+            .append(Msg::User {
+                sender: sender.id().clone(),
+                timestamp: None,
+                content: vec![ContentPart::Text(text.into())],
+            })
+            .unwrap();
+    }
+
+    fn text_of(content: &[ContentPart]) -> String {
+        content
+            .iter()
+            .filter_map(|part| match part {
+                ContentPart::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn agent_replies_to_user_message() {
+        let model_script = ScriptedChatModel::new(&[Ok("hi there")]);
+        let session = session_with(&ScriptedChatUi::new(&[]), &model_script).await;
+        let group = Group::new();
+        let alice = group.add_member(MemberId::new("alice", true)).unwrap();
+        let (_sub, seen) = record_messages(&alice);
+        let _agent = AgentBuilder::new(&group, model(&session)).spawn().unwrap();
+        say(&group, &alice, "hello");
+
+        let reply = eventually(|| {
+            seen.lock().unwrap().iter().find_map(|msg| match msg {
+                Msg::Agent { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+        })
+        .await;
+        assert_eq!(reply, vec![ContentPart::Text("hi there".into())]);
+    }
+
+    #[tokio::test]
+    async fn model_context_includes_triggering_message() {
+        let model_script = ScriptedChatModel::new(&[Ok("hi there")]);
+        let session = session_with(&ScriptedChatUi::new(&[]), &model_script).await;
+        let group = Group::new();
+        let alice = group.add_member(MemberId::new("alice", true)).unwrap();
+        let _agent = AgentBuilder::new(&group, model(&session)).spawn().unwrap();
+        say(&group, &alice, "hello");
+
+        let request = eventually(|| model_script.requests().first().cloned()).await;
+        let sent: String = request
+            .iter()
+            .filter_map(|msg| match msg {
+                Msg::User { content, .. } => Some(text_of(content)),
+                _ => None,
+            })
+            .collect();
+        assert!(sent.contains("hello"), "model was sent: {sent}");
+    }
+
+    #[tokio::test]
+    async fn model_error_posts_event_to_user() {
+        let model_script = ScriptedChatModel::new(&[Err("boom")]);
+        let session = session_with(&ScriptedChatUi::new(&[]), &model_script).await;
+        let group = Group::new();
+        let alice = group.add_member(MemberId::new("alice", true)).unwrap();
+        let (_sub, seen) = record_messages(&alice);
+        let _agent = AgentBuilder::new(&group, model(&session)).spawn().unwrap();
+        say(&group, &alice, "hello");
+
+        let (recipients, content) = eventually(|| {
+            seen.lock().unwrap().iter().find_map(|msg| match msg {
+                Msg::Event {
+                    recipients,
+                    content,
+                    ..
+                } => Some((recipients.clone(), content.clone())),
+                _ => None,
+            })
+        })
+        .await;
+        assert!(recipients.contains(alice.id()));
+        assert!(content.to_string().contains("boom"), "event was: {content}");
     }
 }
