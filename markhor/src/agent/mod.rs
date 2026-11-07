@@ -1,9 +1,12 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::SystemTime,
+};
 
 use markhor_core::{
-    chat::{AddMemberError, ChatModel, Group, IterMsg, Member, MemberId},
+    chat::{AddMemberError, ChatModel, ChatOptions, Group, IterMsg, Member, MemberId, Msg},
     event::Subscription,
-    extension::Comp,
+    extension::{Comp, ModelId},
     tool::Tool,
 };
 
@@ -11,7 +14,7 @@ mod config;
 
 pub use config::{Attentiveness, MsgFormat};
 use thiserror::Error;
-use tokio::{sync::watch, task};
+use tokio::{sync::mpsc, task};
 
 pub struct AgentBuilder {
     group: Arc<Group>,
@@ -82,11 +85,12 @@ impl AgentBuilder {
             }
         };
 
-        let (tx, rx) = watch::channel(None);
+        let (tx, rx) = mpsc::unbounded_channel();
         let id = member.id().clone();
         let sub = member.thread().on_message_appended(move |msg, idx| {
             if self.attn.attends_to(&id, msg) {
-                tx.send_replace(Some(idx));
+                // Fails only after the responder has stopped, which is harmless.
+                let _ = tx.send((idx, sender_of(msg).cloned()));
             }
         });
 
@@ -122,32 +126,65 @@ struct AgentInner {
 }
 
 impl AgentInner {
-    async fn run(&self, mut rx: watch::Receiver<Option<usize>>) {
-        while rx.changed().await.is_ok() {
-            let msg_idx = *rx.borrow_and_update();
-            if let Some(msg_idx) = msg_idx {
-                self.respond(msg_idx).await;
-            }
+    async fn run(&self, mut rx: mpsc::UnboundedReceiver<(usize, Option<MemberId>)>) {
+        while let Some((msg_idx, to)) = rx.recv().await {
+            self.respond(msg_idx, to).await;
         }
     }
 
-    async fn respond(&self, msg_idx: usize) {
+    /// Replies to the message at `msg_idx`. On model failure, reports the error
+    /// to `to`, the sender of the triggering message, if there is one.
+    async fn respond(&self, msg_idx: usize, to: Option<MemberId>) {
         let msg_format = *self.msg_format.lock().unwrap();
-        let context: Vec<_> = self
+        // `context_until` excludes its end index, so include the triggering message.
+        let context: Vec<Msg> = self
             .member
-            .context_until(msg_idx)
+            .context_until(msg_idx + 1)
             .circumfix_content_with(|msg| msg_format.circumfix(msg))
             .collect();
 
-        todo!();
-        // send to model
-
-        // process response, convert to Msg
+        match self.model.generate(&context, &ChatOptions::default()).await {
+            Ok(response) => {
+                let msg = Msg::Agent {
+                    sender: self.member.id().clone(),
+                    timestamp: Some(SystemTime::now()),
+                    content: response.content,
+                    tool_calls: response.tool_calls,
+                    model: ModelId::new(self.model.model_name(), self.model.extension().uri()),
+                    reasoning_content: None,
+                    metadata: Default::default(),
+                };
+                // Okay to unwrap: the sender is a member of this group.
+                self.member.group().append(msg).unwrap();
+            }
+            Err(err) => match to {
+                Some(recipient) => {
+                    let event = Msg::Event {
+                        recipients: std::iter::once(recipient).collect(),
+                        timestamp: Some(SystemTime::now()),
+                        source: self.member.id().id().to_string(),
+                        content: err.to_string().into(),
+                    };
+                    // Okay to unwrap: the sender is a member of this group.
+                    self.member.group().append(event).unwrap();
+                }
+                None => {
+                    tracing::error!(error = %err, "model call failed with no one to report it to")
+                }
+            },
+        }
 
         // also, tool calls once those are implemented
+    }
+}
 
-        // Okay to unwrap: Msg::Agent, sender is known
-        //self.member.group().append(msg).unwrap();
+/// The member who sent `msg`, if the message names one.
+fn sender_of(msg: &Msg) -> Option<&MemberId> {
+    match msg {
+        Msg::User { sender, .. } | Msg::Agent { sender, .. } | Msg::Direct { sender, .. } => {
+            Some(sender)
+        }
+        _ => None,
     }
 }
 
