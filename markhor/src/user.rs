@@ -1,13 +1,15 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::SystemTime};
 
 use markhor_core::{
-    chat::{AddMemberError, ChatUi, Group, Member, MemberId},
+    chat::{
+        AddMemberError, ChatUi, Group, Member, MemberId, Msg, MsgEvent, MsgId, common::ContentPart,
+    },
     event::Subscription,
     extension::Comp,
 };
 
 use thiserror::Error;
-use tokio::{sync::watch, task};
+use tokio::{sync::mpsc, task};
 
 pub struct UserBuilder {
     group: Arc<Group>,
@@ -62,11 +64,12 @@ impl UserBuilder {
             }
         };
 
-        let (tx, rx) = watch::channel(None);
+        // Unbounded so that no message is dropped while a turn is in progress.
+        let (tx, rx) = mpsc::unbounded_channel();
         let id = member.id().clone();
         // TODO: add other events needed consumed by `ChatUi`
-        let sub = member.thread().on_message_appended(move |_, idx| {
-            tx.send_replace(Some(idx));
+        let sub = member.thread().on_message_appended(move |msg, idx| {
+            let _ = tx.send((idx, msg.clone()));
         });
 
         let inner = Arc::new(UserInner {
@@ -97,20 +100,34 @@ struct UserInner {
 }
 
 impl UserInner {
-    async fn run(&self, mut rx: watch::Receiver<Option<usize>>) {
-        while rx.changed().await.is_ok() {
-            let msg_idx = *rx.borrow_and_update();
-            if let Some(msg_idx) = msg_idx {
-                self.respond(msg_idx).await;
-            }
+    async fn run(&self, mut rx: mpsc::UnboundedReceiver<(usize, Msg)>) {
+        self.turn().await;
+        while let Some((msg_idx, msg)) = rx.recv().await {
+            self.respond(msg_idx, msg).await;
         }
     }
 
-    async fn respond(&self, msg_idx: usize) {
-        let context: Vec<_> = self.member.context_until(msg_idx).collect();
+    /// Asks the UI for input and appends it to the chat as this member's message.
+    async fn turn(&self) {
+        let content = self.ui.prompt().await;
+        self.member
+            .group()
+            .append(Msg::User {
+                sender: self.member.id().clone(),
+                timestamp: Some(SystemTime::now()),
+                content: vec![ContentPart::Text(content)],
+            })
+            .expect("a user is always a member of their own group");
+    }
 
-        todo!();
-        // send to UI, user response, etc.
+    /// Shows a message to the user. Other members' messages prompt for the
+    /// user's reply; the user's own messages do not.
+    async fn respond(&self, msg_idx: usize, msg: Msg) {
+        let own = matches!(&msg, Msg::User { sender, .. } if sender == self.member.id());
+        self.ui.handle_message(&MsgEvent::Full(MsgId(msg_idx), msg));
+        if !own {
+            self.turn().await;
+        }
     }
 }
 
@@ -160,7 +177,8 @@ mod tests {
 
     #[tokio::test]
     async fn responder_task_stays_alive_while_user_exists() {
-        let session = session_with_mocks().await;
+        let scripted = ScriptedChatUi::new(&[]);
+        let session = session_with_ui(&scripted).await;
         let group = Group::new();
         let user = UserBuilder::new(&group, ui(&session)).spawn().unwrap();
         tokio::task::yield_now().await;
@@ -247,6 +265,14 @@ mod tests {
         group.append(reply.clone()).unwrap();
 
         scripted.wait_for_prompts(2).await;
-        assert_eq!(scripted.recorded_messages(), vec![reply]);
+        // The user's answer to the second prompt may already be recorded, so
+        // check the reply's position rather than the total count.
+        let recorded = scripted.recorded_messages();
+        assert_eq!(recorded.get(1), Some(&reply));
+        let agent_msgs = recorded
+            .iter()
+            .filter(|m| matches!(m, Msg::Agent { .. }))
+            .count();
+        assert_eq!(agent_msgs, 1);
     }
 }
