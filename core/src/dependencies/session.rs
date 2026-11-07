@@ -11,7 +11,7 @@ use crate::{
     permissions::{self, Actor, Authorized, Permission, Resource, Restricted},
 };
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 pub struct Session {
     workspace: Option<Workspace>,
@@ -49,6 +49,69 @@ impl Session {
     pub(crate) fn add_api_key(&mut self, api_key: ApiKey, permissions: Vec<Permission>) {
         self.api_keys
             .push(DependencySlot::new(api_key, permissions));
+    }
+
+    /// Reads API keys from environment variables and adds them to the session.
+    ///
+    /// Each key is declared as `[PROJECT_]PROVIDER_API_KEY=<key>` and must have a matching
+    /// `[PROJECT_]PROVIDER_API_KEY_PERMISSIONS=<names>` variable containing a comma-separated list
+    /// of permission names (e.g. `public,on-device`). The provider is the last segment before
+    /// `_API_KEY`; any preceding segments form the project, which is optional.
+    ///
+    /// Nothing is added if any variable is invalid.
+    pub fn add_api_keys_from_env(&mut self) -> Result<(), AddApiKeysError> {
+        self.add_api_keys_from_vars(std::env::vars())
+    }
+
+    fn add_api_keys_from_vars<I>(&mut self, vars: I) -> Result<(), AddApiKeysError>
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
+        let vars: BTreeMap<String, String> = vars.into_iter().collect();
+
+        for name in vars.keys().filter(|n| n.ends_with("_API_KEY_PERMISSIONS")) {
+            let key_name = &name[..name.len() - "_PERMISSIONS".len()];
+            if !vars.contains_key(key_name) {
+                return Err(AddApiKeysError::MissingKey(key_name.to_string()));
+            }
+        }
+
+        let mut api_keys = vec![];
+        for (name, key) in &vars {
+            let Some(prefix) = name.strip_suffix("_API_KEY") else {
+                continue;
+            };
+            let (project, provider) = prefix.rsplit_once('_').unwrap_or(("", prefix));
+            if provider.is_empty() {
+                return Err(AddApiKeysError::InvalidName(name.clone()));
+            }
+
+            let permissions_var = format!("{name}_PERMISSIONS");
+            let permissions_value = vars
+                .get(&permissions_var)
+                .ok_or_else(|| AddApiKeysError::MissingPermissions(name.clone()))?;
+            let permissions = permissions_value
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    permissions::permission_by_name(s).ok_or_else(|| {
+                        AddApiKeysError::UnknownPermission {
+                            var: permissions_var.clone(),
+                            permission: s.to_string(),
+                        }
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let api_key = ApiKey::new(key.clone(), provider.to_string(), project.to_string());
+            api_keys.push((api_key, permissions));
+        }
+
+        for (api_key, permissions) in api_keys {
+            self.add_api_key(api_key, permissions);
+        }
+        Ok(())
     }
 
     pub async fn add_extension<T, E>(
@@ -315,6 +378,21 @@ pub enum AddDocumentError {
     #[error("Session restrictions must be elevated to required permissions: {}", 
         .0.iter().map(|p| p.name()).collect::<Vec<_>>().join(", "))]
     ElevationRequired(Vec<Permission>),
+}
+
+#[derive(Debug, Error)]
+pub enum AddApiKeysError {
+    #[error("Environment variable {0} has no matching {0}_PERMISSIONS variable")]
+    MissingPermissions(String),
+
+    #[error("Environment variable {0}_PERMISSIONS has no matching {0} variable")]
+    MissingKey(String),
+
+    #[error("Unknown permission '{permission}' in environment variable {var}")]
+    UnknownPermission { var: String, permission: String },
+
+    #[error("Cannot determine provider from environment variable {0}")]
+    InvalidName(String),
 }
 
 #[derive(Debug, Error)]
@@ -1112,5 +1190,102 @@ mod tests {
         );
         // FAILS (only granted permission PUBLIC)
         assert_eq!(session.extensions[1].permissions_granted(), vec![GDPR]);
+    }
+
+    fn env_vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn permission_names(api_key_slot: &DependencySlot<ApiKey>) -> Vec<String> {
+        api_key_slot
+            .permissions_granted()
+            .iter()
+            .map(|p| p.name().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn add_api_keys_from_env_with_and_without_project() {
+        let mut session = Session::new();
+        session
+            .add_api_keys_from_vars(env_vars(&[
+                ("GEMINI_API_KEY", "gemini-key"),
+                ("GEMINI_API_KEY_PERMISSIONS", "public"),
+                ("MY_PROJECT_GEMINI_API_KEY", "project-key"),
+                (
+                    "MY_PROJECT_GEMINI_API_KEY_PERMISSIONS",
+                    "on-device, not-used-for-training",
+                ),
+                ("PATH", "/usr/bin"),
+            ]))
+            .unwrap();
+
+        assert_eq!(session.api_keys.len(), 2);
+
+        let plain = &session.api_keys[0];
+        assert_eq!(plain.item.key(), "gemini-key");
+        assert_eq!(plain.item.provider(), "GEMINI");
+        assert_eq!(plain.item.project(), "");
+        assert_eq!(permission_names(plain), vec!["public"]);
+
+        let project = &session.api_keys[1];
+        assert_eq!(project.item.key(), "project-key");
+        assert_eq!(project.item.provider(), "GEMINI");
+        assert_eq!(project.item.project(), "MY_PROJECT");
+        assert_eq!(
+            permission_names(project),
+            vec!["on-device", "not-used-for-training"]
+        );
+    }
+
+    #[test]
+    fn add_api_keys_from_env_missing_permissions() {
+        let mut session = Session::new();
+        let err = session
+            .add_api_keys_from_vars(env_vars(&[("GEMINI_API_KEY", "gemini-key")]))
+            .unwrap_err();
+        assert!(matches!(err, AddApiKeysError::MissingPermissions(ref v) if v == "GEMINI_API_KEY"));
+        assert!(session.api_keys.is_empty());
+    }
+
+    #[test]
+    fn add_api_keys_from_env_permissions_without_key() {
+        let mut session = Session::new();
+        let err = session
+            .add_api_keys_from_vars(env_vars(&[("GEMINI_API_KEY_PERMISSIONS", "public")]))
+            .unwrap_err();
+        assert!(matches!(err, AddApiKeysError::MissingKey(ref v) if v == "GEMINI_API_KEY"));
+        assert!(session.api_keys.is_empty());
+    }
+
+    #[test]
+    fn add_api_keys_from_env_unknown_permission() {
+        let mut session = Session::new();
+        let err = session
+            .add_api_keys_from_vars(env_vars(&[
+                ("GEMINI_API_KEY", "gemini-key"),
+                ("GEMINI_API_KEY_PERMISSIONS", "public,bogus"),
+            ]))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            AddApiKeysError::UnknownPermission { ref permission, .. } if permission == "bogus"
+        ));
+        assert!(session.api_keys.is_empty());
+    }
+
+    #[test]
+    fn add_api_keys_from_env_empty_provider() {
+        let mut session = Session::new();
+        let err = session
+            .add_api_keys_from_vars(env_vars(&[
+                ("_API_KEY", "key"),
+                ("_API_KEY_PERMISSIONS", "public"),
+            ]))
+            .unwrap_err();
+        assert!(matches!(err, AddApiKeysError::InvalidName(_)));
     }
 }

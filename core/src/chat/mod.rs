@@ -1,12 +1,13 @@
-pub mod chat;
+mod chat;
 mod chat_ui;
 pub mod common;
-pub mod error;
+mod error;
 mod group;
 mod member;
 mod msg;
 pub mod prompter;
 
+pub use chat::{ChatModel, ChatOptions, ChatResponse, FinishReason, UsageInfo};
 pub use chat_ui::{
     ChatUi, MsgEvent, MsgId, ReasoningEvent, ToolCallEvent, ToolCallId, WorkerEvent,
 };

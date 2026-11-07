@@ -28,4 +28,4 @@ pub use restricted::{Resource, Restricted};
 
 #[cfg(test)]
 pub(crate) use permission::GDPR;
-pub(crate) use permission::all_permissions;
+pub(crate) use permission::{all_permissions, permission_by_name};

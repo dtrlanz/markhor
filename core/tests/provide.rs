@@ -15,6 +15,77 @@ fn provide_simple_struct() {
     assert_eq!(foo.bar, Bar);
 }
 
+#[test]
+fn provide_default_attribute() {
+    // Implements `Default` but not `Provide`, so it can only be built via `#[provide(default)]`
+    #[derive(Debug, PartialEq, Eq)]
+    struct Config {
+        retries: u32,
+    }
+
+    impl Default for Config {
+        fn default() -> Self {
+            Config { retries: 3 }
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq, Provide)]
+    struct Bar;
+
+    #[derive(Debug, PartialEq, Eq, Provide)]
+    struct Holder {
+        #[provide(default)]
+        config: Config,
+        bar: Bar,
+    }
+
+    let session = Session::new();
+    let holder: Holder = session.resolve().unwrap();
+    assert_eq!(holder.config, Config::default());
+    assert_eq!(holder.bar, Bar);
+}
+
+#[test]
+fn provide_default_attribute_with_each_field() {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Foo(u32);
+
+    impl Provide for Foo {
+        type Item = Foo;
+
+        fn iter(_assets: &Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
+            Ok([Foo(1), Foo(2)].into_iter())
+        }
+
+        fn iter_from_items<I>(
+            items: I,
+        ) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+        where
+            I: Iterator<Item = Self::Item>,
+        {
+            Ok(items)
+        }
+    }
+
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    struct Bar {
+        retries: u32,
+    }
+
+    #[derive(Debug, PartialEq, Eq, Provide)]
+    struct Baz {
+        #[provide(each)]
+        foo: Foo,
+        #[provide(default)]
+        bar: Bar,
+    }
+
+    let session = Session::new();
+    let client: Baz = session.resolve().unwrap();
+    assert_eq!(client.foo, Foo(1));
+    assert_eq!(client.bar, Bar::default());
+}
+
 #[cfg(test)]
 mod hygiene_tests {
     use super::*;

@@ -1,5 +1,5 @@
 use crate::{
-    chat::{ChatUi, chat::ChatModel, prompter::Prompter},
+    chat::{ChatModel, ChatUi, prompter::Prompter},
     chunking::Chunker,
     convert::Converter,
     dependencies::{Provide, ResolveDependencyError, Session, TrackingGuard},

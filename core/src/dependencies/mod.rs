@@ -26,9 +26,8 @@ mod dependency_slot;
 mod provide;
 mod session;
 
+pub use api_key::ApiKey;
 pub use build_from::BuildFrom;
 pub(crate) use dependency_slot::TrackingGuard;
 pub use provide::{Provide, ResolveDependencyError};
-pub use session::{Assets, Session};
-
-use crate::extension::Extension;
+pub use session::{AddApiKeysError, Assets, Session};

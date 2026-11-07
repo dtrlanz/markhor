@@ -9,7 +9,7 @@ use std::{
 
 use console::Term;
 use markhor_core::{
-    chat::chat::Message,
+    chat::Msg,
     extension::Extension,
     library::{Document, Folder, Part, Workspace},
 };
@@ -157,27 +157,27 @@ impl Markhor {
     }
 
     pub async fn chat(&self, args: ChatArgs) -> Result<(), anyhow::Error> {
-        if args.model.is_some() {
-            anyhow::bail!("Model override is not yet implemented");
-        }
-        if !args.plugins.is_empty() {
-            anyhow::bail!("Plugins are not yet implemented");
-        }
-        let ChatArgs {
-            prompt,
-            docs,
-            scope,
-            ..
-        } = args;
-
-        println!();
-        let printer = MessagePrinter::new();
-
-        // Prep messages
-        let mut messages = vec![Message::system("You are a helpful assistant.")];
-        if let Some(prompt) = prompt {
-            messages.push(Message::user(prompt.to_string()));
-        }
+        //         if args.model.is_some() {
+        //             anyhow::bail!("Model override is not yet implemented");
+        //         }
+        //         if !args.plugins.is_empty() {
+        //             anyhow::bail!("Plugins are not yet implemented");
+        //         }
+        //         let ChatArgs {
+        //             prompt,
+        //             docs,
+        //             scope,
+        //             ..
+        //         } = args;
+        //
+        //         println!();
+        //         let printer = MessagePrinter::new();
+        //
+        //         // Prep messages
+        //         let mut messages = vec![Message::system("You are a helpful assistant.")];
+        //         if let Some(prompt) = prompt {
+        //             messages.push(Message::user(prompt.to_string()));
+        //         }
 
         unimplemented!();
 
@@ -206,22 +206,22 @@ impl MessagePrinter {
         Self
     }
 
-    fn print_message(&self, msg: &Message) {
-        match msg {
-            Message::Assistant { .. } => {
-                println!();
-                let term_width = Term::stdout().size().1 as usize;
-                for line in wrap(&msg.text_content(), term_width) {
-                    println!("{}", line);
-                }
-            }
-            Message::User(..) => {
-                // We don't need to print user messages since they are already printed by the
-                // prompter.
-            }
-            _ => (),
-        }
-    }
+    // fn print_message(&self, msg: &Message) {
+    //     match msg {
+    //         Message::Assistant { .. } => {
+    //             println!();
+    //             let term_width = Term::stdout().size().1 as usize;
+    //             for line in wrap(&msg.text_content(), term_width) {
+    //                 println!("{}", line);
+    //             }
+    //         }
+    //         Message::User(..) => {
+    //             // We don't need to print user messages since they are already printed by the
+    //             // prompter.
+    //         }
+    //         _ => (),
+    //     }
+    // }
 
     fn print_attachment(&self, documents: &[Document]) {
         println!();
