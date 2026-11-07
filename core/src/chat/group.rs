@@ -162,9 +162,13 @@ impl Thread {
     /// `Subscription` is alive.
     pub fn on_message_appended(
         &self,
-        callback: impl Fn(&Msg, &usize) + Send + Sync + 'static,
+        callback: impl Fn(&Msg, usize) + Send + Sync + 'static,
     ) -> Subscription {
-        self.events.message_appended.add_listener(callback)
+        self.events
+            .message_appended
+            // Deref index for convenience (or because it's more common to pass
+            // indices by value).
+            .add_listener(move |msg: &Msg, idx: &usize| callback(msg, *idx))
     }
 
     /// The unique identifier of this thread. Threads compare equal iff their
@@ -637,7 +641,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let s = seen.clone();
         let _sub = group.primary.on_message_appended(move |msg, idx| {
-            s.lock().unwrap().push((msg.clone(), *idx));
+            s.lock().unwrap().push((msg.clone(), idx));
         });
 
         let first = Msg::Developer("You are a helpful assistant.".into());
@@ -745,7 +749,7 @@ mod tests {
             let thread = weak.upgrade().unwrap();
             let stored = thread
                 .iter_until(usize::MAX)
-                .find(|e| e.key() == idx)
+                .find(|e| *e.key() == idx)
                 .map(|e| e.value().clone());
             s.lock().unwrap().push((stored, msg.clone()));
         });
