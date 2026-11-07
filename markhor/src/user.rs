@@ -123,11 +123,13 @@ pub enum InitUserError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::session_with_mocks;
+    use crate::test_utils::{ScriptedChatUi, eventually, session_with_mocks, session_with_ui};
     use markhor_core::{
-        chat::{ChatUi, Msg},
+        chat::{ChatUi, Msg, common::ContentPart},
         dependencies::Session,
+        extension::ModelId,
     };
+    use std::time::Duration;
 
     fn ui(session: &Session) -> Comp<dyn ChatUi> {
         session.resolve().unwrap()
@@ -180,5 +182,71 @@ mod tests {
             content: vec![],
         };
         group.append(msg).unwrap();
+    }
+
+    #[tokio::test]
+    async fn launch_prompts_for_first_message() {
+        let scripted = ScriptedChatUi::new(&["hello"]);
+        let session = session_with_ui(&scripted).await;
+        let group = Group::new();
+        let observer = group.add_member(MemberId::new("observer", false)).unwrap();
+        let _user = UserBuilder::new(&group, ui(&session))
+            .id("alice")
+            .spawn()
+            .unwrap();
+
+        scripted.wait_for_prompts(1).await;
+        match eventually(|| observer.context().next()).await {
+            Msg::User {
+                sender, content, ..
+            } => {
+                assert_eq!(sender.id(), "alice");
+                assert_eq!(content, vec![ContentPart::Text("hello".into())]);
+            }
+            other => panic!("expected a user message, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn own_message_does_not_trigger_another_prompt() {
+        let scripted = ScriptedChatUi::new(&["hello", "again"]);
+        let session = session_with_ui(&scripted).await;
+        let group = Group::new();
+        let observer = group.add_member(MemberId::new("observer", false)).unwrap();
+        let _user = UserBuilder::new(&group, ui(&session)).spawn().unwrap();
+
+        scripted.wait_for_prompts(1).await;
+        // Wait until the user's own message has been appended, then give its
+        // responder time to react to it.
+        eventually(|| observer.context().next()).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(scripted.prompt_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn agent_message_is_forwarded_then_prompts_again() {
+        let scripted = ScriptedChatUi::new(&["hello", "again"]);
+        let session = session_with_ui(&scripted).await;
+        let group = Group::new();
+        let observer = group.add_member(MemberId::new("observer", false)).unwrap();
+        let assistant = group.add_member(MemberId::new("assistant", false)).unwrap();
+        let _user = UserBuilder::new(&group, ui(&session)).spawn().unwrap();
+
+        scripted.wait_for_prompts(1).await;
+        eventually(|| observer.context().next()).await;
+
+        let reply = Msg::Agent {
+            sender: assistant.id().clone(),
+            timestamp: None,
+            content: vec![ContentPart::Text("hi there".into())],
+            tool_calls: vec![],
+            model: ModelId::new("mock", "test"),
+            reasoning_content: None,
+            metadata: Default::default(),
+        };
+        group.append(reply.clone()).unwrap();
+
+        scripted.wait_for_prompts(2).await;
+        assert_eq!(scripted.recorded_messages(), vec![reply]);
     }
 }
