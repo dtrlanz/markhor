@@ -227,7 +227,9 @@ impl From<ContentPart> for UserPart {
     fn from(part: ContentPart) -> Self {
         match part {
             ContentPart::Text(text) => UserPart::Text(text),
-            ContentPart::Image { mime_type, data } => UserPart::InlineData(Blob { mime_type, data }),
+            ContentPart::Image { mime_type, data } => {
+                UserPart::InlineData(Blob { mime_type, data })
+            }
         }
     }
 }
@@ -254,7 +256,9 @@ impl TryFrom<ModelPartKind> for ContentPart {
         match kind {
             ModelPartKind::Text(text) => Ok(ContentPart::Text(text)),
             // The API may return any media type; only images are representable in `ContentPart`.
-            ModelPartKind::InlineData(Blob { mime_type, data }) if mime_type.starts_with("image/") => {
+            ModelPartKind::InlineData(Blob { mime_type, data })
+                if mime_type.starts_with("image/") =>
+            {
                 Ok(ContentPart::Image { mime_type, data })
             }
             other => Err(other),

@@ -211,10 +211,12 @@ mod tests {
     #[test]
     fn request_serializes_camel_case_and_omits_unset() {
         let request = GenerateContentRequest {
-            contents: vec![UserTurn {
-                parts: vec![UserPart::Text("hi".into())],
-            }
-            .into()],
+            contents: vec![
+                UserTurn {
+                    parts: vec![UserPart::Text("hi".into())],
+                }
+                .into(),
+            ],
             system_instruction: Some(SystemInstruction(vec!["sys".into()])),
             generation_config: GenerationConfig {
                 temperature: Some(0.5),

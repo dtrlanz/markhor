@@ -220,7 +220,12 @@ mod tests {
         ]));
         assert_eq!(
             selected,
-            ["gemini-flash-latest", "gemini-pro-latest", "gemini-2.5-flash", "gemma-4-31b-it"]
+            [
+                "gemini-flash-latest",
+                "gemini-pro-latest",
+                "gemini-2.5-flash",
+                "gemma-4-31b-it",
+            ]
         );
     }
 
@@ -230,8 +235,11 @@ mod tests {
             allow_models: vec!["gemma-4*".into()],
             ..Default::default()
         };
-        let selected =
-            config.select_models(ids(&["gemini-2.5-flash", "gemma-4-31b-it", "gemma-4-26b-a4b-it"]));
+        let selected = config.select_models(ids(&[
+            "gemini-2.5-flash",
+            "gemma-4-31b-it",
+            "gemma-4-26b-a4b-it",
+        ]));
         assert_eq!(selected, ["gemma-4-31b-it", "gemma-4-26b-a4b-it"]);
     }
 

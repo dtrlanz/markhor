@@ -12,16 +12,12 @@ mod generate;
 mod models;
 mod turn;
 
+pub(crate) use error::ErrorResponse;
+pub(crate) use generate::{BlockReason, GenerateContentRequest, GenerateContentResponse};
+pub(crate) use models::{GenerationMethod, ListModelsResponse};
 pub(crate) use turn::{
-    Blob, FunctionCall, FunctionResponse, ModelPart, ModelPartKind, ModelTurn, SystemInstruction,
-    ThoughtSignature, Turn, UserPart, UserTurn,
+    ModelPart, ModelPartKind, ModelTurn, SystemInstruction, Turn, UserPart, UserTurn,
 };
-pub(crate) use error::{ApiError, ErrorDetail, ErrorResponse, ErrorStatus};
-pub(crate) use generate::{
-    BlockReason, Candidate, FinishReason, GenerateContentRequest, GenerateContentResponse,
-    GenerationConfig, HarmCategory, HarmProbability, PromptFeedback, SafetyRating, UsageMetadata,
-};
-pub(crate) use models::{GenerationMethod, ListModelsResponse, Model};
 
 /// Returns the wire representation of a unit-like enum value (e.g., `"MAX_TOKENS"`).
 pub(crate) fn wire_name<T: serde::Serialize>(value: &T) -> String {
