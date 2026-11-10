@@ -70,8 +70,15 @@ impl ScriptedUi {
 #[async_trait]
 impl ChatUi for ScriptedUi {
     async fn prompt_with_commands(&self, _commands: Vec<String>) -> String {
-        self.prompts.send_modify(|n| *n += 1);
-        tokio::time::sleep(self.pause).await;
+        let mut prompt_number = 0;
+        self.prompts.send_modify(|n| {
+            *n += 1;
+            prompt_number = *n;
+        });
+        // Only pause before retries, so the first message is sent without delay.
+        if prompt_number > 1 {
+            tokio::time::sleep(self.pause).await;
+        }
         let next = self.answers.lock().unwrap().pop_front();
         match next {
             Some(answer) => answer,
