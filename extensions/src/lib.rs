@@ -1,3 +1,4 @@
+pub mod anthropic;
 pub mod chunking;
 pub mod cli;
 pub mod google;
