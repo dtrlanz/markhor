@@ -17,7 +17,7 @@ use markhor_core::{
     dependencies::Session,
     extension::{Extension, ExtensionConfig},
 };
-use markhor_extensions::google::Client;
+use markhor_extensions::google::{Client, ClientConfig};
 use tokio::sync::watch;
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -304,7 +304,13 @@ async fn simple_chat_live_round_trip() {
         .add_api_keys_from_env()
         .expect("API key environment variables must be valid");
     session
-        .add_extension::<(), Client>((), ExtensionConfig::default())
+        .add_extension::<_, Client>(
+            ClientConfig {
+                allow_models: vec!["gemini-flash-lite-latest".into()],
+                ..Default::default()
+            },
+            ExtensionConfig::default(),
+        )
         .await
         .expect("failed to add Google extension");
     session
