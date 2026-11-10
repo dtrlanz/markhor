@@ -66,7 +66,6 @@ impl UserBuilder {
 
         // Unbounded so that no message is dropped while a turn is in progress.
         let (tx, rx) = mpsc::unbounded_channel();
-        let id = member.id().clone();
         // TODO: add other events needed consumed by `ChatUi`
         let sub = member.thread().on_message_appended(move |msg, idx| {
             let _ = tx.send((idx, msg.clone()));

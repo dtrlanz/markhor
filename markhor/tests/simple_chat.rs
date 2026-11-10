@@ -1,10 +1,10 @@
 //! Full `Simple` chats driven by scripted doubles in place of a real UI and
-//! model. Nothing here talks to a live API.
+//! model.
 
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -15,11 +15,15 @@ use markhor_core::{
         ToolCallEvent, WorkerEvent, common::ContentPart,
     },
     dependencies::Session,
-    extension::Extension,
+    extension::{Extension, ExtensionConfig},
 };
+use markhor_extensions::google::Client;
 use tokio::sync::watch;
 
 const WAIT: Duration = Duration::from_secs(5);
+const LIVE_WAIT: Duration = Duration::from_secs(180);
+const LIVE_ATTEMPTS: usize = 3;
+const LIVE_RETRY_PAUSE: Duration = Duration::from_secs(15);
 
 /// Answers prompts from a script, counts prompts, and records every message
 /// the chat shows it.
@@ -28,6 +32,7 @@ struct ScriptedUi {
     answers: Arc<Mutex<VecDeque<String>>>,
     prompts: Arc<watch::Sender<usize>>,
     shown: Arc<Mutex<Vec<Msg>>>,
+    pause: Duration,
 }
 
 impl ScriptedUi {
@@ -36,7 +41,13 @@ impl ScriptedUi {
             answers: Arc::new(Mutex::new(answers.iter().map(|a| a.to_string()).collect())),
             prompts: Arc::new(watch::channel(0).0),
             shown: Default::default(),
+            pause: Duration::ZERO,
         }
+    }
+
+    fn with_pause(mut self, pause: Duration) -> Self {
+        self.pause = pause;
+        self
     }
 
     async fn wait_for_prompts(&self, count: usize) {
@@ -45,6 +56,10 @@ impl ScriptedUi {
             .await
             .expect("timed out waiting for prompts")
             .expect("prompt counter dropped");
+    }
+
+    fn prompt_count(&self) -> usize {
+        *self.prompts.borrow()
     }
 
     fn shown(&self) -> Vec<Msg> {
@@ -56,6 +71,7 @@ impl ScriptedUi {
 impl ChatUi for ScriptedUi {
     async fn prompt_with_commands(&self, _commands: Vec<String>) -> String {
         self.prompts.send_modify(|n| *n += 1);
+        tokio::time::sleep(self.pause).await;
         let next = self.answers.lock().unwrap().pop_front();
         match next {
             Some(answer) => answer,
@@ -162,6 +178,30 @@ impl Extension for ScriptedExtension {
     }
 }
 
+/// Supplies only a UI, so a real model extension can be added alongside it.
+#[derive(Clone)]
+struct UiExtension {
+    ui: ScriptedUi,
+}
+
+impl Extension for UiExtension {
+    fn uri(&self) -> &str {
+        "markhor://test-simple-chat-ui"
+    }
+
+    fn name(&self) -> &str {
+        "Scripted UI"
+    }
+
+    fn description(&self) -> &str {
+        "Scripted chat UI for integration tests"
+    }
+
+    fn chat_uis(&self) -> Vec<Box<dyn ChatUi>> {
+        vec![Box::new(self.ui.clone())]
+    }
+}
+
 /// Starts a `Simple` chat that uses the given doubles.
 async fn start_chat(ui: &ScriptedUi, model: &ScriptedModel) -> Simple {
     let mut session = Session::new();
@@ -247,4 +287,47 @@ async fn simple_chat_recovers_from_model_error() {
         _ => false,
     }));
     assert_eq!(model.requests().len(), 2);
+}
+
+#[tokio::test]
+#[ignore = "requires GOOGLE_API_KEY and network access"]
+async fn simple_chat_live_round_trip() {
+    dotenv::dotenv().ok();
+    // Gemini intermittently returns 503 ("high demand"). A failed call is
+    // reported to the user as an event, which prompts them again, so retry a
+    // few times with a pause before giving up.
+    let ui = ScriptedUi::new(&["Reply with one word: hello"; LIVE_ATTEMPTS])
+        .with_pause(LIVE_RETRY_PAUSE);
+
+    let mut session = Session::new();
+    session
+        .add_api_keys_from_env()
+        .expect("API key environment variables must be valid");
+    session
+        .add_extension::<(), Client>((), ExtensionConfig::default())
+        .await
+        .expect("failed to add Google extension");
+    session
+        .add_extension::<_, UiExtension>(UiExtension { ui: ui.clone() }, Default::default())
+        .await
+        .unwrap();
+    let _chat = Simple::new(session).unwrap();
+
+    let deadline = Instant::now() + LIVE_WAIT;
+    let reply = loop {
+        let shown = ui.shown();
+        let reply = shown.iter().find_map(|msg| match msg {
+            Msg::Agent { content, .. } => Some(text_of(content)),
+            _ => None,
+        });
+        if let Some(reply) = reply {
+            break reply;
+        }
+        // Each attempt prompts once more; the final prompt has no scripted answer.
+        if ui.prompt_count() > LIVE_ATTEMPTS || Instant::now() > deadline {
+            panic!("no agent reply; chat messages: {shown:#?}");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(!reply.trim().is_empty(), "agent reply was empty");
 }
