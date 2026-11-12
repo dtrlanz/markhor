@@ -118,6 +118,7 @@ pub(crate) struct ScriptedChatUi {
     answers: Arc<Mutex<VecDeque<String>>>,
     prompts: Arc<watch::Sender<usize>>,
     messages: Arc<Mutex<Vec<Msg>>>,
+    begun: Arc<Mutex<usize>>,
 }
 
 impl ScriptedChatUi {
@@ -126,11 +127,16 @@ impl ScriptedChatUi {
             answers: Arc::new(Mutex::new(answers.iter().map(|a| a.to_string()).collect())),
             prompts: Arc::new(watch::channel(0).0),
             messages: Default::default(),
+            begun: Default::default(),
         }
     }
 
     pub(crate) fn prompt_count(&self) -> usize {
         *self.prompts.borrow()
+    }
+
+    pub(crate) fn begun_count(&self) -> usize {
+        *self.begun.lock().unwrap()
     }
 
     pub(crate) async fn wait_for_prompts(&self, count: usize) {
@@ -164,8 +170,10 @@ impl ChatUi for ScriptedChatUi {
     }
 
     fn handle_message(&self, event: &MsgEvent) {
-        if let MsgEvent::Full(_, msg) = event {
-            self.messages.lock().unwrap().push(msg.clone());
+        match event {
+            MsgEvent::Begin(..) => *self.begun.lock().unwrap() += 1,
+            MsgEvent::Full(_, msg) => self.messages.lock().unwrap().push(msg.clone()),
+            _ => {}
         }
     }
 
