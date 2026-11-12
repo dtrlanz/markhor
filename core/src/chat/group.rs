@@ -1,5 +1,6 @@
 use super::{
     Msg,
+    chat_ui::{MsgEvent, MsgId, ReasoningEvent, ToolCallEvent, WorkerEvent},
     member::{Member, MemberId},
 };
 use crate::{event::Subscription, events};
@@ -62,7 +63,7 @@ impl Group {
     pub fn append(&self, message: Msg) -> Result<&Self, AppendMessageError> {
         match &message {
             Msg::Platform(_) | Msg::Developer(_) => {
-                self.primary.append(message);
+                self.primary.append(message, None);
                 Ok(self)
             }
             Msg::User { sender, .. } | Msg::Agent { sender, .. } => {
@@ -73,7 +74,7 @@ impl Group {
                     .get(sender)
                     .map(|t| Arc::clone(t))
                     .ok_or(AppendMessageError::UnknownSender(sender.to_string()))?;
-                ptcp.append(message.clone());
+                ptcp.append(message.clone(), None);
                 Ok(self)
             }
             Msg::Direct { recipients, .. }
@@ -95,7 +96,7 @@ impl Group {
                 }
                 // Append message to each thread with at least one recipient represented
                 for t in threads.values() {
-                    t.append(message.clone());
+                    t.append(message.clone(), None);
                 }
                 Ok(self)
             }
@@ -107,6 +108,85 @@ impl Group {
                 // same as above?
                 unimplemented!()
             }
+        }
+    }
+
+    /// Starts a message from `sender`. `MsgEvent::Begin` is dispatched to the
+    /// sender's thread immediately, before the message exists.
+    ///
+    /// Complete the returned [`PendingMsg`] with [`PendingMsg::complete`] or
+    /// report a failure with [`PendingMsg::fail`]. Dropping it counts as a
+    /// failure.
+    pub fn begin_message(&self, sender: &MemberId) -> Result<PendingMsg, AppendMessageError> {
+        let thread = self
+            .members
+            .lock()
+            .unwrap()
+            .get(sender)
+            .cloned()
+            .ok_or_else(|| AppendMessageError::UnknownSender(sender.to_string()))?;
+        Ok(PendingMsg::begin(sender.clone(), thread))
+    }
+}
+
+/// A message that has begun but not yet been completed. See
+/// [`Group::begin_message`].
+#[must_use = "a pending message reports a failure when dropped; complete or fail it"]
+pub struct PendingMsg {
+    id: MsgId,
+    sender: MemberId,
+    thread: Arc<Thread>,
+    settled: bool,
+}
+
+impl PendingMsg {
+    fn begin(sender: MemberId, thread: Arc<Thread>) -> Self {
+        let id = MsgId::next();
+        thread.dispatch_msg(MsgEvent::Begin(id, sender.clone()));
+        Self {
+            id,
+            sender,
+            thread,
+            settled: false,
+        }
+    }
+
+    /// The id that this message's events are tagged with.
+    pub fn id(&self) -> MsgId {
+        self.id
+    }
+
+    /// Appends the completed message to the sender's thread, followed by
+    /// `MsgEvent::Full`.
+    ///
+    /// Returns [`AppendMessageError::SenderMismatch`] unless `msg` is a
+    /// `User` or `Agent` message sent by the member this message began for.
+    pub fn complete(mut self, msg: Msg) -> Result<(), AppendMessageError> {
+        match &msg {
+            Msg::User { sender, .. } | Msg::Agent { sender, .. } if sender == &self.sender => {}
+            _ => return Err(AppendMessageError::SenderMismatch(self.sender.to_string())),
+        }
+        self.settled = true;
+        self.thread.append(msg, Some(self.id));
+        Ok(())
+    }
+
+    /// Reports that the message will not be completed, by dispatching
+    /// `MsgEvent::Log` with `reason` in place of `MsgEvent::Full`.
+    pub fn fail(mut self, reason: impl Into<String>) {
+        self.settled = true;
+        self.thread
+            .dispatch_msg(MsgEvent::Log(self.id, reason.into()));
+    }
+}
+
+impl Drop for PendingMsg {
+    fn drop(&mut self) {
+        if !self.settled {
+            self.thread.dispatch_msg(MsgEvent::Log(
+                self.id,
+                "message was abandoned before completion".into(),
+            ));
         }
     }
 }
@@ -121,6 +201,8 @@ pub enum AddMemberError {
 pub enum AppendMessageError {
     UnknownSender(String),
     UnknownRecipient(String),
+    /// A pending message was completed with a message not sent by its sender.
+    SenderMismatch(String),
 }
 
 #[derive(Debug)]
@@ -132,6 +214,20 @@ pub enum InitContext {
 events! {
     struct ThreadEvents {
         message_appended: (Msg, usize),
+        message: (MsgEvent,),
+        reasoning: (ReasoningEvent,),
+        tool_call: (ToolCallEvent,),
+        worker: (WorkerEvent,),
+    }
+}
+
+/// The member that authored `msg`, if the message has one.
+fn sender_of(msg: &Msg) -> Option<&MemberId> {
+    match msg {
+        Msg::User { sender, .. } | Msg::Agent { sender, .. } | Msg::Direct { sender, .. } => {
+            Some(sender)
+        }
+        Msg::Platform(_) | Msg::Developer(_) | Msg::ToolResult { .. } | Msg::Event { .. } | Msg::ControlSignal { .. } => None,
     }
 }
 
@@ -171,6 +267,46 @@ impl Thread {
             .add_listener(move |msg: &Msg, idx: &usize| callback(msg, *idx))
     }
 
+    /// Registers a listener for message lifecycle events (`Begin`, `Part`,
+    /// `Full`, `Log`) on this thread. Mirrors `ChatUi::handle_message`.
+    /// `Part` is not yet emitted, since model responses are not streamed.
+    pub fn on_message(&self, callback: impl Fn(&MsgEvent) + Send + Sync + 'static) -> Subscription {
+        self.events.message.add_listener(move |e: &MsgEvent| callback(e))
+    }
+
+    /// Registers a listener for reasoning events. Mirrors
+    /// `ChatUi::handle_reasoning`.
+    ///
+    /// Not yet emitted: reasoning dispatch is deferred until its design is settled.
+    pub fn on_reasoning(
+        &self,
+        callback: impl Fn(&ReasoningEvent) + Send + Sync + 'static,
+    ) -> Subscription {
+        self.events
+            .reasoning
+            .add_listener(move |e: &ReasoningEvent| callback(e))
+    }
+
+    /// Registers a listener for tool call events. Mirrors
+    /// `ChatUi::handle_tool_call`.
+    ///
+    /// Not yet emitted: tool call dispatch is deferred until its design is settled.
+    pub fn on_tool_call(
+        &self,
+        callback: impl Fn(&ToolCallEvent) + Send + Sync + 'static,
+    ) -> Subscription {
+        self.events
+            .tool_call
+            .add_listener(move |e: &ToolCallEvent| callback(e))
+    }
+
+    /// Registers a listener for worker events. Mirrors `ChatUi::handle_worker`.
+    ///
+    /// Not yet emitted: core has no worker concept yet.
+    pub fn on_worker(&self, callback: impl Fn(&WorkerEvent) + Send + Sync + 'static) -> Subscription {
+        self.events.worker.add_listener(move |e: &WorkerEvent| callback(e))
+    }
+
     /// The unique identifier of this thread. Threads compare equal iff their
     /// ids match.
     pub fn id(&self) -> Uuid {
@@ -191,11 +327,29 @@ impl Thread {
         fork
     }
 
-    fn append(&self, message: Msg) {
+    /// Stores `message` and dispatches its events. If `pending` is `Some`, the
+    /// `Begin` event was already dispatched under that id, so only `Full` is
+    /// sent. Otherwise a `Begin` precedes `Full` when the message has a sender.
+    /// `message_appended` is dispatched last.
+    fn append(&self, message: Msg, pending: Option<MsgId>) {
         let idx = self.len.fetch_add(1, Ordering::AcqRel);
         self.items.insert(idx, message.clone());
+        match (pending, sender_of(&message)) {
+            (Some(id), _) => self.dispatch_msg(MsgEvent::Full(id, message.clone())),
+            (None, Some(sender)) => {
+                let id = MsgId::next();
+                self.dispatch_msg(MsgEvent::Begin(id, sender.clone()));
+                self.dispatch_msg(MsgEvent::Full(id, message.clone()));
+            }
+            (None, None) => self.dispatch_msg(MsgEvent::Full(MsgId::next(), message.clone())),
+        }
         self.events.message_appended.dispatch(&(message, idx));
     }
+
+    fn dispatch_msg(&self, event: MsgEvent) {
+        self.events.message.dispatch(&(event,));
+    }
+
 
     /// Iterates over messages with indices less than `end`, including
     /// messages inherited from previous segments.
@@ -302,7 +456,7 @@ pub(super) mod thread_builder {
         }
 
         pub fn msg(self, msg: Msg) -> Self {
-            self.thread.append(msg);
+            self.thread.append(msg, None);
             self
         }
 
@@ -705,9 +859,9 @@ mod tests {
             c.fetch_add(1, Ordering::SeqCst);
         });
 
-        thread.append(Msg::Developer("one".into()));
+        thread.append(Msg::Developer("one".into()), None);
         drop(sub);
-        thread.append(Msg::Developer("two".into()));
+        thread.append(Msg::Developer("two".into()), None);
 
         assert_eq!(count.load(Ordering::SeqCst), 1);
         assert_eq!(thread.len(), 2);
@@ -729,11 +883,11 @@ mod tests {
             fc.fetch_add(1, Ordering::SeqCst);
         });
 
-        fork.append(Msg::Developer("fork only".into()));
+        fork.append(Msg::Developer("fork only".into()), None);
         assert_eq!(root_count.load(Ordering::SeqCst), 0);
         assert_eq!(fork_count.load(Ordering::SeqCst), 1);
 
-        root.append(Msg::Developer("root only".into()));
+        root.append(Msg::Developer("root only".into()), None);
         assert_eq!(root_count.load(Ordering::SeqCst), 1);
         assert_eq!(fork_count.load(Ordering::SeqCst), 1);
     }
@@ -754,12 +908,128 @@ mod tests {
             s.lock().unwrap().push((stored, msg.clone()));
         });
 
-        thread.append(Msg::Developer("hello".into()));
+        thread.append(Msg::Developer("hello".into()), None);
 
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
         let (stored, msg) = &seen[0];
         assert_eq!(stored.as_ref(), Some(msg));
         assert_eq!(thread.len(), 1);
+    }
+
+    fn user_msg(sender: &str, text: &str) -> Msg {
+        Msg::User {
+            sender: MemberId::new(sender, true),
+            timestamp: None,
+            content: vec![ContentPart::Text(text.into())],
+        }
+    }
+
+    fn record_message_events(thread: &Thread) -> (Subscription, Arc<Mutex<Vec<MsgEvent>>>) {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let e = events.clone();
+        let sub = thread.on_message(move |event| e.lock().unwrap().push(event.clone()));
+        (sub, events)
+    }
+
+    #[test]
+    fn pending_message_begins_before_it_is_completed() {
+        let group = Group::new();
+        let alice = group.add_member(MemberId::new("alice", true)).unwrap();
+        let (_sub, events) = record_message_events(alice.thread());
+
+        let pending = group.begin_message(alice.id()).unwrap();
+        let id = pending.id();
+        assert_eq!(events.lock().unwrap().len(), 1);
+        pending.complete(user_msg("alice", "hi")).unwrap();
+
+        let seen = events.lock().unwrap();
+        match &seen[..] {
+            [MsgEvent::Begin(b, sender), MsgEvent::Full(f, Msg::User { .. })] => {
+                assert_eq!(*b, id);
+                assert_eq!(*f, id);
+                assert_eq!(sender, alice.id());
+            }
+            other => panic!("unexpected events: {other:?}"),
+        }
+        assert_eq!(alice.thread().len(), 1);
+    }
+
+    #[test]
+    fn failed_pending_message_logs_without_full() {
+        let group = Group::new();
+        let alice = group.add_member(MemberId::new("alice", true)).unwrap();
+        let (_sub, events) = record_message_events(alice.thread());
+
+        let pending = group.begin_message(alice.id()).unwrap();
+        let id = pending.id();
+        pending.fail("boom");
+
+        let seen = events.lock().unwrap();
+        match &seen[..] {
+            [MsgEvent::Begin(b, _), MsgEvent::Log(l, reason)] => {
+                assert_eq!(*b, id);
+                assert_eq!(*l, id);
+                assert_eq!(reason, "boom");
+            }
+            other => panic!("unexpected events: {other:?}"),
+        }
+        assert_eq!(alice.thread().len(), 0);
+    }
+
+    #[test]
+    fn dropped_pending_message_logs_instead_of_completing() {
+        let group = Group::new();
+        let alice = group.add_member(MemberId::new("alice", true)).unwrap();
+        let (_sub, events) = record_message_events(alice.thread());
+
+        drop(group.begin_message(alice.id()).unwrap());
+
+        let seen = events.lock().unwrap();
+        assert!(matches!(
+            &seen[..],
+            [MsgEvent::Begin(_, _), MsgEvent::Log(_, _)]
+        ));
+        assert_eq!(alice.thread().len(), 0);
+    }
+
+    #[test]
+    fn completing_pending_message_with_another_senders_message_is_rejected() {
+        let group = Group::new();
+        let alice = group.add_member(MemberId::new("alice", true)).unwrap();
+        group.add_member(MemberId::new("bob", true)).unwrap();
+
+        let pending = group.begin_message(alice.id()).unwrap();
+        let result = pending.complete(user_msg("bob", "not mine"));
+
+        assert!(matches!(result, Err(AppendMessageError::SenderMismatch(_))));
+        assert_eq!(alice.thread().len(), 0);
+    }
+
+    #[test]
+    fn group_append_emits_begin_then_full_for_sender() {
+        let group = Group::new();
+        let alice = group.add_member(MemberId::new("alice", true)).unwrap();
+        let (_sub, events) = record_message_events(alice.thread());
+
+        group.append(user_msg("alice", "hi")).unwrap();
+
+        let seen = events.lock().unwrap();
+        match &seen[..] {
+            [MsgEvent::Begin(b, _), MsgEvent::Full(f, _)] => assert_eq!(b, f),
+            other => panic!("unexpected events: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn message_without_sender_emits_full_only() {
+        let group = Group::new();
+        let alice = group.add_member(MemberId::new("alice", true)).unwrap();
+        let (_sub, events) = record_message_events(alice.thread());
+
+        group.append(Msg::Platform("notice".into())).unwrap();
+
+        let seen = events.lock().unwrap();
+        assert!(matches!(&seen[..], [MsgEvent::Full(_, Msg::Platform(_))]));
     }
 }
