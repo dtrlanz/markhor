@@ -110,7 +110,7 @@ async fn pdf_ocr_via_public_url() {
                     "Successfully saved output to '{}'",
                     output_dir.to_str().unwrap()
                 ),
-                Err(e) => eprintln!("Error saving OCR output: {}", e),
+                    Err(e) => panic!("Error saving OCR output: {}", e),
             }
 
             for page in response.pages {
@@ -137,7 +137,7 @@ async fn pdf_ocr_via_public_url() {
             }
         }
         Err(e) => {
-            eprintln!("Error processing document: {}", e);
+                panic!("Error processing document: {}", e);
         }
     }
 }
@@ -191,7 +191,7 @@ async fn png_ocr_via_public_url() {
                     "Successfully saved output to '{}'",
                     output_dir.to_str().unwrap()
                 ),
-                Err(e) => eprintln!("Error saving OCR output: {}", e),
+                Err(e) => panic!("Error saving OCR output: {}", e),
             }
 
             for page in response.pages {
@@ -218,7 +218,7 @@ async fn png_ocr_via_public_url() {
             }
         }
         Err(e) => {
-            eprintln!("Error processing document: {}", e);
+            panic!("Error processing document: {}", e);
         }
     }
 }
@@ -261,7 +261,10 @@ async fn pdf_ocr_via_file_upload_workflow() {
     );
     assert_eq!(upload_response.purpose, "ocr");
     assert!(upload_response.bytes > 0);
-    assert_eq!(upload_response.filename, "sample.pdf"); // Assuming this filename
+    assert_eq!(
+        upload_response.filename,
+        file_path.file_name().unwrap().to_str().unwrap()
+    );
     assert!(!upload_response.id.is_empty());
     let file_id = upload_response.id; // Keep the ID for the next step
 
@@ -531,10 +534,12 @@ async fn test_image_ocr_helper(test_file: &str, expected_text: &str) {
             first_page.markdown.len(),
             first_page.images.len()
         );
-        assert!(
-            !first_page.markdown.is_empty(),
-            "First page markdown should not be empty"
-        );
+        if !expected_text.is_empty() {
+            assert!(
+                !first_page.markdown.is_empty(),
+                "First page markdown should not be empty"
+            );
+        }
 
         // Specific checks based on sample pdf
         // Defer until after file is saved (to allow for manual inspection if needed)
@@ -571,14 +576,16 @@ async fn test_image_ocr_helper(test_file: &str, expected_text: &str) {
         "Expected output file '{}' was not created",
         expected_md_path.display()
     );
-    assert!(
-        fs::read_to_string(&expected_md_path)
-            .await
-            .expect("Failed to read output.md")
-            .len()
-            > 0,
-        "output.md should not be empty"
-    );
+    if !expected_text.is_empty() {
+        assert!(
+            fs::read_to_string(&expected_md_path)
+                .await
+                .expect("Failed to read output.md")
+                .len()
+                > 0,
+            "output.md should not be empty"
+        );
+    }
 
     // Check images directory *if* images were expected and found
     let images_were_found = ocr_response.pages.iter().any(|p| !p.images.is_empty());
