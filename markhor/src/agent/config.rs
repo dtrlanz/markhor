@@ -1,5 +1,5 @@
-/// Types for configuring agent experience.
-///
+//! Types for configuring agent experience.
+
 use std::time::SystemTime;
 
 use markhor_core::chat::{MemberId, Msg};
