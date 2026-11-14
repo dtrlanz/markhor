@@ -309,9 +309,12 @@ async fn simple_chat_recovers_from_model_error() {
 #[ignore = "requires GOOGLE_API_KEY and network access"]
 async fn simple_chat_live_round_trip() {
     dotenv::dotenv().ok();
-    // Gemini intermittently returns 503 ("high demand"). A failed call is
+    let model = std::env::var("SIMPLE_CHAT_MODEL")
+        .unwrap_or_else(|_| "gemini-flash-lite-latest".into());
+    // The API intermittently fails (e.g. Gemini 503, Gemma 500). A failed call is
     // reported to the user as a log, which prompts them again, so retry a
-    // few times with a pause before giving up.
+    // few times with a pause before giving up. The model defaults to the
+    // fastest option measured; override with `SIMPLE_CHAT_MODEL`.
     let ui = ScriptedUi::new(&["Reply with one word: hello"; LIVE_ATTEMPTS])
         .with_pause(LIVE_RETRY_PAUSE);
 
@@ -322,7 +325,7 @@ async fn simple_chat_live_round_trip() {
     session
         .add_extension::<_, Client>(
             ClientConfig {
-                allow_models: vec!["gemini-flash-lite-latest".into()],
+                allow_models: vec![model],
                 ..Default::default()
             },
             ExtensionConfig::default(),
