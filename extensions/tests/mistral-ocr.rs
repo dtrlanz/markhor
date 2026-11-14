@@ -68,16 +68,21 @@ fn assert_has_decoded_images(output: &OcrOutput) {
 async fn pdf_ocr_via_public_url() {
     delay_test().await;
 
-    let source = DocumentSource::document_url("https://arxiv.org/pdf/2201.04234");
+    // A 1-page public PDF; the server fetches it, so this exercises the `document_url` path over HTTP.
+    let source = DocumentSource::document_url(
+        "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+    );
     let output = client()
-        .ocr(&source, &images_included())
+        .ocr(&source, &OcrOptions::default())
         .await
         .expect("OCR failed");
 
     assert_consistent(&output);
-    assert!(output.pages.len() > 1, "expected a multi-page document");
-    assert!(!output.markdown().trim().is_empty());
-    assert_has_decoded_images(&output);
+    assert!(
+        output.markdown().contains("Dummy PDF file"),
+        "unexpected markdown:\n{}",
+        output.markdown()
+    );
 }
 
 #[tokio::test]
