@@ -25,11 +25,23 @@ impl Simple {
     }
 
     pub fn with_user_id(session: Session, user_id: &str) -> Result<Self, InitChatError> {
+        Self::with_commands(session, user_id, Vec::new())
+    }
+
+    /// Like [`Simple::with_user_id`], but offers `commands` to the UI.
+    pub fn with_commands(
+        session: Session,
+        user_id: &str,
+        commands: Vec<String>,
+    ) -> Result<Self, InitChatError> {
         let group = Group::new();
         let ui: Comp<dyn ChatUi> = session.resolve()?;
         let model: Comp<dyn ChatModel> = session.resolve()?;
 
-        let user = UserBuilder::new(&group, ui).id(user_id).spawn()?;
+        let user = UserBuilder::new(&group, ui)
+            .id(user_id)
+            .commands(commands)
+            .spawn()?;
         let assistant = AgentBuilder::new(&group, model).id("Assistant").spawn()?;
 
         Ok(Self {
@@ -40,13 +52,15 @@ impl Simple {
         })
     }
 
-    /// Runs the chat until the user ends input, handing each command to `on_command`.
+    /// Runs the chat until the user ends input or `on_command` returns `false`.
     ///
     /// Commands are the `(name, args)` pairs the UI recognized. Messages are
     /// answered by the agents and do not reach `on_command`.
-    pub async fn run(&self, mut on_command: impl FnMut(&str, &str)) {
+    pub async fn run(&self, mut on_command: impl FnMut(&str, &str) -> bool) {
         while let Some((name, args)) = self.user.next_command().await {
-            on_command(&name, &args);
+            if !on_command(&name, &args) {
+                break;
+            }
         }
     }
 }
@@ -95,12 +109,22 @@ mod tests {
             args: String::new(),
         });
         scripted.push_input(UserInput::End);
-        let chat = Simple::with_user_id(session_with_ui(&scripted).await, "alice").unwrap();
+        // NB: Passing commands not really necessary for test to pass because
+        // the scripted UI already returns commands. Normally `Simple` would
+        // just pass the list on to the UI, which would then recognize them
+        // from user input. But we're not covering `Simple`'s implementation
+        // details, so just constructing as you would normally.
+        let commands = vec!["model".to_string(), "help".to_string()];
+        let chat =
+            Simple::with_commands(session_with_ui(&scripted).await, "alice", commands).unwrap();
 
         let mut seen = Vec::new();
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            chat.run(|name, args| seen.push((name.to_string(), args.to_string()))),
+            chat.run(|name, args| {
+                seen.push((name.to_string(), args.to_string()));
+                true
+            }),
         )
         .await
         .expect("run did not return after the user ended input");
@@ -110,6 +134,39 @@ mod tests {
             ("help".to_string(), String::new()),
         ];
         assert_eq!(seen, expected);
+        assert_eq!(scripted.last_commands(), ["model", "help"]);
+    }
+
+    #[tokio::test]
+    async fn run_stops_when_handler_returns_false() {
+        let scripted = ScriptedChatUi::new(&[]);
+        scripted.push_input(UserInput::Command {
+            name: "exit".into(),
+            args: String::new(),
+        });
+        scripted.push_input(UserInput::Command {
+            name: "help".into(),
+            args: String::new(),
+        });
+        let chat = Simple::with_commands(
+            session_with_ui(&scripted).await,
+            "alice",
+            vec!["exit".into(), "help".into()],
+        )
+        .unwrap();
+
+        let mut seen = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            chat.run(|name, _| {
+                seen.push(name.to_string());
+                name != "exit"
+            }),
+        )
+        .await
+        .expect("run did not stop when the handler returned false");
+
+        assert_eq!(seen, ["exit"]);
     }
 
     #[test]
