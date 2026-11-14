@@ -1,0 +1,20 @@
+[package]
+name = "markhor_chat"
+edition = "2024"
+version.workspace = true
+publish = false
+
+[[bin]]
+name = "markhor-chat"
+path = "src/main.rs"
+
+[dependencies]
+markhor = { path = "../../markhor" }
+markhor_cli = { path = ".." }
+markhor_core = { path = "../../core" }
+markhor_extensions = { path = "../../extensions" }
+anyhow = "1.0.97"
+clap = { version = "4.5.35", features = ["derive"] }
+dotenv = "0.15.0"
+tokio = { version = "1.44.2", features = ["rt-multi-thread", "macros", "signal"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

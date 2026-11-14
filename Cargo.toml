@@ -4,6 +4,7 @@ members = [
     "core_derive_provide",
     "cli",
     "cli/sim",
+    "cli/chat",
     "extensions", "markhor",
     "gui", 
     "markhor", 
