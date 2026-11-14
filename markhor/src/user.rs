@@ -7,7 +7,10 @@ use std::{
 };
 
 use markhor_core::{
-    chat::{AddMemberError, ChatUi, Group, Member, MemberId, Msg, MsgEvent, common::ContentPart},
+    chat::{
+        AddMemberError, ChatUi, Group, Member, MemberId, Msg, MsgEvent, UserInput,
+        common::ContentPart,
+    },
     event::Subscription,
     extension::Comp,
 };
@@ -109,6 +112,16 @@ pub struct User {
     thread_sub: Subscription,
 }
 
+impl User {
+    pub async fn next_command(&self) -> Option<(String, String)> {
+        unimplemented!("commands are not forwarded yet")
+    }
+
+    pub async fn ended(&self) {
+        unimplemented!("end of input is not signalled yet")
+    }
+}
+
 struct UserInner {
     member: Member,
     ui: Arc<Comp<dyn ChatUi>>,
@@ -134,9 +147,10 @@ impl UserInner {
     /// Prompts until a non-blank answer is given, then posts it.
     async fn prompt_and_post(&self) {
         let answer = loop {
-            let input = self.ui.prompt_with_commands(Vec::new()).await;
-            if !input.trim().is_empty() {
-                break input;
+            match self.ui.prompt_with_commands(Vec::new()).await {
+                UserInput::Message(text) if !text.trim().is_empty() => break text,
+                UserInput::Message(_) => {}
+                _ => unimplemented!("commands and end of input are not handled yet"),
             }
         };
         // Set before posting, so a reply that settles right after cannot be missed.
@@ -163,9 +177,11 @@ pub enum InitUserError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const WAIT: Duration = Duration::from_secs(5);
     use crate::test_utils::{ScriptedChatUi, eventually, session_with_ui};
     use markhor_core::{
-        chat::{ChatUi, Msg, common::ContentPart},
+        chat::{ChatUi, Msg, UserInput, common::ContentPart},
         dependencies::Session,
         extension::ModelId,
     };
@@ -355,5 +371,58 @@ mod tests {
 
         bot_reply(&group, &bot, "reply");
         scripted.wait_for_prompts(2).await;
+    }
+
+    #[tokio::test]
+    async fn commands_are_delivered_in_order_and_not_posted() {
+        let scripted = ScriptedChatUi::new(&[]);
+        scripted.push_input(UserInput::Command {
+            name: "model".into(),
+            args: "gemma-4-31b-it".into(),
+        });
+        scripted.push_input(UserInput::Command {
+            name: "help".into(),
+            args: String::new(),
+        });
+        scripted.push_answer("hello");
+        let session = session_with_ui(&scripted).await;
+        let group = Group::new();
+        let user = UserBuilder::new(&group, ui(&session))
+            .id("alice")
+            .spawn()
+            .unwrap();
+
+        let first = tokio::time::timeout(WAIT, user.next_command())
+            .await
+            .expect("first command not delivered");
+        assert_eq!(first, Some(("model".into(), "gemma-4-31b-it".into())));
+        let second = tokio::time::timeout(WAIT, user.next_command())
+            .await
+            .expect("second command not delivered");
+        assert_eq!(second, Some(("help".into(), String::new())));
+
+        // Prompting continues after commands, and only the message is posted.
+        eventually(|| (user_texts(&scripted.recorded_messages()) == ["hello"]).then_some(())).await;
+    }
+
+    #[tokio::test]
+    async fn end_stops_prompting_and_posts_nothing() {
+        let scripted = ScriptedChatUi::new(&[]);
+        scripted.push_input(UserInput::End);
+        let session = session_with_ui(&scripted).await;
+        let group = Group::new();
+        let user = UserBuilder::new(&group, ui(&session))
+            .id("alice")
+            .spawn()
+            .unwrap();
+        let bot = group.add_member(MemberId::new("bot", false)).unwrap();
+
+        tokio::time::timeout(WAIT, user.ended())
+            .await
+            .expect("ended() did not resolve after End");
+        bot_reply(&group, &bot, "hi");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(scripted.prompt_count(), 1, "prompted after End");
+        assert!(user_texts(&scripted.recorded_messages()).is_empty());
     }
 }

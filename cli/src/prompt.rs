@@ -9,6 +9,7 @@ use std::{
 
 use console::Style;
 use dialoguer::{Completion, History, theme::Theme};
+use markhor_core::chat::UserInput;
 
 /// A minimal input theme: just a coloured glyph before the cursor, and a dim
 /// glyph in front of the line once it has been submitted.
@@ -191,9 +192,18 @@ pub(crate) fn read_line_plain(prompt: &str) -> Option<String> {
     }
 }
 
+/// Classifies one line of console input. `None` means input has ended.
+pub(crate) fn parse_input(_line: Option<String>, _commands: &[String]) -> UserInput {
+    unimplemented!("input classification is not implemented yet")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn commands() -> Vec<String> {
+        ["model", "exit"].map(String::from).into()
+    }
 
     fn completer() -> SlashCompleter {
         SlashCompleter::new(
@@ -249,5 +259,46 @@ mod tests {
         assert_eq!(h.read(0).as_deref(), Some("c"));
         assert_eq!(h.read(1).as_deref(), Some("b"));
         assert_eq!(h.read(2), None);
+    }
+
+    #[test]
+    fn known_slash_commands_are_commands() {
+        assert_eq!(
+            parse_input(Some("/model gemma-4-31b-it".into()), &commands()),
+            UserInput::Command {
+                name: "model".into(),
+                args: "gemma-4-31b-it".into(),
+            }
+        );
+        assert_eq!(
+            parse_input(Some("/exit".into()), &commands()),
+            UserInput::Command {
+                name: "exit".into(),
+                args: String::new(),
+            }
+        );
+        assert_eq!(
+            parse_input(Some("/model   gemma pro  ".into()), &commands()),
+            UserInput::Command {
+                name: "model".into(),
+                args: "gemma pro".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn other_input_is_a_message() {
+        for line in ["hello", "say /model", "/", "/unknown args", "/usr/bin/env"] {
+            assert_eq!(
+                parse_input(Some(line.into()), &commands()),
+                UserInput::Message(line.into()),
+                "input {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn end_of_input_is_end() {
+        assert_eq!(parse_input(None, &commands()), UserInput::End);
     }
 }

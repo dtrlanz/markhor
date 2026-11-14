@@ -8,7 +8,7 @@ mod msg;
 
 pub use chat::{ChatModel, ChatOptions, ChatResponse, FinishReason, UsageInfo};
 pub use chat_ui::{
-    ChatUi, MsgEvent, MsgId, ReasoningEvent, ToolCallEvent, ToolCallId, WorkerEvent,
+    ChatUi, MsgEvent, MsgId, ReasoningEvent, ToolCallEvent, ToolCallId, UserInput, WorkerEvent,
 };
 pub use error::ChatError;
 pub use group::{AddMemberError, AppendMessageError, Group, InitContext, PendingMsg};

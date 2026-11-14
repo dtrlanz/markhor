@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use markhor_core::{
     chat::{
         ChatError, ChatModel, ChatOptions, ChatResponse, ChatUi, Member, Msg, MsgEvent,
-        ReasoningEvent, ToolCallEvent, WorkerEvent, common::ContentPart,
+        ReasoningEvent, ToolCallEvent, UserInput, WorkerEvent, common::ContentPart,
     },
     dependencies::Session,
     event::Subscription,
@@ -93,7 +93,7 @@ struct MockChatUi;
 
 #[async_trait]
 impl ChatUi for MockChatUi {
-    async fn prompt_with_commands(&self, _commands: Vec<String>) -> String {
+    async fn prompt_with_commands(&self, _commands: Vec<String>) -> UserInput {
         unimplemented!("prompting is not exercised by these tests")
     }
 
@@ -115,7 +115,7 @@ impl ChatUi for MockChatUi {
 /// holds another.
 #[derive(Clone)]
 pub(crate) struct ScriptedChatUi {
-    answers: Arc<Mutex<VecDeque<String>>>,
+    answers: Arc<Mutex<VecDeque<UserInput>>>,
     answer_added: Arc<Notify>,
     prompts: Arc<watch::Sender<usize>>,
     messages: Arc<Mutex<Vec<Msg>>>,
@@ -125,7 +125,12 @@ pub(crate) struct ScriptedChatUi {
 impl ScriptedChatUi {
     pub(crate) fn new(answers: &[&str]) -> Self {
         Self {
-            answers: Arc::new(Mutex::new(answers.iter().map(|a| a.to_string()).collect())),
+            answers: Arc::new(Mutex::new(
+                answers
+                    .iter()
+                    .map(|a| UserInput::Message(a.to_string()))
+                    .collect(),
+            )),
             answer_added: Default::default(),
             prompts: Arc::new(watch::channel(0).0),
             messages: Default::default(),
@@ -133,10 +138,14 @@ impl ScriptedChatUi {
         }
     }
 
-    /// Queues an answer for the next prompt, which may already be waiting.
-    pub(crate) fn push_answer(&self, answer: &str) {
-        self.answers.lock().unwrap().push_back(answer.to_string());
+    /// Queues an input for the next prompt, which may already be waiting.
+    pub(crate) fn push_input(&self, input: UserInput) {
+        self.answers.lock().unwrap().push_back(input);
         self.answer_added.notify_one();
+    }
+
+    pub(crate) fn push_answer(&self, answer: &str) {
+        self.push_input(UserInput::Message(answer.to_string()));
     }
 
     pub(crate) fn prompt_count(&self) -> usize {
@@ -162,7 +171,7 @@ impl ScriptedChatUi {
 
 #[async_trait]
 impl ChatUi for ScriptedChatUi {
-    async fn prompt_with_commands(&self, _commands: Vec<String>) -> String {
+    async fn prompt_with_commands(&self, _commands: Vec<String>) -> UserInput {
         self.prompts.send_modify(|n| *n += 1);
         loop {
             let next = self.answers.lock().unwrap().pop_front();

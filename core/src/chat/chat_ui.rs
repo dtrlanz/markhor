@@ -10,22 +10,43 @@ use crate::chat::{
     common::{ContentPart, ToolCallRequest, ToolResult},
 };
 
+/// Input given by the user at a [`ChatUi`] prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserInput {
+    /// Text to send as a message.
+    Message(String),
+
+    /// A command the UI recognized from the names passed to
+    /// [`ChatUi::prompt_with_commands`]. The name excludes any prefix the UI uses.
+    Command { name: String, args: String },
+
+    /// The user has ended the session (e.g., Ctrl-C or end of input).
+    End,
+}
+
 #[async_trait]
 pub trait ChatUi: Send + Sync {
     /// Prompt the user for text input in the chat interface.
-    async fn prompt(&self) -> String {
-        self.prompt_with_commands(vec![]).await
+    ///
+    /// Returns `None` when the user has ended input (e.g., Ctrl-C or end of input).
+    async fn prompt(&self) -> Option<String> {
+        match self.prompt_with_commands(vec![]).await {
+            UserInput::Message(text) => Some(text),
+            UserInput::Command { .. } => unreachable!("no commands were offered"),
+            UserInput::End => None,
+        }
     }
 
     /// Prompt the user for input in the chat interface, with a list of
     /// commands that can be used.
     ///
     /// The `commands` argument contains the list of available commands.
-    ///
     /// Commands are usually implemented as slash commands (e.g., `/model`,
     /// `/exit`). However, this is up to the UI implementation, and the list
     /// should be passed without the slash (e.g., `model`, `exit`).
-    async fn prompt_with_commands(&self, commands: Vec<String>) -> String;
+    ///
+    /// Returns [`UserInput::End`] when the user has ended input (e.g., Ctrl-C or end of input).
+    async fn prompt_with_commands(&self, commands: Vec<String>) -> UserInput;
 
     /// Prompt the user to select an option from a list.
     ///

@@ -12,7 +12,7 @@ use markhor::chat::Simple;
 use markhor_core::{
     chat::{
         ChatError, ChatModel, ChatOptions, ChatResponse, ChatUi, Msg, MsgEvent, ReasoningEvent,
-        ToolCallEvent, WorkerEvent, common::ContentPart,
+        ToolCallEvent, UserInput, WorkerEvent, common::ContentPart,
     },
     dependencies::Session,
     extension::{Extension, ExtensionConfig},
@@ -75,7 +75,7 @@ impl ScriptedUi {
 
 #[async_trait]
 impl ChatUi for ScriptedUi {
-    async fn prompt_with_commands(&self, _commands: Vec<String>) -> String {
+    async fn prompt_with_commands(&self, _commands: Vec<String>) -> UserInput {
         let mut prompt_number = 0;
         self.prompts.send_modify(|n| {
             *n += 1;
@@ -87,7 +87,7 @@ impl ChatUi for ScriptedUi {
         }
         let next = self.answers.lock().unwrap().pop_front();
         match next {
-            Some(answer) => answer,
+            Some(answer) => UserInput::Message(answer),
             // Block rather than panic inside a spawned task, where the panic
             // would go unnoticed and the test would only time out.
             None => std::future::pending().await,

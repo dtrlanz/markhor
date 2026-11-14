@@ -17,7 +17,7 @@ use dialoguer::{
 };
 use indicatif::ProgressBar;
 use markhor_core::chat::{
-    ChatUi, MemberId, Msg, MsgEvent, MsgId, ReasoningEvent, ToolCallEvent, WorkerEvent,
+    ChatUi, MemberId, Msg, MsgEvent, MsgId, ReasoningEvent, ToolCallEvent, UserInput, WorkerEvent,
     common::{ContentPart, ToolCallRequest, ToolResult},
 };
 use serde_json::Value;
@@ -1144,12 +1144,12 @@ impl Drop for Inner {
 impl ChatUi for ConsoleChatUi {
     /// Returns [`ChatUiConfig::exit_command`] (`/exit` by default) when input
     /// ends, e.g. on Ctrl-C or end of stdin.
-    async fn prompt_with_commands(&self, commands: Vec<String>) -> String {
+    async fn prompt_with_commands(&self, commands: Vec<String>) -> UserInput {
         let inner = self.inner.clone();
-        let exit = inner.config.exit_command.clone();
         tokio::task::spawn_blocking(move || inner.read_prompt(commands))
             .await
-            .unwrap_or(exit)
+            .map(UserInput::Message)
+            .unwrap_or(UserInput::End)
     }
 
     async fn select(&self, options: &Vec<String>) -> Option<usize> {

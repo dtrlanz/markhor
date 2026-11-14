@@ -9,7 +9,7 @@ use std::{
 use markhor_cli::{ConsoleChatUi, ReasoningDisplay};
 use markhor_core::{
     chat::{
-        ChatUi, MemberId, Msg, MsgEvent, MsgId, ReasoningEvent, ToolCallEvent, ToolCallId,
+        ChatUi, MemberId, Msg, MsgEvent, MsgId, ReasoningEvent, ToolCallEvent, ToolCallId, UserInput,
         WorkerEvent,
         common::{ContentPart, ToolCallRequest, ToolResult},
     },
@@ -197,10 +197,15 @@ impl Simulation {
         ));
 
         loop {
-            let input = self
+            let input = match self
                 .ui
                 .prompt_with_commands(COMMANDS.iter().map(|c| c.to_string()).collect())
-                .await;
+                .await
+            {
+                UserInput::Message(text) => text,
+                UserInput::Command { name, args } => format!("/{name} {args}"),
+                UserInput::End => break,
+            };
             let input = input.trim();
             if input.is_empty() {
                 continue;
