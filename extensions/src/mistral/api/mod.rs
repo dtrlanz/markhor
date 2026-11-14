@@ -15,7 +15,7 @@ use crate::mistral::Error;
 
 pub(crate) use error::ErrorResponse;
 pub(crate) use files::{DeleteResponse, FileObject, PURPOSE_OCR, SignedUrl};
-pub(crate) use ocr::{Dimensions, Document, Image, OcrRequest, OcrResponse, Page, UsageInfo};
+pub(crate) use ocr::{Document, Image, OcrRequest, OcrResponse};
 
 pub(crate) const DEFAULT_BASE_URL: &str = "https://api.mistral.ai/v1";
 

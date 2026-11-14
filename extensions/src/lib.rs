@@ -3,7 +3,6 @@ pub mod chunking;
 pub mod cli;
 pub mod google;
 pub mod mistral;
-pub mod ocr;
 pub mod plugin;
 
 pub fn add(left: u64, right: u64) -> u64 {

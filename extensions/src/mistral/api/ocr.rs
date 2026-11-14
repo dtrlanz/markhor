@@ -9,6 +9,10 @@ pub(crate) struct OcrRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pages: Option<&'a [u32]>,
     pub include_image_base64: bool,
+    /// Maximum number of images to extract. `0` is required to opt out of images for `.docx`,
+    /// which rejects `include_image_base64: false` otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_limit: Option<u32>,
 }
 
 /// The document to process, tagged by `"type"`.

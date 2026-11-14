@@ -21,6 +21,14 @@ pub enum Error {
     #[error("invalid response: {0}")]
     Decode(#[from] serde_json::Error),
 
+    /// An image in the OCR response was not valid base64.
+    #[error("invalid data for image '{id}': {source}")]
+    InvalidImageData {
+        id: String,
+        #[source]
+        source: base64::DecodeError,
+    },
+
     /// Reading a local file failed.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
