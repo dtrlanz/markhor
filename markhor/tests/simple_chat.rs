@@ -32,6 +32,7 @@ struct ScriptedUi {
     answers: Arc<Mutex<VecDeque<String>>>,
     prompts: Arc<watch::Sender<usize>>,
     shown: Arc<Mutex<Vec<Msg>>>,
+    logs: Arc<Mutex<Vec<String>>>,
     pause: Duration,
 }
 
@@ -41,6 +42,7 @@ impl ScriptedUi {
             answers: Arc::new(Mutex::new(answers.iter().map(|a| a.to_string()).collect())),
             prompts: Arc::new(watch::channel(0).0),
             shown: Default::default(),
+            logs: Default::default(),
             pause: Duration::ZERO,
         }
     }
@@ -64,6 +66,10 @@ impl ScriptedUi {
 
     fn shown(&self) -> Vec<Msg> {
         self.shown.lock().unwrap().clone()
+    }
+
+    fn logs(&self) -> Vec<String> {
+        self.logs.lock().unwrap().clone()
     }
 }
 
@@ -93,8 +99,10 @@ impl ChatUi for ScriptedUi {
     }
 
     fn handle_message(&self, event: &MsgEvent) {
-        if let MsgEvent::Full(_, msg) = event {
-            self.shown.lock().unwrap().push(msg.clone());
+        match event {
+            MsgEvent::Full(_, msg) => self.shown.lock().unwrap().push(msg.clone()),
+            MsgEvent::Log(_, reason) => self.logs.lock().unwrap().push(reason.clone()),
+            _ => {}
         }
     }
 
@@ -289,10 +297,11 @@ async fn simple_chat_recovers_from_model_error() {
 
     ui.wait_for_prompts(3).await;
 
-    assert!(ui.shown().iter().any(|msg| match msg {
-        Msg::Event { content, .. } => content.to_string().contains("boom"),
-        _ => false,
-    }));
+    assert!(
+        ui.logs().iter().any(|reason| reason.contains("boom")),
+        "no log containing the model error; logs: {:?}",
+        ui.logs()
+    );
     assert_eq!(model.requests().len(), 2);
 }
 
@@ -301,7 +310,7 @@ async fn simple_chat_recovers_from_model_error() {
 async fn simple_chat_live_round_trip() {
     dotenv::dotenv().ok();
     // Gemini intermittently returns 503 ("high demand"). A failed call is
-    // reported to the user as an event, which prompts them again, so retry a
+    // reported to the user as a log, which prompts them again, so retry a
     // few times with a pause before giving up.
     let ui = ScriptedUi::new(&["Reply with one word: hello"; LIVE_ATTEMPTS])
         .with_pause(LIVE_RETRY_PAUSE);
