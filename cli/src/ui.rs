@@ -505,7 +505,7 @@ impl Inner {
     fn msg_state<'a>(&self, state: &'a mut State, id: MsgId) -> &'a mut MsgState {
         state
             .msgs
-            .entry(*id)
+            .entry(id.0)
             .or_insert_with(|| self.new_msg_state(MemberId::new("unknown", false)))
     }
 
@@ -514,7 +514,7 @@ impl Inner {
         match event {
             MsgEvent::Begin(id, sender) => {
                 let st = self.new_msg_state(sender.clone());
-                if let Some(old) = state.msgs.insert(**id, st) {
+                if let Some(old) = state.msgs.insert(id.0, st) {
                     if let Some(bar) = old.bar {
                         bar.finish_and_clear();
                     }
@@ -531,7 +531,7 @@ impl Inner {
             MsgEvent::Full(id, msg) => {
                 let st = state
                     .msgs
-                    .remove(&**id)
+                    .remove(&id.0)
                     .unwrap_or_else(|| self.new_msg_state(MemberId::new("unknown", false)));
                 self.complete(&mut state, st, msg);
             }
@@ -782,7 +782,7 @@ impl Inner {
         let mut state = self.state.lock().unwrap();
         match event {
             ToolCallEvent::Begin(msg, call, request) => {
-                if let Some(st) = state.msgs.get_mut(&**msg) {
+                if let Some(st) = state.msgs.get_mut(&msg.0) {
                     self.ensure_header(st);
                 }
                 let ToolCallRequest {
@@ -795,7 +795,7 @@ impl Inner {
                     self.tool_message(&name, &args, None),
                 );
                 state.tools.insert(
-                    **call,
+                    call.0,
                     ToolState {
                         name,
                         args,
@@ -806,7 +806,7 @@ impl Inner {
                 );
             }
             ToolCallEvent::Part(call, text) => {
-                if let Some(tool) = state.tools.get_mut(&**call) {
+                if let Some(tool) = state.tools.get_mut(&call.0) {
                     tool.output.extend(
                         sanitize(text)
                             .lines()
@@ -819,13 +819,13 @@ impl Inner {
                 }
             }
             ToolCallEvent::Full(call, result) => {
-                let tool = state.tools.remove(&**call);
+                let tool = state.tools.remove(&call.0);
                 self.finish_tool(tool, result);
             }
             ToolCallEvent::Log(call, text) => {
                 let name = state
                     .tools
-                    .get(&**call)
+                    .get(&call.0)
                     .map_or_else(|| "tool".to_string(), |t| t.name.clone());
                 self.term.print(&self.status_lines(
                     self.theme.glyphs.info,

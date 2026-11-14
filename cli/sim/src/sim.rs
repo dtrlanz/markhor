@@ -470,7 +470,7 @@ impl Simulation {
             _ => json!({ "city": pick(&mut self.rng, CITIES) }),
         };
         ToolCallRequest {
-            id: format!("req-{}", *call),
+            id: format!("req-{}", call.0),
             name: name.to_string(),
             arguments,
         }
