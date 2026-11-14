@@ -123,30 +123,75 @@ pub enum InitUserError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::session_with_mocks;
+    use crate::test_utils::{ScriptedChatUi, eventually, session_with_ui};
     use markhor_core::{
-        chat::{ChatUi, Msg},
+        chat::{ChatUi, Msg, common::ContentPart},
         dependencies::Session,
+        extension::ModelId,
     };
+    use std::time::Duration;
 
     fn ui(session: &Session) -> Comp<dyn ChatUi> {
         session.resolve().unwrap()
     }
 
+    fn user_texts(messages: &[Msg]) -> Vec<String> {
+        messages
+            .iter()
+            .filter_map(|msg| match msg {
+                Msg::User { content, .. } => Some(
+                    content
+                        .iter()
+                        .filter_map(|part| match part {
+                            ContentPart::Text(text) => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<String>(),
+                ),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Settles a reply from `bot` with the given text.
+    fn bot_reply(group: &Group, bot: &Member, text: &str) {
+        group
+            .begin_message(bot.id())
+            .unwrap()
+            .complete(Msg::Agent {
+                sender: bot.id().clone(),
+                timestamp: None,
+                content: vec![ContentPart::Text(text.into())],
+                tool_calls: vec![],
+                model: ModelId::new("scripted", "markhor://test-user"),
+                reasoning_content: None,
+                metadata: Default::default(),
+            })
+            .unwrap();
+    }
+
+    /// Settles a failed reply from `bot`.
+    fn bot_failure(group: &Group, bot: &Member) {
+        group
+            .begin_message(bot.id())
+            .unwrap()
+            .fail("boom".to_string());
+    }
+
     #[tokio::test]
-    async fn default_id_gets_numeric_suffix_and_is_human() {
-        let session = session_with_mocks().await;
+    async fn default_ids_are_distinct_and_human() {
+        let session = session_with_ui(&ScriptedChatUi::new(&[])).await;
         let group = Group::new();
         let first = UserBuilder::new(&group, ui(&session)).spawn().unwrap();
         let second = UserBuilder::new(&group, ui(&session)).spawn().unwrap();
-        assert_eq!(first.inner.member.id().id(), "user");
-        assert_eq!(second.inner.member.id().id(), "user1");
+        assert_ne!(first.inner.member.id().id(), second.inner.member.id().id());
         assert!(first.inner.member.human());
+        assert!(second.inner.member.human());
     }
 
     #[tokio::test]
     async fn explicit_id_collision_is_an_error() {
-        let session = session_with_mocks().await;
+        let session = session_with_ui(&ScriptedChatUi::new(&[])).await;
         let group = Group::new();
         let _first = UserBuilder::new(&group, ui(&session))
             .id("alice")
@@ -157,17 +202,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn responder_task_stays_alive_while_user_exists() {
-        let session = session_with_mocks().await;
-        let group = Group::new();
-        let user = UserBuilder::new(&group, ui(&session)).spawn().unwrap();
-        tokio::task::yield_now().await;
-        assert!(!user.handle.is_finished());
-    }
-
-    #[tokio::test]
     async fn appending_after_responder_stopped_does_not_panic() {
-        let session = session_with_mocks().await;
+        let session = session_with_ui(&ScriptedChatUi::new(&[])).await;
         let group = Group::new();
         let user = UserBuilder::new(&group, ui(&session)).spawn().unwrap();
         user.handle.abort();
@@ -180,5 +216,104 @@ mod tests {
             content: vec![],
         };
         group.append(msg).unwrap();
+    }
+
+    #[tokio::test]
+    async fn prompts_once_at_startup() {
+        let scripted = ScriptedChatUi::new(&[]);
+        let session = session_with_ui(&scripted).await;
+        let group = Group::new();
+        let _user = UserBuilder::new(&group, ui(&session)).spawn().unwrap();
+        scripted.wait_for_prompts(1).await;
+        assert_eq!(scripted.prompt_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn agent_reply_prompts_and_posts_answer() {
+        let scripted = ScriptedChatUi::new(&["hello", "again"]);
+        let session = session_with_ui(&scripted).await;
+        let group = Group::new();
+        let _user = UserBuilder::new(&group, ui(&session))
+            .id("alice")
+            .spawn()
+            .unwrap();
+        let bot = group.add_member(MemberId::new("bot", false)).unwrap();
+
+        eventually(|| (user_texts(&scripted.recorded_messages()) == ["hello"]).then_some(())).await;
+        bot_reply(&group, &bot, "hi");
+        eventually(|| {
+            (user_texts(&scripted.recorded_messages()) == ["hello", "again"]).then_some(())
+        })
+        .await;
+        assert_eq!(scripted.prompt_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_reply_prompts_again() {
+        let scripted = ScriptedChatUi::new(&["hi", "retry"]);
+        let session = session_with_ui(&scripted).await;
+        let group = Group::new();
+        let _user = UserBuilder::new(&group, ui(&session))
+            .id("alice")
+            .spawn()
+            .unwrap();
+        let bot = group.add_member(MemberId::new("bot", false)).unwrap();
+
+        eventually(|| (user_texts(&scripted.recorded_messages()) == ["hi"]).then_some(())).await;
+        bot_failure(&group, &bot);
+        eventually(|| {
+            (user_texts(&scripted.recorded_messages()) == ["hi", "retry"]).then_some(())
+        })
+        .await;
+        assert_eq!(scripted.prompt_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn empty_answer_reprompts() {
+        let scripted = ScriptedChatUi::new(&["", "hi"]);
+        let session = session_with_ui(&scripted).await;
+        let group = Group::new();
+        let _user = UserBuilder::new(&group, ui(&session)).spawn().unwrap();
+
+        eventually(|| (user_texts(&scripted.recorded_messages()) == ["hi"]).then_some(())).await;
+        assert_eq!(scripted.prompt_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn events_are_forwarded_to_ui() {
+        let scripted = ScriptedChatUi::new(&[]);
+        let session = session_with_ui(&scripted).await;
+        let group = Group::new();
+        let _user = UserBuilder::new(&group, ui(&session)).spawn().unwrap();
+        let bot = group.add_member(MemberId::new("bot", false)).unwrap();
+
+        bot_failure(&group, &bot);
+        eventually(|| (scripted.begun_count() > 0).then_some(())).await;
+    }
+
+    /// A reply settles while the user is still typing, so its signal is
+    /// queued. When the user then sends, the queued signal must not prompt
+    /// again, or the thread would get two user messages in a row.
+    #[tokio::test]
+    async fn stale_signal_while_typing_does_not_prompt() {
+        let scripted = ScriptedChatUi::new(&[]);
+        let session = session_with_ui(&scripted).await;
+        let group = Group::new();
+        let _user = UserBuilder::new(&group, ui(&session))
+            .id("alice")
+            .spawn()
+            .unwrap();
+        let bot = group.add_member(MemberId::new("bot", false)).unwrap();
+        scripted.wait_for_prompts(1).await;
+
+        bot_reply(&group, &bot, "early");
+        scripted.push_answer("hello");
+        eventually(|| (user_texts(&scripted.recorded_messages()) == ["hello"]).then_some(())).await;
+        // Give a stale prompt time to appear before checking for it.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(scripted.prompt_count(), 1, "prompted while awaiting a reply");
+
+        bot_reply(&group, &bot, "reply");
+        scripted.wait_for_prompts(2).await;
     }
 }

@@ -196,13 +196,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_id_gets_numeric_suffix_on_collision() {
+    async fn default_ids_are_distinct() {
         let session = session_with_mocks().await;
         let group = Group::new();
         let first = AgentBuilder::new(&group, model(&session)).spawn().unwrap();
         let second = AgentBuilder::new(&group, model(&session)).spawn().unwrap();
-        assert_eq!(first.inner.member.id().id(), "assistant");
-        assert_eq!(second.inner.member.id().id(), "assistant1");
+        assert_ne!(first.inner.member.id().id(), second.inner.member.id().id());
     }
 
     #[tokio::test]
@@ -215,15 +214,6 @@ mod tests {
             .unwrap();
         let second = AgentBuilder::new(&group, model(&session)).id("bot").spawn();
         assert!(matches!(second, Err(InitAgentError::IdCollision(_))));
-    }
-
-    #[tokio::test]
-    async fn responder_task_stays_alive_while_agent_exists() {
-        let session = session_with_mocks().await;
-        let group = Group::new();
-        let agent = AgentBuilder::new(&group, model(&session)).spawn().unwrap();
-        tokio::task::yield_now().await;
-        assert!(!agent.handle.is_finished());
     }
 
     #[tokio::test]

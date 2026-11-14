@@ -18,7 +18,7 @@ use markhor_core::{
     event::Subscription,
     extension::Extension,
 };
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 
 const WAIT: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(5);
@@ -116,6 +116,7 @@ impl ChatUi for MockChatUi {
 #[derive(Clone)]
 pub(crate) struct ScriptedChatUi {
     answers: Arc<Mutex<VecDeque<String>>>,
+    answer_added: Arc<Notify>,
     prompts: Arc<watch::Sender<usize>>,
     messages: Arc<Mutex<Vec<Msg>>>,
     begun: Arc<Mutex<usize>>,
@@ -125,10 +126,17 @@ impl ScriptedChatUi {
     pub(crate) fn new(answers: &[&str]) -> Self {
         Self {
             answers: Arc::new(Mutex::new(answers.iter().map(|a| a.to_string()).collect())),
+            answer_added: Default::default(),
             prompts: Arc::new(watch::channel(0).0),
             messages: Default::default(),
             begun: Default::default(),
         }
+    }
+
+    /// Queues an answer for the next prompt, which may already be waiting.
+    pub(crate) fn push_answer(&self, answer: &str) {
+        self.answers.lock().unwrap().push_back(answer.to_string());
+        self.answer_added.notify_one();
     }
 
     pub(crate) fn prompt_count(&self) -> usize {
@@ -156,12 +164,14 @@ impl ScriptedChatUi {
 impl ChatUi for ScriptedChatUi {
     async fn prompt_with_commands(&self, _commands: Vec<String>) -> String {
         self.prompts.send_modify(|n| *n += 1);
-        let next = self.answers.lock().unwrap().pop_front();
-        match next {
-            Some(answer) => answer,
+        loop {
+            let next = self.answers.lock().unwrap().pop_front();
+            if let Some(answer) = next {
+                return answer;
+            }
             // An exhausted script blocks rather than panicking inside the
             // spawned responder task, where a panic would go unnoticed.
-            None => std::future::pending().await,
+            self.answer_added.notified().await;
         }
     }
 
