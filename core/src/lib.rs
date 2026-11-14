@@ -8,6 +8,7 @@ pub mod event;
 pub mod extension;
 pub mod library;
 pub mod markdown;
+pub mod ocr;
 pub mod permissions;
 pub mod tool;
 pub mod vector_store;
