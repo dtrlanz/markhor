@@ -1,5 +1,5 @@
 use crate::{
-    chat::{ChatModel, ChatUi, prompter::Prompter},
+    chat::{ChatModel, ChatUi},
     chunking::Chunker,
     convert::Converter,
     dependencies::{Provide, ResolveDependencyError, Session, TrackingGuard},
@@ -55,7 +55,6 @@ impl<T: ?Sized + 'static> Comp<T> {
             x if x == const { TypeId::of::<dyn EmbeddingModel>() } => ComponentType::EmbeddingModel,
             x if x == const { TypeId::of::<dyn Chunker>() } => ComponentType::Chunker,
             x if x == const { TypeId::of::<dyn Converter>() } => ComponentType::Converter,
-            x if x == const { TypeId::of::<dyn Prompter>() } => ComponentType::Prompter,
             x if x == const { TypeId::of::<dyn Tool>() } => ComponentType::Tool,
 
             // `Comp` is never constructed with anything other than extension components. If we
@@ -111,7 +110,6 @@ impl_provide_comp! {
     EmbeddingModel => embedding_models,
     Chunker => chunkers,
     Converter => converters,
-    Prompter => prompters,
     Tool => tools,
 }
 
@@ -122,7 +120,6 @@ pub enum ComponentType {
     EmbeddingModel,
     Chunker,
     Converter,
-    Prompter,
     Tool,
 }
 
@@ -134,7 +131,6 @@ impl Display for ComponentType {
             ComponentType::EmbeddingModel => "embedding-model",
             ComponentType::Chunker => "chunker",
             ComponentType::Converter => "converter",
-            ComponentType::Prompter => "prompter",
             ComponentType::Tool => "tool",
         };
         write!(f, "{}", s)

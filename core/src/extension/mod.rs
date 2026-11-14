@@ -1,5 +1,5 @@
 use crate::{
-    chat::{ChatModel, ChatUi, prompter::Prompter},
+    chat::{ChatModel, ChatUi},
     chunking::Chunker,
     convert::Converter,
     dependencies::ResolveDependencyError,
@@ -42,9 +42,6 @@ pub trait Extension: Send + Sync {
         vec![]
     }
     fn converters(&self) -> Vec<Box<dyn Converter>> {
-        vec![]
-    }
-    fn prompters(&self) -> Vec<Box<dyn Prompter>> {
         vec![]
     }
     fn tools(&self) -> Vec<Box<dyn crate::tool::Tool>> {
