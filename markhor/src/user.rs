@@ -1,13 +1,19 @@
-use std::sync::Arc;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::SystemTime,
+};
 
 use markhor_core::{
-    chat::{AddMemberError, ChatUi, Group, Member, MemberId},
+    chat::{AddMemberError, ChatUi, Group, Member, MemberId, Msg, MsgEvent, common::ContentPart},
     event::Subscription,
     extension::Comp,
 };
 
 use thiserror::Error;
-use tokio::{sync::watch, task};
+use tokio::{sync::Notify, task};
 
 pub struct UserBuilder {
     group: Arc<Group>,
@@ -62,20 +68,32 @@ impl UserBuilder {
             }
         };
 
-        let (tx, rx) = watch::channel(None);
-        let id = member.id().clone();
-        // TODO: add other events needed consumed by `ChatUi`
-        let sub = member.thread().on_message_appended(move |_, idx| {
-            tx.send_replace(Some(idx));
-        });
+        let ui = Arc::new(self.ui);
+        let reply_pending = Arc::new(AtomicBool::new(false));
+        let reply_settled = Arc::new(Notify::new());
+
+        let sub = {
+            let ui = ui.clone();
+            let reply_pending = reply_pending.clone();
+            let reply_settled = reply_settled.clone();
+            member.thread().on_message(move |event| {
+                ui.handle_message(event);
+                if matches!(event, MsgEvent::Full(_, Msg::Agent { .. }) | MsgEvent::Log(..)) {
+                    reply_pending.store(false, Ordering::SeqCst);
+                    reply_settled.notify_one();
+                }
+            })
+        };
 
         let inner = Arc::new(UserInner {
             member,
-            ui: self.ui,
+            ui,
+            reply_pending,
+            reply_settled,
         });
         let cloned = inner.clone();
         let handle = task::spawn(async move {
-            cloned.run(rx).await;
+            cloned.run().await;
         });
         Ok(User {
             inner,
@@ -93,24 +111,46 @@ pub struct User {
 
 struct UserInner {
     member: Member,
-    ui: Comp<dyn ChatUi>,
+    ui: Arc<Comp<dyn ChatUi>>,
+    /// Set when the user posts, cleared when an agent reply or failure settles.
+    reply_pending: Arc<AtomicBool>,
+    /// Signalled each time a reply settles. Repeated signals coalesce into one.
+    reply_settled: Arc<Notify>,
 }
 
 impl UserInner {
-    async fn run(&self, mut rx: watch::Receiver<Option<usize>>) {
-        while rx.changed().await.is_ok() {
-            let msg_idx = *rx.borrow_and_update();
-            if let Some(msg_idx) = msg_idx {
-                self.respond(msg_idx).await;
+    async fn run(&self) {
+        self.prompt_and_post().await;
+        loop {
+            self.reply_settled.notified().await;
+            // A signal queued while the user was typing is stale if they have
+            // since replied, so prompt only when no reply is outstanding.
+            if !self.reply_pending.load(Ordering::SeqCst) {
+                self.prompt_and_post().await;
             }
         }
     }
 
-    async fn respond(&self, msg_idx: usize) {
-        let context: Vec<_> = self.member.context_until(msg_idx).collect();
-
-        todo!();
-        // send to UI, user response, etc.
+    /// Prompts until a non-blank answer is given, then posts it.
+    async fn prompt_and_post(&self) {
+        let answer = loop {
+            let input = self.ui.prompt_with_commands(Vec::new()).await;
+            if !input.trim().is_empty() {
+                break input;
+            }
+        };
+        // Set before posting, so a reply that settles right after cannot be missed.
+        self.reply_pending.store(true, Ordering::SeqCst);
+        self.member
+            .group()
+            .begin_message(self.member.id())
+            .expect("user is a member of its own group")
+            .complete(Msg::User {
+                sender: self.member.id().clone(),
+                timestamp: Some(SystemTime::now()),
+                content: vec![ContentPart::Text(answer)],
+            })
+            .expect("user message is sent by the user");
     }
 }
 
