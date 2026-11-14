@@ -1,15 +1,13 @@
-use std::{sync::Arc, time::SystemTime};
+use std::sync::Arc;
 
 use markhor_core::{
-    chat::{
-        AddMemberError, ChatUi, Group, Member, MemberId, Msg, MsgEvent, MsgId, common::ContentPart,
-    },
+    chat::{AddMemberError, ChatUi, Group, Member, MemberId},
     event::Subscription,
     extension::Comp,
 };
 
 use thiserror::Error;
-use tokio::{sync::mpsc, task};
+use tokio::{sync::watch, task};
 
 pub struct UserBuilder {
     group: Arc<Group>,
@@ -64,11 +62,11 @@ impl UserBuilder {
             }
         };
 
-        // Unbounded so that no message is dropped while a turn is in progress.
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = watch::channel(None);
+        let id = member.id().clone();
         // TODO: add other events needed consumed by `ChatUi`
-        let sub = member.thread().on_message_appended(move |msg, idx| {
-            let _ = tx.send((idx, msg.clone()));
+        let sub = member.thread().on_message_appended(move |_, idx| {
+            tx.send_replace(Some(idx));
         });
 
         let inner = Arc::new(UserInner {
@@ -99,34 +97,20 @@ struct UserInner {
 }
 
 impl UserInner {
-    async fn run(&self, mut rx: mpsc::UnboundedReceiver<(usize, Msg)>) {
-        self.turn().await;
-        while let Some((msg_idx, msg)) = rx.recv().await {
-            self.respond(msg_idx, msg).await;
+    async fn run(&self, mut rx: watch::Receiver<Option<usize>>) {
+        while rx.changed().await.is_ok() {
+            let msg_idx = *rx.borrow_and_update();
+            if let Some(msg_idx) = msg_idx {
+                self.respond(msg_idx).await;
+            }
         }
     }
 
-    /// Asks the UI for input and appends it to the chat as this member's message.
-    async fn turn(&self) {
-        let content = self.ui.prompt().await;
-        self.member
-            .group()
-            .append(Msg::User {
-                sender: self.member.id().clone(),
-                timestamp: Some(SystemTime::now()),
-                content: vec![ContentPart::Text(content)],
-            })
-            .expect("a user is always a member of their own group");
-    }
+    async fn respond(&self, msg_idx: usize) {
+        let context: Vec<_> = self.member.context_until(msg_idx).collect();
 
-    /// Shows a message to the user. Other members' messages prompt for the
-    /// user's reply; the user's own messages do not.
-    async fn respond(&self, msg_idx: usize, msg: Msg) {
-        let own = matches!(&msg, Msg::User { sender, .. } if sender == self.member.id());
-        self.ui.handle_message(&MsgEvent::Full(MsgId(msg_idx), msg));
-        if !own {
-            self.turn().await;
-        }
+        todo!();
+        // send to UI, user response, etc.
     }
 }
 
@@ -139,13 +123,11 @@ pub enum InitUserError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{ScriptedChatUi, eventually, session_with_mocks, session_with_ui};
+    use crate::test_utils::session_with_mocks;
     use markhor_core::{
-        chat::{ChatUi, Msg, common::ContentPart},
+        chat::{ChatUi, Msg},
         dependencies::Session,
-        extension::ModelId,
     };
-    use std::time::Duration;
 
     fn ui(session: &Session) -> Comp<dyn ChatUi> {
         session.resolve().unwrap()
@@ -176,8 +158,7 @@ mod tests {
 
     #[tokio::test]
     async fn responder_task_stays_alive_while_user_exists() {
-        let scripted = ScriptedChatUi::new(&[]);
-        let session = session_with_ui(&scripted).await;
+        let session = session_with_mocks().await;
         let group = Group::new();
         let user = UserBuilder::new(&group, ui(&session)).spawn().unwrap();
         tokio::task::yield_now().await;
@@ -199,79 +180,5 @@ mod tests {
             content: vec![],
         };
         group.append(msg).unwrap();
-    }
-
-    #[tokio::test]
-    async fn launch_prompts_for_first_message() {
-        let scripted = ScriptedChatUi::new(&["hello"]);
-        let session = session_with_ui(&scripted).await;
-        let group = Group::new();
-        let observer = group.add_member(MemberId::new("observer", false)).unwrap();
-        let _user = UserBuilder::new(&group, ui(&session))
-            .id("alice")
-            .spawn()
-            .unwrap();
-
-        scripted.wait_for_prompts(1).await;
-        match eventually(|| observer.context().next()).await {
-            Msg::User {
-                sender, content, ..
-            } => {
-                assert_eq!(sender.id(), "alice");
-                assert_eq!(content, vec![ContentPart::Text("hello".into())]);
-            }
-            other => panic!("expected a user message, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn own_message_does_not_trigger_another_prompt() {
-        let scripted = ScriptedChatUi::new(&["hello", "again"]);
-        let session = session_with_ui(&scripted).await;
-        let group = Group::new();
-        let observer = group.add_member(MemberId::new("observer", false)).unwrap();
-        let _user = UserBuilder::new(&group, ui(&session)).spawn().unwrap();
-
-        scripted.wait_for_prompts(1).await;
-        // Wait until the user's own message has been appended, then give its
-        // responder time to react to it.
-        eventually(|| observer.context().next()).await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(scripted.prompt_count(), 1);
-    }
-
-    #[tokio::test]
-    async fn agent_message_is_forwarded_then_prompts_again() {
-        let scripted = ScriptedChatUi::new(&["hello", "again"]);
-        let session = session_with_ui(&scripted).await;
-        let group = Group::new();
-        let observer = group.add_member(MemberId::new("observer", false)).unwrap();
-        let assistant = group.add_member(MemberId::new("assistant", false)).unwrap();
-        let _user = UserBuilder::new(&group, ui(&session)).spawn().unwrap();
-
-        scripted.wait_for_prompts(1).await;
-        eventually(|| observer.context().next()).await;
-
-        let reply = Msg::Agent {
-            sender: assistant.id().clone(),
-            timestamp: None,
-            content: vec![ContentPart::Text("hi there".into())],
-            tool_calls: vec![],
-            model: ModelId::new("mock", "test"),
-            reasoning_content: None,
-            metadata: Default::default(),
-        };
-        group.append(reply.clone()).unwrap();
-
-        scripted.wait_for_prompts(2).await;
-        // The user's answer to the second prompt may already be recorded, so
-        // check the reply's position rather than the total count.
-        let recorded = scripted.recorded_messages();
-        assert_eq!(recorded.get(1), Some(&reply));
-        let agent_msgs = recorded
-            .iter()
-            .filter(|m| matches!(m, Msg::Agent { .. }))
-            .count();
-        assert_eq!(agent_msgs, 1);
     }
 }

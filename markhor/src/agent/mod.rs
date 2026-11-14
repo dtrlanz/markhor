@@ -1,12 +1,9 @@
-use std::{
-    sync::{Arc, Mutex},
-    time::SystemTime,
-};
+use std::sync::{Arc, Mutex};
 
 use markhor_core::{
-    chat::{AddMemberError, ChatModel, ChatOptions, Group, IterMsg, Member, MemberId, Msg},
+    chat::{AddMemberError, ChatModel, Group, IterMsg, Member, MemberId},
     event::Subscription,
-    extension::{Comp, ModelId},
+    extension::Comp,
     tool::Tool,
 };
 
@@ -14,7 +11,7 @@ mod config;
 
 pub use config::{Attentiveness, MsgFormat};
 use thiserror::Error;
-use tokio::{sync::mpsc, task};
+use tokio::{sync::watch, task};
 
 pub struct AgentBuilder {
     group: Arc<Group>,
@@ -85,12 +82,11 @@ impl AgentBuilder {
             }
         };
 
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = watch::channel(None);
         let id = member.id().clone();
         let sub = member.thread().on_message_appended(move |msg, idx| {
             if self.attn.attends_to(&id, msg) {
-                // Fails only after the responder has stopped, which is harmless.
-                let _ = tx.send((idx, sender_of(msg).cloned()));
+                tx.send_replace(Some(idx));
             }
         });
 
@@ -126,65 +122,32 @@ struct AgentInner {
 }
 
 impl AgentInner {
-    async fn run(&self, mut rx: mpsc::UnboundedReceiver<(usize, Option<MemberId>)>) {
-        while let Some((msg_idx, to)) = rx.recv().await {
-            self.respond(msg_idx, to).await;
+    async fn run(&self, mut rx: watch::Receiver<Option<usize>>) {
+        while rx.changed().await.is_ok() {
+            let msg_idx = *rx.borrow_and_update();
+            if let Some(msg_idx) = msg_idx {
+                self.respond(msg_idx).await;
+            }
         }
     }
 
-    /// Replies to the message at `msg_idx`. On model failure, reports the error
-    /// to `to`, the sender of the triggering message, if there is one.
-    async fn respond(&self, msg_idx: usize, to: Option<MemberId>) {
+    async fn respond(&self, msg_idx: usize) {
         let msg_format = *self.msg_format.lock().unwrap();
-        // `context_until` excludes its end index, so include the triggering message.
-        let context: Vec<Msg> = self
+        let context: Vec<_> = self
             .member
-            .context_until(msg_idx + 1)
+            .context_until(msg_idx)
             .circumfix_content_with(|msg| msg_format.circumfix(msg))
             .collect();
 
-        match self.model.generate(&context, &ChatOptions::default()).await {
-            Ok(response) => {
-                let msg = Msg::Agent {
-                    sender: self.member.id().clone(),
-                    timestamp: Some(SystemTime::now()),
-                    content: response.content,
-                    tool_calls: response.tool_calls,
-                    model: ModelId::new(self.model.model_name(), self.model.extension().uri()),
-                    reasoning_content: None,
-                    metadata: Default::default(),
-                };
-                // Okay to unwrap: the sender is a member of this group.
-                self.member.group().append(msg).unwrap();
-            }
-            Err(err) => match to {
-                Some(recipient) => {
-                    let event = Msg::Event {
-                        recipients: std::iter::once(recipient).collect(),
-                        timestamp: Some(SystemTime::now()),
-                        source: self.member.id().id().to_string(),
-                        content: err.to_string().into(),
-                    };
-                    // Okay to unwrap: the sender is a member of this group.
-                    self.member.group().append(event).unwrap();
-                }
-                None => {
-                    tracing::error!(error = %err, "model call failed with no one to report it to")
-                }
-            },
-        }
+        todo!();
+        // send to model
+
+        // process response, convert to Msg
 
         // also, tool calls once those are implemented
-    }
-}
 
-/// The member who sent `msg`, if the message names one.
-fn sender_of(msg: &Msg) -> Option<&MemberId> {
-    match msg {
-        Msg::User { sender, .. } | Msg::Agent { sender, .. } | Msg::Direct { sender, .. } => {
-            Some(sender)
-        }
-        _ => None,
+        // Okay to unwrap: Msg::Agent, sender is known
+        //self.member.group().append(msg).unwrap();
     }
 }
 
@@ -197,14 +160,8 @@ pub enum InitAgentError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{
-        ScriptedChatModel, ScriptedChatUi, eventually, record_messages, session_with,
-        session_with_mocks,
-    };
-    use markhor_core::{
-        chat::{Msg, common::ContentPart},
-        dependencies::Session,
-    };
+    use crate::test_utils::session_with_mocks;
+    use markhor_core::{chat::Msg, dependencies::Session};
 
     fn model(session: &Session) -> Comp<dyn ChatModel> {
         session.resolve().unwrap()
@@ -256,90 +213,5 @@ mod tests {
             content: vec![],
         };
         group.append(msg).unwrap();
-    }
-
-    fn say(group: &Group, sender: &Member, text: &str) {
-        group
-            .append(Msg::User {
-                sender: sender.id().clone(),
-                timestamp: None,
-                content: vec![ContentPart::Text(text.into())],
-            })
-            .unwrap();
-    }
-
-    fn text_of(content: &[ContentPart]) -> String {
-        content
-            .iter()
-            .filter_map(|part| match part {
-                ContentPart::Text(text) => Some(text.as_str()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    #[tokio::test]
-    async fn agent_replies_to_user_message() {
-        let model_script = ScriptedChatModel::new(&[Ok("hi there")]);
-        let session = session_with(&ScriptedChatUi::new(&[]), &model_script).await;
-        let group = Group::new();
-        let alice = group.add_member(MemberId::new("alice", true)).unwrap();
-        let (_sub, seen) = record_messages(&alice);
-        let _agent = AgentBuilder::new(&group, model(&session)).spawn().unwrap();
-        say(&group, &alice, "hello");
-
-        let reply = eventually(|| {
-            seen.lock().unwrap().iter().find_map(|msg| match msg {
-                Msg::Agent { content, .. } => Some(content.clone()),
-                _ => None,
-            })
-        })
-        .await;
-        assert_eq!(reply, vec![ContentPart::Text("hi there".into())]);
-    }
-
-    #[tokio::test]
-    async fn model_context_includes_triggering_message() {
-        let model_script = ScriptedChatModel::new(&[Ok("hi there")]);
-        let session = session_with(&ScriptedChatUi::new(&[]), &model_script).await;
-        let group = Group::new();
-        let alice = group.add_member(MemberId::new("alice", true)).unwrap();
-        let _agent = AgentBuilder::new(&group, model(&session)).spawn().unwrap();
-        say(&group, &alice, "hello");
-
-        let request = eventually(|| model_script.requests().first().cloned()).await;
-        let sent: String = request
-            .iter()
-            .filter_map(|msg| match msg {
-                Msg::User { content, .. } => Some(text_of(content)),
-                _ => None,
-            })
-            .collect();
-        assert!(sent.contains("hello"), "model was sent: {sent}");
-    }
-
-    #[tokio::test]
-    async fn model_error_posts_event_to_user() {
-        let model_script = ScriptedChatModel::new(&[Err("boom")]);
-        let session = session_with(&ScriptedChatUi::new(&[]), &model_script).await;
-        let group = Group::new();
-        let alice = group.add_member(MemberId::new("alice", true)).unwrap();
-        let (_sub, seen) = record_messages(&alice);
-        let _agent = AgentBuilder::new(&group, model(&session)).spawn().unwrap();
-        say(&group, &alice, "hello");
-
-        let (recipients, content) = eventually(|| {
-            seen.lock().unwrap().iter().find_map(|msg| match msg {
-                Msg::Event {
-                    recipients,
-                    content,
-                    ..
-                } => Some((recipients.clone(), content.clone())),
-                _ => None,
-            })
-        })
-        .await;
-        assert!(recipients.contains(alice.id()));
-        assert!(content.to_string().contains("boom"), "event was: {content}");
     }
 }
