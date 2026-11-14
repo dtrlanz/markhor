@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use markhor_core::{
     chat::ChatModel,
-    dependencies::{ApiKey, Provide},
+    dependencies::{ApiKey, BuildFrom, Provide},
     extension::{Extension, InitExtensionError},
 };
 
@@ -26,6 +26,23 @@ pub struct Client {
     inner: Arc<ClientInner>,
     #[provide(default)]
     model_list: Vec<String>,
+}
+
+/// Lets callers pass a `ClientConfig` to `Session::add_extension`. The session-provided client
+/// supplies the API key and HTTP client, and the config replaces the default.
+impl BuildFrom<ClientConfig> for Client {
+    type Requirements = Client;
+
+    fn build_from(config: ClientConfig, client: Client) -> Self {
+        Client {
+            inner: Arc::new(ClientInner {
+                api_key: client.inner.api_key.clone(),
+                config: Arc::new(config),
+                http_client: client.inner.http_client.clone(),
+            }),
+            model_list: client.model_list,
+        }
+    }
 }
 
 #[derive(Debug, Provide)]
@@ -257,5 +274,29 @@ mod tests {
             "gemma-4-31b-it",
         ]));
         assert_eq!(selected, ["gemini-3-flash-preview"]);
+    }
+
+    #[test]
+    fn build_from_applies_config_and_keeps_api_key() {
+        let client = Client {
+            inner: Arc::new(ClientInner {
+                api_key: ApiKey::new("test-key".into(), "google".into(), "proj".into()),
+                config: Default::default(),
+                http_client: Default::default(),
+            }),
+            model_list: vec![],
+        };
+        let config = ClientConfig {
+            allow_models: vec!["gemini-flash-lite-latest".into()],
+            ..Default::default()
+        };
+
+        let built = Client::build_from(config, client);
+
+        assert_eq!(
+            built.inner.config.allow_models,
+            ["gemini-flash-lite-latest"]
+        );
+        assert_eq!(built.inner.api_key.key(), "test-key");
     }
 }

@@ -1,4 +1,7 @@
-use std::ops::Deref;
+use std::{
+    ops::Deref,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use async_trait::async_trait;
 
@@ -72,8 +75,9 @@ pub trait ChatUi: Send + Sync {
 }
 
 /// Events related to chat messages.
+#[derive(Debug, Clone)]
 pub enum MsgEvent {
-    /// Indicates that a new message is being sent, received, or drafted.
+    /// Indicates that a new message is about to be sent, received, or drafted.
     ///
     /// This event is emitted for any message, whether already completed (in
     /// which case `MsgEvent::Full` should follow immediately) or still being
@@ -103,6 +107,7 @@ pub enum MsgEvent {
 }
 
 /// Events related to reasoning traces.
+#[derive(Debug, Clone)]
 pub enum ReasoningEvent {
     /// Indicates the beginning of a new reasoning trace associated with a
     /// message.
@@ -142,6 +147,7 @@ pub enum ReasoningEvent {
 }
 
 /// Events related to tool calls.
+#[derive(Debug, Clone)]
 pub enum ToolCallEvent {
     /// Indicates the beginning of a new tool call associated with a message.
     ///
@@ -162,6 +168,7 @@ pub enum ToolCallEvent {
 }
 
 /// Events related to worker agents.
+#[derive(Debug, Clone)]
 pub enum WorkerEvent {
     /// Indicates that a new worker agent has been created.
     Begin(MemberId),
@@ -181,24 +188,16 @@ pub enum WorkerEvent {
     Full(MemberId, String),
 }
 
+/// Uniquely identifies a message across the events of a [`ChatUi`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MsgId(pub usize);
 
-impl Deref for MsgId {
-    type Target = usize;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+impl MsgId {
+    pub(crate) fn next() -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ToolCallId(pub usize);
-
-impl Deref for ToolCallId {
-    type Target = usize;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}

@@ -507,7 +507,10 @@ mod tests {
 
     fn collect(builder: ThreadBuilder) -> Vec<Msg> {
         let thread: Arc<Thread> = builder.into();
-        thread.iter().map(|e| e.value().clone()).collect()
+        thread
+            .iter_until(usize::MAX)
+            .map(|e| e.value().clone())
+            .collect()
     }
 
     /// Returns (me, ai) members of a group whose history is one user message

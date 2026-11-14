@@ -1,7 +1,9 @@
 use super::{
     Msg,
+    chat_ui::{MsgEvent, MsgId, ReasoningEvent, ToolCallEvent, WorkerEvent},
     member::{Member, MemberId},
 };
+use crate::{event::Subscription, events};
 use crossbeam_skiplist::{SkipMap, map::Entry};
 use std::{
     collections::HashMap,
@@ -11,6 +13,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+use thiserror::Error;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -21,7 +24,7 @@ pub struct Group {
 }
 
 impl Group {
-    pub(super) fn new() -> Arc<Self> {
+    pub fn new() -> Arc<Self> {
         Arc::new(Self {
             members: Default::default(),
             primary: Arc::new(Thread::new()),
@@ -60,7 +63,7 @@ impl Group {
     pub fn append(&self, message: Msg) -> Result<&Self, AppendMessageError> {
         match &message {
             Msg::Platform(_) | Msg::Developer(_) => {
-                self.primary.append(message);
+                self.primary.append(message, None);
                 Ok(self)
             }
             Msg::User { sender, .. } | Msg::Agent { sender, .. } => {
@@ -71,7 +74,7 @@ impl Group {
                     .get(sender)
                     .map(|t| Arc::clone(t))
                     .ok_or(AppendMessageError::UnknownSender(sender.to_string()))?;
-                ptcp.append(message.clone());
+                ptcp.append(message.clone(), None);
                 Ok(self)
             }
             Msg::Direct { recipients, .. }
@@ -93,7 +96,7 @@ impl Group {
                 }
                 // Append message to each thread with at least one recipient represented
                 for t in threads.values() {
-                    t.append(message.clone());
+                    t.append(message.clone(), None);
                 }
                 Ok(self)
             }
@@ -107,10 +110,90 @@ impl Group {
             }
         }
     }
+
+    /// Starts a message from `sender`. `MsgEvent::Begin` is dispatched to the
+    /// sender's thread immediately, before the message exists.
+    ///
+    /// Complete the returned [`PendingMsg`] with [`PendingMsg::complete`] or
+    /// report a failure with [`PendingMsg::fail`]. Dropping it counts as a
+    /// failure.
+    pub fn begin_message(&self, sender: &MemberId) -> Result<PendingMsg, AppendMessageError> {
+        let thread = self
+            .members
+            .lock()
+            .unwrap()
+            .get(sender)
+            .cloned()
+            .ok_or_else(|| AppendMessageError::UnknownSender(sender.to_string()))?;
+        Ok(PendingMsg::begin(sender.clone(), thread))
+    }
 }
 
-#[derive(Debug)]
+/// A message that has begun but not yet been completed. See
+/// [`Group::begin_message`].
+#[must_use = "a pending message reports a failure when dropped; complete or fail it"]
+pub struct PendingMsg {
+    id: MsgId,
+    sender: MemberId,
+    thread: Arc<Thread>,
+    settled: bool,
+}
+
+impl PendingMsg {
+    fn begin(sender: MemberId, thread: Arc<Thread>) -> Self {
+        let id = MsgId::next();
+        thread.dispatch_msg(MsgEvent::Begin(id, sender.clone()));
+        Self {
+            id,
+            sender,
+            thread,
+            settled: false,
+        }
+    }
+
+    /// The id that this message's events are tagged with.
+    pub fn id(&self) -> MsgId {
+        self.id
+    }
+
+    /// Appends the completed message to the sender's thread, followed by
+    /// `MsgEvent::Full`.
+    ///
+    /// Returns [`AppendMessageError::SenderMismatch`] unless `msg` is a
+    /// `User` or `Agent` message sent by the member this message began for.
+    pub fn complete(mut self, msg: Msg) -> Result<(), AppendMessageError> {
+        match &msg {
+            Msg::User { sender, .. } | Msg::Agent { sender, .. } if sender == &self.sender => {}
+            _ => return Err(AppendMessageError::SenderMismatch(self.sender.to_string())),
+        }
+        self.settled = true;
+        self.thread.append(msg, Some(self.id));
+        Ok(())
+    }
+
+    /// Reports that the message will not be completed, by dispatching
+    /// `MsgEvent::Log` with `reason` in place of `MsgEvent::Full`.
+    pub fn fail(mut self, reason: impl Into<String>) {
+        self.settled = true;
+        self.thread
+            .dispatch_msg(MsgEvent::Log(self.id, reason.into()));
+    }
+}
+
+impl Drop for PendingMsg {
+    fn drop(&mut self) {
+        if !self.settled {
+            self.thread.dispatch_msg(MsgEvent::Log(
+                self.id,
+                "message was abandoned before completion".into(),
+            ));
+        }
+    }
+}
+
+#[derive(Error, Debug)]
 pub enum AddMemberError {
+    #[error("Member with id '{}' already exists in the group", .0.id())]
     AlreadyExists(Member),
 }
 
@@ -118,6 +201,8 @@ pub enum AddMemberError {
 pub enum AppendMessageError {
     UnknownSender(String),
     UnknownRecipient(String),
+    /// A pending message was completed with a message not sent by its sender.
+    SenderMismatch(String),
 }
 
 #[derive(Debug)]
@@ -126,12 +211,33 @@ pub enum InitContext {
     Fork,
 }
 
+events! {
+    struct ThreadEvents {
+        message_appended: (Msg, usize),
+        message: (MsgEvent,),
+        reasoning: (ReasoningEvent,),
+        tool_call: (ToolCallEvent,),
+        worker: (WorkerEvent,),
+    }
+}
+
+/// The member that authored `msg`, if the message has one.
+fn sender_of(msg: &Msg) -> Option<&MemberId> {
+    match msg {
+        Msg::User { sender, .. } | Msg::Agent { sender, .. } | Msg::Direct { sender, .. } => {
+            Some(sender)
+        }
+        Msg::Platform(_) | Msg::Developer(_) | Msg::ToolResult { .. } | Msg::Event { .. } | Msg::ControlSignal { .. } => None,
+    }
+}
+
 pub struct Thread {
     id: Uuid,
     items: SkipMap<usize, Msg>,
     len: AtomicUsize,
     previous: Option<(Arc<Thread>, usize)>,
     forks: Mutex<Vec<Weak<Thread>>>,
+    events: ThreadEvents,
 }
 
 impl Thread {
@@ -142,7 +248,63 @@ impl Thread {
             len: AtomicUsize::new(0),
             previous: None,
             forks: Mutex::new(Vec::new()),
+            events: ThreadEvents::default(),
         }
+    }
+
+    /// Registers a listener that is called with `(message, index)` after a
+    /// message has been appended to this thread and is readable via `len` and
+    /// `iter_until`. The listener stays registered while the returned
+    /// `Subscription` is alive.
+    pub fn on_message_appended(
+        &self,
+        callback: impl Fn(&Msg, usize) + Send + Sync + 'static,
+    ) -> Subscription {
+        self.events
+            .message_appended
+            // Deref index for convenience (or because it's more common to pass
+            // indices by value).
+            .add_listener(move |msg: &Msg, idx: &usize| callback(msg, *idx))
+    }
+
+    /// Registers a listener for message lifecycle events (`Begin`, `Part`,
+    /// `Full`, `Log`) on this thread. Mirrors `ChatUi::handle_message`.
+    /// `Part` is not yet emitted, since model responses are not streamed.
+    pub fn on_message(&self, callback: impl Fn(&MsgEvent) + Send + Sync + 'static) -> Subscription {
+        self.events.message.add_listener(move |e: &MsgEvent| callback(e))
+    }
+
+    /// Registers a listener for reasoning events. Mirrors
+    /// `ChatUi::handle_reasoning`.
+    ///
+    /// Not yet emitted: reasoning dispatch is deferred until its design is settled.
+    pub fn on_reasoning(
+        &self,
+        callback: impl Fn(&ReasoningEvent) + Send + Sync + 'static,
+    ) -> Subscription {
+        self.events
+            .reasoning
+            .add_listener(move |e: &ReasoningEvent| callback(e))
+    }
+
+    /// Registers a listener for tool call events. Mirrors
+    /// `ChatUi::handle_tool_call`.
+    ///
+    /// Not yet emitted: tool call dispatch is deferred until its design is settled.
+    pub fn on_tool_call(
+        &self,
+        callback: impl Fn(&ToolCallEvent) + Send + Sync + 'static,
+    ) -> Subscription {
+        self.events
+            .tool_call
+            .add_listener(move |e: &ToolCallEvent| callback(e))
+    }
+
+    /// Registers a listener for worker events. Mirrors `ChatUi::handle_worker`.
+    ///
+    /// Not yet emitted: core has no worker concept yet.
+    pub fn on_worker(&self, callback: impl Fn(&WorkerEvent) + Send + Sync + 'static) -> Subscription {
+        self.events.worker.add_listener(move |e: &WorkerEvent| callback(e))
     }
 
     /// The unique identifier of this thread. Threads compare equal iff their
@@ -159,29 +321,61 @@ impl Thread {
             len: AtomicUsize::new(len),
             previous: Some((self.clone(), len)),
             forks: Mutex::new(Vec::new()),
+            events: ThreadEvents::default(),
         });
         self.forks.lock().unwrap().push(Arc::downgrade(&fork));
         fork
     }
 
-    fn append(&self, message: Msg) {
+    /// Stores `message` and dispatches its events. If `pending` is `Some`, the
+    /// `Begin` event was already dispatched under that id, so only `Full` is
+    /// sent. Otherwise a `Begin` precedes `Full` when the message has a sender.
+    /// `message_appended` is dispatched last.
+    fn append(&self, message: Msg, pending: Option<MsgId>) {
         let idx = self.len.fetch_add(1, Ordering::AcqRel);
-        self.items.insert(idx, message);
+        self.items.insert(idx, message.clone());
+        match (pending, sender_of(&message)) {
+            (Some(id), _) => self.dispatch_msg(MsgEvent::Full(id, message.clone())),
+            (None, Some(sender)) => {
+                let id = MsgId::next();
+                self.dispatch_msg(MsgEvent::Begin(id, sender.clone()));
+                self.dispatch_msg(MsgEvent::Full(id, message.clone()));
+            }
+            (None, None) => self.dispatch_msg(MsgEvent::Full(MsgId::next(), message.clone())),
+        }
+        self.events.message_appended.dispatch(&(message, idx));
     }
 
-    pub(super) fn iter(&'_ self) -> impl Iterator<Item = Entry<'_, usize, Msg>> + '_ {
-        // Include previous list segments
+    fn dispatch_msg(&self, event: MsgEvent) {
+        self.events.message.dispatch(&(event,));
+    }
+
+
+    /// Iterates over messages with indices less than `end`, including
+    /// messages inherited from previous segments.
+    pub(super) fn iter_until(
+        &'_ self,
+        end: usize,
+    ) -> impl Iterator<Item = Entry<'_, usize, Msg>> + '_ {
+        // Include previous list segments, each clamped to `end`
         let mut stack = Vec::new();
-        let mut current = Some((self, usize::MAX));
+        let mut current = Some((self, end));
         while let Some((list, stop)) = current {
             stack.push((list.items.iter(), stop));
-            current = list.previous.as_ref().map(|(arc, s)| (&**arc, *s));
+            current = list
+                .previous
+                .as_ref()
+                .map(|(arc, s)| (&**arc, (*s).min(end)));
         }
         // Start at beginning
         stack
             .into_iter()
             .rev()
             .flat_map(|(iter, stop)| iter.take_while(move |e| *e.key() < stop))
+    }
+
+    pub fn len(&self) -> usize {
+        self.len.load(Ordering::Acquire)
     }
 }
 
@@ -262,7 +456,7 @@ pub(super) mod thread_builder {
         }
 
         pub fn msg(self, msg: Msg) -> Self {
-            self.thread.append(msg);
+            self.thread.append(msg, None);
             self
         }
 
@@ -343,8 +537,8 @@ mod tests {
 
     impl<'a> PartialEq for History<'a> {
         fn eq(&self, other: &Self) -> bool {
-            let mut lhs = self.0.iter();
-            let mut rhs = other.0.iter();
+            let mut lhs = self.0.iter_until(usize::MAX);
+            let mut rhs = other.0.iter_until(usize::MAX);
             loop {
                 match (lhs.next(), rhs.next()) {
                     (Some(l), Some(r)) => {
@@ -361,7 +555,7 @@ mod tests {
 
     impl<'a> Debug for History<'a> {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            Vec::from_iter(self.0.iter().map(|e| e.value().clone())).fmt(f)
+            Vec::from_iter(self.0.iter_until(usize::MAX).map(|e| e.value().clone())).fmt(f)
         }
     }
 
@@ -472,7 +666,7 @@ mod tests {
                 "Temperature: 18°C, Chance of rain: 20%",
             )
             .as_ref()
-            .iter()
+            .iter_until(usize::MAX)
             .map(|e| e.value().clone())
             .collect::<Vec<_>>();
 
@@ -498,5 +692,344 @@ mod tests {
         assert!(!ai_cx[1].belongs_to_first_person());
         assert!(ai_cx[2].belongs_to_first_person());
         assert!(!ai_cx[3].belongs_to_first_person());
+    }
+
+    fn keys(thread: &Thread, end: usize) -> Vec<usize> {
+        thread.iter_until(end).map(|e| *e.key()).collect()
+    }
+
+    #[test]
+    fn iter_until_prefix() {
+        let t: Arc<Thread> = ThreadBuilder::new()
+            .developer("a")
+            .developer("b")
+            .developer("c")
+            .into();
+
+        assert_eq!(keys(&t, 0), Vec::<usize>::new());
+        assert_eq!(keys(&t, 1), vec![0]);
+        assert_eq!(keys(&t, 2), vec![0, 1]);
+        assert_eq!(keys(&t, 3), vec![0, 1, 2]);
+        assert_eq!(keys(&t, 100), vec![0, 1, 2]);
+        assert_eq!(
+            History(&t)
+                .0
+                .iter_until(usize::MAX)
+                .map(|e| *e.key())
+                .collect::<Vec<_>>(),
+            keys(&t, usize::MAX)
+        );
+    }
+
+    #[test]
+    fn iter_until_clamps_parent_segments_at_fork() {
+        let root = ThreadBuilder::new().developer("a").developer("b");
+        let fork_builder = root.fork();
+        let root: Arc<Thread> = root.developer("c").into();
+        let fork: Arc<Thread> = fork_builder.developer("d").into();
+
+        // Fork inherits parent's [0, 1] and then its own message at index 2.
+        assert_eq!(keys(&fork, usize::MAX), vec![0, 1, 2]);
+        // Ending before the fork point must not leak parent messages past `end`.
+        assert_eq!(keys(&fork, 1), vec![0]);
+        assert_eq!(keys(&fork, 0), Vec::<usize>::new());
+        // Parent is unaffected by the fork's messages.
+        assert_eq!(keys(&root, usize::MAX), vec![0, 1, 2]);
+        assert_eq!(keys(&root, 2), vec![0, 1]);
+    }
+
+    #[tokio::test]
+    async fn member_context_until() {
+        let group = Group::new();
+        let human = group.add_member(MemberId::new("Gloria", true)).unwrap();
+        let ai = group.add_member(MemberId::new("Robbie", false)).unwrap();
+
+        let msg_vec = ThreadBuilder::new()
+            .developer("You are a Gloria's personal assistant. She lives in Paris.")
+            .user(human.id.id(), "Will it rain today?")
+            .agent(
+                ai.id.id(),
+                "Let me check the weather for you.",
+                vec![ToolCallRequest {
+                    id: "call_1".into(),
+                    name: "get_weather".into(),
+                    arguments: serde_json::json!({"location": "Paris"}),
+                }],
+            )
+            .tool_result(
+                ai.id.id(),
+                "call_1".into(),
+                "Temperature: 18°C, Chance of rain: 20%",
+            )
+            .as_ref()
+            .iter_until(usize::MAX)
+            .map(|e| e.value().clone())
+            .collect::<Vec<_>>();
+
+        for msg in &msg_vec {
+            group.append(msg.clone()).unwrap();
+        }
+
+        let human_cx = human.context_until(2).collect::<Vec<_>>();
+        assert_eq!(human_cx, msg_vec[0..2]);
+        assert!(!human_cx[0].belongs_to_first_person());
+        assert!(human_cx[1].belongs_to_first_person());
+
+        let ai_cx = ai.context_until(3).collect::<Vec<_>>();
+        assert_eq!(ai_cx, msg_vec[0..3]);
+        assert!(ai_cx[2].belongs_to_first_person());
+
+        assert_eq!(ai.context_until(0).count(), 0);
+        assert_eq!(ai.context_until(100).count(), 4);
+        assert_eq!(
+            ai.context_until(usize::MAX).collect::<Vec<_>>(),
+            ai.context().collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn message_appended_passes_message_and_index_in_order() {
+        let group = Group::new();
+        let human = group.add_member(MemberId::new("Gloria", true)).unwrap();
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let _sub = group.primary.on_message_appended(move |msg, idx| {
+            s.lock().unwrap().push((msg.clone(), idx));
+        });
+
+        let first = Msg::Developer("You are a helpful assistant.".into());
+        let second = Msg::User {
+            sender: human.id.clone(),
+            timestamp: None,
+            content: vec![ContentPart::Text("Good morning".into())],
+        };
+        group
+            .append(first.clone())
+            .unwrap()
+            .append(second.clone())
+            .unwrap();
+
+        assert_eq!(*seen.lock().unwrap(), vec![(first, 0), (second, 1)]);
+    }
+
+    #[tokio::test]
+    async fn message_appended_fires_once_per_thread_for_multi_recipient_message() {
+        let group = Group::new();
+        let a = group.add_member(MemberId::new("A", true)).unwrap();
+        let b = group.add_member(MemberId::new("B", false)).unwrap();
+        // C lives on a separate thread, so a message to A and C reaches two threads.
+        let other = Arc::new(Thread::new());
+        let c = group
+            .add_member_with_thread(MemberId::new("C", false), &other)
+            .unwrap();
+
+        let primary_count = Arc::new(AtomicUsize::new(0));
+        let other_count = Arc::new(AtomicUsize::new(0));
+        let pc = primary_count.clone();
+        let _primary_sub = group.primary.on_message_appended(move |_, _| {
+            pc.fetch_add(1, Ordering::SeqCst);
+        });
+        let oc = other_count.clone();
+        let _other_sub = other.on_message_appended(move |_, _| {
+            oc.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // A and B share the primary thread, so the primary thread gets one copy.
+        group
+            .append(Msg::Direct {
+                sender: b.id.clone(),
+                timestamp: None,
+                tool_call_id: String::new(),
+                recipients: smallvec::smallvec![a.id.clone(), b.id.clone(), c.id.clone()],
+                content: vec![ContentPart::Text("psst".into())],
+            })
+            .unwrap();
+
+        assert_eq!(primary_count.load(Ordering::SeqCst), 1);
+        assert_eq!(other_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn dropping_message_appended_subscription_stops_listener() {
+        let thread: Arc<Thread> = ThreadBuilder::new().into();
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        let sub = thread.on_message_appended(move |_, _| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+
+        thread.append(Msg::Developer("one".into()), None);
+        drop(sub);
+        thread.append(Msg::Developer("two".into()), None);
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(thread.len(), 2);
+    }
+
+    #[test]
+    fn fork_has_its_own_message_appended_listeners() {
+        let root: Arc<Thread> = ThreadBuilder::new().developer("a").into();
+        let root_count = Arc::new(AtomicUsize::new(0));
+        let rc = root_count.clone();
+        let _root_sub = root.on_message_appended(move |_, _| {
+            rc.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let fork = root.fork();
+        let fork_count = Arc::new(AtomicUsize::new(0));
+        let fc = fork_count.clone();
+        let _fork_sub = fork.on_message_appended(move |_, _| {
+            fc.fetch_add(1, Ordering::SeqCst);
+        });
+
+        fork.append(Msg::Developer("fork only".into()), None);
+        assert_eq!(root_count.load(Ordering::SeqCst), 0);
+        assert_eq!(fork_count.load(Ordering::SeqCst), 1);
+
+        root.append(Msg::Developer("root only".into()), None);
+        assert_eq!(root_count.load(Ordering::SeqCst), 1);
+        assert_eq!(fork_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn message_appended_listener_sees_stored_message() {
+        let thread: Arc<Thread> = ThreadBuilder::new().into();
+        // Weak avoids a reference cycle through the listener's captured handle.
+        let weak = Arc::downgrade(&thread);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let _sub = thread.on_message_appended(move |msg, idx| {
+            let thread = weak.upgrade().unwrap();
+            let stored = thread
+                .iter_until(usize::MAX)
+                .find(|e| *e.key() == idx)
+                .map(|e| e.value().clone());
+            s.lock().unwrap().push((stored, msg.clone()));
+        });
+
+        thread.append(Msg::Developer("hello".into()), None);
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        let (stored, msg) = &seen[0];
+        assert_eq!(stored.as_ref(), Some(msg));
+        assert_eq!(thread.len(), 1);
+    }
+
+    fn user_msg(sender: &str, text: &str) -> Msg {
+        Msg::User {
+            sender: MemberId::new(sender, true),
+            timestamp: None,
+            content: vec![ContentPart::Text(text.into())],
+        }
+    }
+
+    fn record_message_events(thread: &Thread) -> (Subscription, Arc<Mutex<Vec<MsgEvent>>>) {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let e = events.clone();
+        let sub = thread.on_message(move |event| e.lock().unwrap().push(event.clone()));
+        (sub, events)
+    }
+
+    #[test]
+    fn pending_message_begins_before_it_is_completed() {
+        let group = Group::new();
+        let alice = group.add_member(MemberId::new("alice", true)).unwrap();
+        let (_sub, events) = record_message_events(alice.thread());
+
+        let pending = group.begin_message(alice.id()).unwrap();
+        let id = pending.id();
+        assert_eq!(events.lock().unwrap().len(), 1);
+        pending.complete(user_msg("alice", "hi")).unwrap();
+
+        let seen = events.lock().unwrap();
+        match &seen[..] {
+            [MsgEvent::Begin(b, sender), MsgEvent::Full(f, Msg::User { .. })] => {
+                assert_eq!(*b, id);
+                assert_eq!(*f, id);
+                assert_eq!(sender, alice.id());
+            }
+            other => panic!("unexpected events: {other:?}"),
+        }
+        assert_eq!(alice.thread().len(), 1);
+    }
+
+    #[test]
+    fn failed_pending_message_logs_without_full() {
+        let group = Group::new();
+        let alice = group.add_member(MemberId::new("alice", true)).unwrap();
+        let (_sub, events) = record_message_events(alice.thread());
+
+        let pending = group.begin_message(alice.id()).unwrap();
+        let id = pending.id();
+        pending.fail("boom");
+
+        let seen = events.lock().unwrap();
+        match &seen[..] {
+            [MsgEvent::Begin(b, _), MsgEvent::Log(l, reason)] => {
+                assert_eq!(*b, id);
+                assert_eq!(*l, id);
+                assert_eq!(reason, "boom");
+            }
+            other => panic!("unexpected events: {other:?}"),
+        }
+        assert_eq!(alice.thread().len(), 0);
+    }
+
+    #[test]
+    fn dropped_pending_message_logs_instead_of_completing() {
+        let group = Group::new();
+        let alice = group.add_member(MemberId::new("alice", true)).unwrap();
+        let (_sub, events) = record_message_events(alice.thread());
+
+        drop(group.begin_message(alice.id()).unwrap());
+
+        let seen = events.lock().unwrap();
+        assert!(matches!(
+            &seen[..],
+            [MsgEvent::Begin(_, _), MsgEvent::Log(_, _)]
+        ));
+        assert_eq!(alice.thread().len(), 0);
+    }
+
+    #[test]
+    fn completing_pending_message_with_another_senders_message_is_rejected() {
+        let group = Group::new();
+        let alice = group.add_member(MemberId::new("alice", true)).unwrap();
+        group.add_member(MemberId::new("bob", true)).unwrap();
+
+        let pending = group.begin_message(alice.id()).unwrap();
+        let result = pending.complete(user_msg("bob", "not mine"));
+
+        assert!(matches!(result, Err(AppendMessageError::SenderMismatch(_))));
+        assert_eq!(alice.thread().len(), 0);
+    }
+
+    #[test]
+    fn group_append_emits_begin_then_full_for_sender() {
+        let group = Group::new();
+        let alice = group.add_member(MemberId::new("alice", true)).unwrap();
+        let (_sub, events) = record_message_events(alice.thread());
+
+        group.append(user_msg("alice", "hi")).unwrap();
+
+        let seen = events.lock().unwrap();
+        match &seen[..] {
+            [MsgEvent::Begin(b, _), MsgEvent::Full(f, _)] => assert_eq!(b, f),
+            other => panic!("unexpected events: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn message_without_sender_emits_full_only() {
+        let group = Group::new();
+        let alice = group.add_member(MemberId::new("alice", true)).unwrap();
+        let (_sub, events) = record_message_events(alice.thread());
+
+        group.append(Msg::Platform("notice".into())).unwrap();
+
+        let seen = events.lock().unwrap();
+        assert!(matches!(&seen[..], [MsgEvent::Full(_, Msg::Platform(_))]));
     }
 }

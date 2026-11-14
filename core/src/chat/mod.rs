@@ -12,6 +12,6 @@ pub use chat_ui::{
     ChatUi, MsgEvent, MsgId, ReasoningEvent, ToolCallEvent, ToolCallId, WorkerEvent,
 };
 pub use error::ChatError;
-pub use group::{AddMemberError, AppendMessageError, Group, InitContext};
+pub use group::{AddMemberError, AppendMessageError, Group, InitContext, PendingMsg};
 pub use member::{Member, MemberId};
 pub use msg::{IterMsg, Msg, ReasoningContent};
