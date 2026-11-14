@@ -1,3 +1,4 @@
+use markhor_core::chat::{FinishReason, UsageInfo};
 use serde::{Deserialize, Serialize};
 
 use super::message::AssistantBlock;
@@ -52,6 +53,34 @@ pub(crate) struct Usage {
     pub service_tier: Option<ResponseServiceTier>,
 }
 
+impl From<StopReason> for FinishReason {
+    fn from(reason: StopReason) -> Self {
+        match reason {
+            StopReason::EndTurn | StopReason::StopSequence => FinishReason::Stop,
+            StopReason::MaxTokens | StopReason::ModelContextWindowExceeded => FinishReason::Length,
+            StopReason::ToolUse => FinishReason::ToolCalls,
+            StopReason::Refusal => FinishReason::ContentFilter,
+            StopReason::PauseTurn => FinishReason::Other("pause_turn".into()),
+            StopReason::Unknown(other) => FinishReason::Other(other),
+        }
+    }
+}
+
+impl From<Usage> for UsageInfo {
+    /// Cached input tokens count towards the prompt, as they do for other providers.
+    fn from(usage: Usage) -> Self {
+        let prompt = usage
+            .input_tokens
+            .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0))
+            .saturating_add(usage.cache_read_input_tokens.unwrap_or(0));
+        UsageInfo {
+            prompt_tokens: Some(prompt),
+            completion_tokens: Some(usage.output_tokens),
+            total_tokens: Some(prompt.saturating_add(usage.output_tokens)),
+        }
+    }
+}
+
 /// The tier that actually served the request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -68,6 +97,48 @@ mod tests {
     use super::*;
     use crate::anthropic::api::message::{TextBlock, Thinking};
     use serde_json::json;
+
+    #[test]
+    fn stop_reasons_map_to_finish_reasons() {
+        let cases = [
+            (StopReason::EndTurn, FinishReason::Stop),
+            (StopReason::StopSequence, FinishReason::Stop),
+            (StopReason::MaxTokens, FinishReason::Length),
+            (StopReason::ModelContextWindowExceeded, FinishReason::Length),
+            (StopReason::ToolUse, FinishReason::ToolCalls),
+            (StopReason::Refusal, FinishReason::ContentFilter),
+            (
+                StopReason::PauseTurn,
+                FinishReason::Other("pause_turn".into()),
+            ),
+            (
+                StopReason::Unknown("new".into()),
+                FinishReason::Other("new".into()),
+            ),
+        ];
+        for (stop, finish) in cases {
+            assert_eq!(FinishReason::from(stop), finish);
+        }
+    }
+
+    #[test]
+    fn usage_counts_cache_tokens_as_prompt() {
+        let usage = Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_creation_input_tokens: Some(100),
+            cache_read_input_tokens: Some(1000),
+            service_tier: None,
+        };
+        assert_eq!(
+            UsageInfo::from(usage),
+            UsageInfo {
+                prompt_tokens: Some(1110),
+                completion_tokens: Some(5),
+                total_tokens: Some(1115),
+            }
+        );
+    }
 
     #[test]
     fn text_response_deserializes() {

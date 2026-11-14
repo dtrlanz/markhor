@@ -1,3 +1,5 @@
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use markhor_core::chat::common::ContentPart;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -200,10 +202,84 @@ pub(crate) enum ToolResultContent {
     Document(DocumentBlock),
 }
 
+impl ImageMediaType {
+    /// Parses a MIME type, ignoring case and any parameters.
+    pub fn from_mime(mime: &str) -> Option<Self> {
+        let essence = mime.split(';').next().unwrap_or_default().trim();
+        match essence.to_ascii_lowercase().as_str() {
+            "image/jpeg" | "image/jpg" => Some(Self::Jpeg),
+            "image/png" => Some(Self::Png),
+            "image/gif" => Some(Self::Gif),
+            "image/webp" => Some(Self::Webp),
+            _ => None,
+        }
+    }
+}
+
+impl From<String> for TextBlock {
+    fn from(text: String) -> Self {
+        Self::new(text)
+    }
+}
+
+/// Error for content the API can't accept in a user message.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unsupported image type `{0}` (supported: JPEG, PNG, GIF, WebP)")]
+pub(crate) struct UnsupportedImageType(pub String);
+
+impl TryFrom<ContentPart> for UserBlock {
+    type Error = UnsupportedImageType;
+
+    fn try_from(part: ContentPart) -> Result<Self, Self::Error> {
+        match part {
+            ContentPart::Text(text) => Ok(UserBlock::Text(text.into())),
+            ContentPart::Image { mime_type, data } => {
+                let media_type = ImageMediaType::from_mime(&mime_type)
+                    .ok_or_else(|| UnsupportedImageType(mime_type))?;
+                Ok(UserBlock::Image(ImageBlock {
+                    source: ImageSource::Base64 {
+                        media_type,
+                        data: STANDARD.encode(data),
+                    },
+                    cache_control: None,
+                }))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn content_parts_convert_to_user_blocks() {
+        assert_eq!(
+            UserBlock::try_from(ContentPart::Text("hi".into())),
+            Ok(UserBlock::Text(TextBlock::new("hi")))
+        );
+        assert_eq!(
+            UserBlock::try_from(ContentPart::Image {
+                mime_type: "image/PNG; charset=binary".into(),
+                data: vec![1, 2, 3],
+            }),
+            Ok(UserBlock::Image(ImageBlock {
+                source: ImageSource::Base64 {
+                    media_type: ImageMediaType::Png,
+                    data: "AQID".into(),
+                },
+                cache_control: None,
+            }))
+        );
+        assert_eq!(
+            UserBlock::try_from(ContentPart::Image {
+                mime_type: "image/tiff".into(),
+                data: vec![],
+            }),
+            Err(UnsupportedImageType("image/tiff".into()))
+        );
+    }
 
     #[test]
     fn user_message_serializes_as_block_array() {

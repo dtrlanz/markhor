@@ -22,12 +22,13 @@ pub(crate) use error::{ApiError, ErrorKind, ErrorResponse};
 pub(crate) use message::{
     AssistantBlock, CacheControl, CacheTtl, CitationsConfig, DocumentBlock, DocumentSource,
     ImageBlock, ImageMediaType, ImageSource, Message, PdfMediaType, PlainTextMediaType,
-    RedactedThinking, TextBlock, Thinking, ToolResult, ToolResultContent, ToolUse, UserBlock,
+    RedactedThinking, TextBlock, Thinking, ToolResult, ToolResultContent, ToolUse,
+    UnsupportedImageType, UserBlock,
 };
 pub(crate) use models::{CapabilitySupport, ListModelsResponse, ModelCapabilities, ModelInfo};
 pub(crate) use request::{
     Effort, InputSchema, MessagesRequest, Metadata, OutputConfig, OutputFormat, ServiceTier,
-    ThinkingConfig, ThinkingDisplay, ToolChoice, ToolDefinition,
+    SystemBlock, ThinkingConfig, ThinkingDisplay, ToolChoice, ToolDefinition,
 };
 pub(crate) use response::{MessagesResponse, ResponseServiceTier, StopReason, Usage};
 

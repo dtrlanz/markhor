@@ -15,7 +15,7 @@ pub(crate) struct MessagesRequest {
     pub messages: Vec<Message>,
     /// System prompt, sent as separate text blocks.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub system: Vec<TextBlock>,
+    pub system: Vec<SystemBlock>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,6 +60,20 @@ impl MessagesRequest {
             metadata: None,
             cache_control: None,
         }
+    }
+}
+
+/// A block of the top-level system prompt. Only text is accepted, but the API still requires
+/// the `"type": "text"` tag.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum SystemBlock {
+    Text(TextBlock),
+}
+
+impl From<TextBlock> for SystemBlock {
+    fn from(block: TextBlock) -> Self {
+        Self::Text(block)
     }
 }
 
@@ -212,10 +226,13 @@ mod tests {
     #[test]
     fn full_request_serializes() {
         let mut request = MessagesRequest::new("claude-sonnet-4-6", 4096, vec![user("Hi")]);
-        request.system = vec![TextBlock {
-            text: "Be brief.".into(),
-            cache_control: Some(CacheControl::Ephemeral { ttl: None }),
-        }];
+        request.system = vec![
+            TextBlock {
+                text: "Be brief.".into(),
+                cache_control: Some(CacheControl::Ephemeral { ttl: None }),
+            }
+            .into(),
+        ];
         request.temperature = Some(0.5);
         request.stop_sequences = vec!["END".into()];
         request.thinking = Some(ThinkingConfig::Enabled {
@@ -255,7 +272,7 @@ mod tests {
                 "model": "claude-sonnet-4-6",
                 "max_tokens": 4096,
                 "messages": [{"role": "user", "content": [{"type": "text", "text": "Hi"}]}],
-                "system": [{"text": "Be brief.", "cache_control": {"type": "ephemeral"}}],
+                "system": [{"type": "text", "text": "Be brief.", "cache_control": {"type": "ephemeral"}}],
                 "temperature": 0.5,
                 "stop_sequences": ["END"],
                 "thinking": {"type": "enabled", "budget_tokens": 2048, "display": "omitted"},
