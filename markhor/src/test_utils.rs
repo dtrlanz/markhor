@@ -120,6 +120,7 @@ pub(crate) struct ScriptedChatUi {
     prompts: Arc<watch::Sender<usize>>,
     messages: Arc<Mutex<Vec<Msg>>>,
     begun: Arc<Mutex<usize>>,
+    last_commands: Arc<Mutex<Vec<String>>>,
 }
 
 impl ScriptedChatUi {
@@ -135,6 +136,7 @@ impl ScriptedChatUi {
             prompts: Arc::new(watch::channel(0).0),
             messages: Default::default(),
             begun: Default::default(),
+            last_commands: Default::default(),
         }
     }
 
@@ -150,6 +152,10 @@ impl ScriptedChatUi {
 
     pub(crate) fn prompt_count(&self) -> usize {
         *self.prompts.borrow()
+    }
+
+    pub(crate) fn last_commands(&self) -> Vec<String> {
+        self.last_commands.lock().unwrap().clone()
     }
 
     pub(crate) fn begun_count(&self) -> usize {
@@ -171,7 +177,8 @@ impl ScriptedChatUi {
 
 #[async_trait]
 impl ChatUi for ScriptedChatUi {
-    async fn prompt_with_commands(&self, _commands: Vec<String>) -> UserInput {
+    async fn prompt_with_commands(&self, commands: Vec<String>) -> UserInput {
+        *self.last_commands.lock().unwrap() = commands;
         self.prompts.send_modify(|n| *n += 1);
         loop {
             let next = self.answers.lock().unwrap().pop_front();

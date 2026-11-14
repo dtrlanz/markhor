@@ -193,8 +193,23 @@ pub(crate) fn read_line_plain(prompt: &str) -> Option<String> {
 }
 
 /// Classifies one line of console input. `None` means input has ended.
-pub(crate) fn parse_input(_line: Option<String>, _commands: &[String]) -> UserInput {
-    unimplemented!("input classification is not implemented yet")
+///
+/// A line is a command only if it starts with `/` and its name is in `commands`.
+pub(crate) fn parse_input(line: Option<String>, commands: &[String]) -> UserInput {
+    let Some(line) = line else {
+        return UserInput::End;
+    };
+    let line = line.trim();
+    if let Some(rest) = line.strip_prefix('/') {
+        let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+        if commands.iter().any(|c| c == name) {
+            return UserInput::Command {
+                name: name.to_string(),
+                args: args.trim().to_string(),
+            };
+        }
+    }
+    UserInput::Message(line.to_string())
 }
 
 #[cfg(test)]

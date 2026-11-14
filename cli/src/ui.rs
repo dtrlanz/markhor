@@ -25,7 +25,7 @@ use serde_json::Value;
 use crate::{
     convert::{MarkdownToHtml, TextToHtml, parts_to_html},
     html::HtmlRenderer,
-    prompt::{BoundedHistory, InputTheme, SlashCompleter, read_line_plain},
+    prompt::{BoundedHistory, InputTheme, SlashCompleter, parse_input, read_line_plain},
     stream::{AtEnd, FlushPolicy, skip_committed, tail_preview, word_count},
     term::Terminal,
     text::{sanitize, truncate, wrap_plain},
@@ -58,8 +58,6 @@ pub struct ChatUiConfig {
     pub reasoning: ReasoningDisplay,
     /// Text before the input glyph; empty by default so the prompt is just `›`.
     pub prompt_label: String,
-    /// Returned by `prompt` when input ends (Ctrl-C, Ctrl-D, closed stdin).
-    pub exit_command: String,
     pub show_timestamps: bool,
     /// How many trailing lines of tool output to keep on screen after a tool
     /// call completes.
@@ -75,7 +73,6 @@ impl Default for ChatUiConfig {
             max_width: 100,
             reasoning: ReasoningDisplay::default(),
             prompt_label: String::new(),
-            exit_command: "/exit".to_string(),
             show_timestamps: true,
             tool_output_lines: 3,
             fuzzy_select_threshold: 8,
@@ -989,7 +986,7 @@ impl Inner {
         }
     }
 
-    fn read_prompt(&self, commands: Vec<String>) -> String {
+    fn read_prompt(&self, commands: Vec<String>) -> UserInput {
         let interactive = self.term.is_interactive();
         self.term.ensure_blank();
         let line = if interactive {
@@ -1000,7 +997,7 @@ impl Inner {
                 )));
             }
             let _hold = HoldGuard::new(&self.term);
-            self.read_interactive(commands)
+            self.read_interactive(commands.clone())
         } else {
             read_line_plain(&format!(
                 "{}{}",
@@ -1008,14 +1005,11 @@ impl Inner {
             ))
         };
 
-        match line {
-            Some(line) => {
-                let line = line.trim().to_string();
-                self.state.lock().unwrap().last_prompt = Some(line.clone());
-                line
-            }
-            None => self.config.exit_command.clone(),
+        let input = parse_input(line, &commands);
+        if let UserInput::Message(text) = &input {
+            self.state.lock().unwrap().last_prompt = Some(text.clone());
         }
+        input
     }
 
     fn read_interactive(&self, commands: Vec<String>) -> Option<String> {
@@ -1142,13 +1136,11 @@ impl Drop for Inner {
 
 #[async_trait]
 impl ChatUi for ConsoleChatUi {
-    /// Returns [`ChatUiConfig::exit_command`] (`/exit` by default) when input
-    /// ends, e.g. on Ctrl-C or end of stdin.
+    /// Returns [`UserInput::End`] when input ends, e.g. on Ctrl-C or end of stdin.
     async fn prompt_with_commands(&self, commands: Vec<String>) -> UserInput {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || inner.read_prompt(commands))
             .await
-            .map(UserInput::Message)
             .unwrap_or(UserInput::End)
     }
 

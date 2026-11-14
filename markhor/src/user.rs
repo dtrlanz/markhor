@@ -16,13 +16,17 @@ use markhor_core::{
 };
 
 use thiserror::Error;
-use tokio::{sync::Notify, task};
+use tokio::{
+    sync::{Mutex, Notify, mpsc, watch},
+    task,
+};
 
 pub struct UserBuilder {
     group: Arc<Group>,
     ui: Comp<dyn ChatUi>,
     id: Option<String>,
     display_name: Option<String>,
+    commands: Vec<String>,
 }
 
 impl UserBuilder {
@@ -32,6 +36,7 @@ impl UserBuilder {
             ui,
             id: Default::default(),
             display_name: Default::default(),
+            commands: Default::default(),
         }
     }
 
@@ -42,6 +47,12 @@ impl UserBuilder {
 
     pub fn display_name(mut self, display_name: &str) -> Self {
         self.display_name = Some(display_name.to_string());
+        self
+    }
+
+    /// Names of commands the UI may recognize, without any prefix.
+    pub fn commands(mut self, commands: Vec<String>) -> Self {
+        self.commands = commands;
         self
     }
 
@@ -88,9 +99,13 @@ impl UserBuilder {
             })
         };
 
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
         let inner = Arc::new(UserInner {
             member,
             ui,
+            commands: self.commands,
+            command_tx,
+            ended: watch::channel(false).0,
             reply_pending,
             reply_settled,
         });
@@ -102,6 +117,7 @@ impl UserBuilder {
             inner,
             handle,
             thread_sub: sub,
+            command_rx: Mutex::new(command_rx),
         })
     }
 }
@@ -110,21 +126,34 @@ pub struct User {
     inner: Arc<UserInner>,
     handle: tokio::task::JoinHandle<()>,
     thread_sub: Subscription,
+    command_rx: Mutex<mpsc::UnboundedReceiver<(String, String)>>,
 }
 
 impl User {
+    /// Waits for the next command the user enters, or returns `None` once input has ended.
     pub async fn next_command(&self) -> Option<(String, String)> {
-        unimplemented!("commands are not forwarded yet")
+        let mut commands = self.command_rx.lock().await;
+        tokio::select! {
+            biased;
+            command = commands.recv() => command,
+            _ = self.inner.wait_ended() => None,
+        }
     }
 
+    /// Resolves once the user has ended input.
     pub async fn ended(&self) {
-        unimplemented!("end of input is not signalled yet")
+        self.inner.wait_ended().await;
     }
 }
 
 struct UserInner {
     member: Member,
     ui: Arc<Comp<dyn ChatUi>>,
+    /// Names of commands offered to the UI, without any prefix.
+    commands: Vec<String>,
+    command_tx: mpsc::UnboundedSender<(String, String)>,
+    /// Becomes `true` once the user has ended input.
+    ended: watch::Sender<bool>,
     /// Set when the user posts, cleared when an agent reply or failure settles.
     reply_pending: Arc<AtomicBool>,
     /// Signalled each time a reply settles. Repeated signals coalesce into one.
@@ -133,38 +162,57 @@ struct UserInner {
 
 impl UserInner {
     async fn run(&self) {
-        self.prompt_and_post().await;
+        if !self.prompt_and_post().await {
+            return;
+        }
         loop {
             self.reply_settled.notified().await;
             // A signal queued while the user was typing is stale if they have
             // since replied, so prompt only when no reply is outstanding.
-            if !self.reply_pending.load(Ordering::SeqCst) {
-                self.prompt_and_post().await;
+            if self.reply_pending.load(Ordering::SeqCst) {
+                continue;
+            }
+            if !self.prompt_and_post().await {
+                return;
             }
         }
     }
 
-    /// Prompts until a non-blank answer is given, then posts it.
-    async fn prompt_and_post(&self) {
-        let answer = loop {
-            match self.ui.prompt_with_commands(Vec::new()).await {
-                UserInput::Message(text) if !text.trim().is_empty() => break text,
-                UserInput::Message(_) => {}
-                _ => unimplemented!("commands and end of input are not handled yet"),
+    /// Prompts until the user sends a message, forwarding commands as they come.
+    /// Returns `false` once the user has ended input.
+    async fn prompt_and_post(&self) -> bool {
+        loop {
+            match self.ui.prompt_with_commands(self.commands.clone()).await {
+                UserInput::Message(text) if text.trim().is_empty() => {}
+                UserInput::Message(text) => {
+                    // Set before posting, so a reply that settles right after cannot be missed.
+                    self.reply_pending.store(true, Ordering::SeqCst);
+                    self.member
+                        .group()
+                        .begin_message(self.member.id())
+                        .expect("user is a member of its own group")
+                        .complete(Msg::User {
+                            sender: self.member.id().clone(),
+                            timestamp: Some(SystemTime::now()),
+                            content: vec![ContentPart::Text(text)],
+                        })
+                        .expect("user message is sent by the user");
+                    return true;
+                }
+                UserInput::Command { name, args } => {
+                    let _ = self.command_tx.send((name, args));
+                }
+                UserInput::End => {
+                    self.ended.send_replace(true);
+                    return false;
+                }
             }
-        };
-        // Set before posting, so a reply that settles right after cannot be missed.
-        self.reply_pending.store(true, Ordering::SeqCst);
-        self.member
-            .group()
-            .begin_message(self.member.id())
-            .expect("user is a member of its own group")
-            .complete(Msg::User {
-                sender: self.member.id().clone(),
-                timestamp: Some(SystemTime::now()),
-                content: vec![ContentPart::Text(answer)],
-            })
-            .expect("user message is sent by the user");
+        }
+    }
+
+    async fn wait_ended(&self) {
+        let mut ended = self.ended.subscribe();
+        let _ = ended.wait_for(|ended| *ended).await;
     }
 }
 
@@ -424,5 +472,36 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(scripted.prompt_count(), 1, "prompted after End");
         assert!(user_texts(&scripted.recorded_messages()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn next_command_returns_none_after_end() {
+        let scripted = ScriptedChatUi::new(&[]);
+        scripted.push_input(UserInput::End);
+        let session = session_with_ui(&scripted).await;
+        let group = Group::new();
+        let user = UserBuilder::new(&group, ui(&session))
+            .id("alice")
+            .spawn()
+            .unwrap();
+
+        let next = tokio::time::timeout(WAIT, user.next_command())
+            .await
+            .expect("next_command blocked after End");
+        assert_eq!(next, None);
+    }
+
+    #[tokio::test]
+    async fn builder_offers_commands_to_the_ui() {
+        let scripted = ScriptedChatUi::new(&["hi"]);
+        let session = session_with_ui(&scripted).await;
+        let group = Group::new();
+        let _user = UserBuilder::new(&group, ui(&session))
+            .commands(vec!["model".into()])
+            .spawn()
+            .unwrap();
+
+        eventually(|| (user_texts(&scripted.recorded_messages()) == ["hi"]).then_some(())).await;
+        assert_eq!(scripted.last_commands(), ["model"]);
     }
 }
