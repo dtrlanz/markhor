@@ -11,12 +11,11 @@ use std::{
 };
 
 use markhor_core::{
-    convert::Converter,
     dependencies::{ApiKey, Session},
     extension::{Comp, ExtensionConfig},
+    ocr::{OcrInput, OcrModel, OcrOptions as CoreOcrOptions},
 };
 use markhor_extensions::mistral::{Client, DocumentSource, OcrOptions, OcrOutput, UploadOptions};
-use tokio::io::AsyncReadExt;
 
 mod common;
 
@@ -215,22 +214,16 @@ async fn session_with_mistral() -> Session {
     session
 }
 
-async fn converter_output(test_file: &str) -> Vec<String> {
+async fn ocr_pages(test_file: &str) -> Vec<String> {
     let session = session_with_mistral().await;
-    let converters: Vec<Comp<dyn Converter>> = session.resolve().unwrap();
-    assert_eq!(converters.len(), 1, "expected exactly one converter");
+    let models: Vec<Comp<dyn OcrModel>> = session.resolve().unwrap();
+    assert!(models.len() >= 1, "expected at least one OCR model");
 
-    let readers = converters[0]
-        .convert(test_file.into(), "text/markdown".parse().unwrap())
+    let output = models[0]
+        .recognize(OcrInput::Path(test_file.into()), &CoreOcrOptions::default())
         .await
-        .expect("conversion failed");
-    let mut pages = Vec::new();
-    for mut reader in readers {
-        let mut markdown = String::new();
-        reader.read_to_string(&mut markdown).await.unwrap();
-        pages.push(markdown);
-    }
-    pages
+        .expect("OCR failed");
+    output.pages.into_iter().map(|page| page.markdown).collect()
 }
 
 #[tokio::test]
@@ -238,7 +231,7 @@ async fn converter_output(test_file: &str) -> Vec<String> {
 async fn pdf_via_file_to_markdown() {
     delay_test().await;
 
-    let pages = converter_output(TEST_PDF_PATH).await;
+    let pages = ocr_pages(TEST_PDF_PATH).await;
     assert!(
         pages[0].contains("Lorem ipsum"),
         "unexpected output: {pages:?}"
@@ -250,7 +243,7 @@ async fn pdf_via_file_to_markdown() {
 async fn png_via_file_to_markdown() {
     delay_test().await;
 
-    let pages = converter_output("tests/common/Lorem ipsum with Mona Lisa.png").await;
+    let pages = ocr_pages("tests/common/Lorem ipsum with Mona Lisa.png").await;
     assert!(
         pages[0].contains("Lorem ipsum"),
         "unexpected output: {pages:?}"

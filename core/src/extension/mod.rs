@@ -1,7 +1,6 @@
 use crate::{
     chat::{ChatModel, ChatUi},
     chunking::Chunker,
-    convert::Converter,
     dependencies::ResolveDependencyError,
     embedding::EmbeddingModel,
     ocr::OcrModel,
@@ -42,9 +41,6 @@ pub trait Extension: Send + Sync {
     fn chunkers(&self) -> Vec<Box<dyn Chunker>> {
         vec![]
     }
-    fn converters(&self) -> Vec<Box<dyn Converter>> {
-        vec![]
-    }
     fn ocr_models(&self) -> Vec<Box<dyn OcrModel>> {
         vec![]
     }
@@ -72,9 +68,6 @@ pub enum UseExtensionError {
 
     #[error("Chunker not available in extension")]
     ChunkerNotAvailable,
-
-    #[error("Converter not available in extension")]
-    ConverterNotAvailable,
 
     #[error("OCR model not available in extension")]
     OcrModelNotAvailable,

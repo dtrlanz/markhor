@@ -1,7 +1,6 @@
 use crate::{
     chat::{ChatModel, ChatUi},
     chunking::Chunker,
-    convert::Converter,
     dependencies::{Provide, ResolveDependencyError, Session, TrackingGuard},
     embedding::EmbeddingModel,
     extension::Extension,
@@ -55,7 +54,6 @@ impl<T: ?Sized + 'static> Comp<T> {
             x if x == const { TypeId::of::<dyn ChatUi>() } => ComponentType::ChatUi,
             x if x == const { TypeId::of::<dyn EmbeddingModel>() } => ComponentType::EmbeddingModel,
             x if x == const { TypeId::of::<dyn Chunker>() } => ComponentType::Chunker,
-            x if x == const { TypeId::of::<dyn Converter>() } => ComponentType::Converter,
             x if x == const { TypeId::of::<dyn OcrModel>() } => ComponentType::OcrModel,
             x if x == const { TypeId::of::<dyn Tool>() } => ComponentType::Tool,
 
@@ -111,7 +109,6 @@ impl_provide_comp! {
     ChatUi => chat_uis,
     EmbeddingModel => embedding_models,
     Chunker => chunkers,
-    Converter => converters,
     OcrModel => ocr_models,
     Tool => tools,
 }
@@ -122,7 +119,6 @@ pub enum ComponentType {
     ChatUi,
     EmbeddingModel,
     Chunker,
-    Converter,
     OcrModel,
     Tool,
 }
@@ -134,7 +130,6 @@ impl Display for ComponentType {
             ComponentType::ChatUi => "chat-ui",
             ComponentType::EmbeddingModel => "embedding-model",
             ComponentType::Chunker => "chunker",
-            ComponentType::Converter => "converter",
             ComponentType::OcrModel => "ocr-model",
             ComponentType::Tool => "tool",
         };
