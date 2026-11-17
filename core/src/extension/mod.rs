@@ -4,6 +4,7 @@ use crate::{
     convert::Converter,
     dependencies::ResolveDependencyError,
     embedding::EmbeddingModel,
+    ocr::OcrModel,
     permissions::Permission,
 };
 use async_trait::async_trait;
@@ -44,6 +45,9 @@ pub trait Extension: Send + Sync {
     fn converters(&self) -> Vec<Box<dyn Converter>> {
         vec![]
     }
+    fn ocr_models(&self) -> Vec<Box<dyn OcrModel>> {
+        vec![]
+    }
     fn tools(&self) -> Vec<Box<dyn crate::tool::Tool>> {
         vec![]
     }
@@ -71,6 +75,9 @@ pub enum UseExtensionError {
 
     #[error("Converter not available in extension")]
     ConverterNotAvailable,
+
+    #[error("OCR model not available in extension")]
+    OcrModelNotAvailable,
 
     #[error("Prompter not available in extension")]
     PrompterNotAvailable,

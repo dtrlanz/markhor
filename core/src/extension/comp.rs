@@ -5,6 +5,7 @@ use crate::{
     dependencies::{Provide, ResolveDependencyError, Session, TrackingGuard},
     embedding::EmbeddingModel,
     extension::Extension,
+    ocr::OcrModel,
     tool::Tool,
 };
 
@@ -55,6 +56,7 @@ impl<T: ?Sized + 'static> Comp<T> {
             x if x == const { TypeId::of::<dyn EmbeddingModel>() } => ComponentType::EmbeddingModel,
             x if x == const { TypeId::of::<dyn Chunker>() } => ComponentType::Chunker,
             x if x == const { TypeId::of::<dyn Converter>() } => ComponentType::Converter,
+            x if x == const { TypeId::of::<dyn OcrModel>() } => ComponentType::OcrModel,
             x if x == const { TypeId::of::<dyn Tool>() } => ComponentType::Tool,
 
             // `Comp` is never constructed with anything other than extension components. If we
@@ -110,6 +112,7 @@ impl_provide_comp! {
     EmbeddingModel => embedding_models,
     Chunker => chunkers,
     Converter => converters,
+    OcrModel => ocr_models,
     Tool => tools,
 }
 
@@ -120,6 +123,7 @@ pub enum ComponentType {
     EmbeddingModel,
     Chunker,
     Converter,
+    OcrModel,
     Tool,
 }
 
@@ -131,6 +135,7 @@ impl Display for ComponentType {
             ComponentType::EmbeddingModel => "embedding-model",
             ComponentType::Chunker => "chunker",
             ComponentType::Converter => "converter",
+            ComponentType::OcrModel => "ocr-model",
             ComponentType::Tool => "tool",
         };
         write!(f, "{}", s)
@@ -198,6 +203,8 @@ mod tests {
         chunking::test_chunker::FixedSizeChunkerExtension, dependencies::Assets,
         embedding::test_utils::MockEmbedderExtension,
     };
+    use async_trait::async_trait;
+    use mime::Mime;
 
     #[test]
     fn comp() {
@@ -213,6 +220,55 @@ mod tests {
         assert_eq!(comp.component_type(), ComponentType::Chunker);
         assert_eq!(comp.extension().uri(), "markhor://chunker/fixed-size");
         assert_eq!(comp.metadata_id(), "markhorchunkerfixed-size chunker");
+    }
+
+    struct TestOcrModel;
+
+    #[async_trait]
+    impl OcrModel for TestOcrModel {
+        fn model_id(&self) -> &str {
+            "test-ocr"
+        }
+
+        fn supports(&self, _mime: &Mime) -> bool {
+            false
+        }
+    }
+
+    #[derive(Clone)]
+    struct OcrExtension;
+
+    #[async_trait]
+    impl Extension for OcrExtension {
+        fn uri(&self) -> &str {
+            "markhor://test-ocr"
+        }
+
+        fn name(&self) -> &str {
+            "OCR test"
+        }
+
+        fn description(&self) -> &str {
+            "Provides an OCR model for tests"
+        }
+
+        fn ocr_models(&self) -> Vec<Box<dyn OcrModel>> {
+            vec![Box::new(TestOcrModel)]
+        }
+    }
+
+    #[tokio::test]
+    async fn provide_ocr_model() {
+        let mut session = Session::new();
+        session
+            .add_extension::<_, OcrExtension>(OcrExtension, Default::default())
+            .await
+            .unwrap();
+        let assets = Assets::new_for_resolve_call(&session);
+
+        let ocr: Comp<dyn OcrModel> = Provide::first(&assets).unwrap();
+        assert_eq!(ocr.component_type(), ComponentType::OcrModel);
+        assert_eq!(ocr.metadata_id(), "markhortest-ocr ocr-model");
     }
 
     #[tokio::test]
