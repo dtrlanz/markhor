@@ -75,16 +75,9 @@ pub trait OcrModel: Send + Sync {
     ) -> Result<OcrOutput, OcrError> {
         let mime = match mime {
             Some(mime) => mime.clone(),
-            // Infer from the URL path so that query strings do not affect the result.
-            None => {
-                let parsed = reqwest::Url::parse(url)
-                    .map_err(|e| OcrError::UnsupportedInput(format!("invalid URL {url}: {e}")))?;
-                mime_guess2::from_path(parsed.path())
-                    .first()
-                    .ok_or_else(|| {
-                        OcrError::UnsupportedInput(format!("cannot infer media type of {url}"))
-                    })?
-            }
+            None => media_type_from_url(url).ok_or_else(|| {
+                OcrError::UnsupportedInput(format!("cannot infer media type of {url}"))
+            })?,
         };
         if !self.supports(&mime) {
             return Err(OcrError::UnsupportedMimeType(mime));
@@ -92,6 +85,12 @@ pub trait OcrModel: Send + Sync {
         let data = reqwest::get(url).await?.error_for_status()?.bytes().await?;
         self.recognize_bytes(&data, &mime, options).await
     }
+}
+
+/// Infers the media type of a URL from its path, ignoring any query string or fragment.
+pub fn media_type_from_url(url: &str) -> Option<Mime> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    mime_guess2::from_path(parsed.path()).first()
 }
 
 /// A document to recognize, in the form the caller has it.
