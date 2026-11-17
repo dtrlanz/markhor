@@ -58,6 +58,14 @@ impl DocumentSource {
 const DOCX_MIME: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const PPTX_MIME: &str = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 
+/// Whether Mistral OCR accepts documents of this media type.
+pub fn supports_mime(mime: &Mime) -> bool {
+    matches!(
+        mime.essence_str(),
+        "application/pdf" | DOCX_MIME | PPTX_MIME | "image/png" | "image/jpeg" | "image/avif"
+    )
+}
+
 fn mime_from_extension(path: &Path) -> Result<Mime, Error> {
     let extension = path
         .extension()
