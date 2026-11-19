@@ -19,6 +19,7 @@ pub use document::{
     DocumentMetadata,
     // TextLocation,
     MetadataLocation,
+    NewSource,
     Part,
     Text,
     chunks::{Chunk, ChunkMut},
@@ -62,6 +63,12 @@ pub enum AccessLibraryError {
 
     #[error("Invalid ID: {0}")]
     InvalidId(String),
+
+    #[error("File already exists: {0}")]
+    FileAlreadyExists(PathBuf),
+
+    #[error("A source file is required for binary documents: {0}")]
+    SourceRequired(PathBuf),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use tokio::fs::{self, ReadDir};
 use tracing::instrument;
 
-use crate::library::{AccessLibraryError, Document};
+use crate::library::{AccessLibraryError, Document, NewSource};
 
 use super::Workspace;
 
@@ -86,9 +86,10 @@ impl Folder {
         }
     }
 
-    pub async fn create_document(
+    pub async fn create_document<'a>(
         &self,
         name: impl AsRef<str>,
+        source: NewSource<'a>,
     ) -> Result<Document, AccessLibraryError> {
         let name = name.as_ref();
         if name.contains(std::path::MAIN_SEPARATOR) {
@@ -97,7 +98,7 @@ impl Folder {
             );
         }
         let path = self.absolute_path.join(name);
-        Document::create(self.workspace.clone(), &path).await
+        Document::create(self.workspace.clone(), &path, source).await
     }
 
     /// Opens the folder with the specified name.

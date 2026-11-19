@@ -153,6 +153,10 @@ impl Part {
         &self.id
     }
 
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+
     #[instrument(skip(self, chunker, cached_chunks))]
     pub(crate) fn validate_cached_chunks(
         &self,

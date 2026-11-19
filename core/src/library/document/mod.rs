@@ -38,6 +38,30 @@ pub struct Document {
     chunker_cache: HashMap<String, HashMap<String, Vec<ChunkCache>>>,
 }
 
+/// Contents of the source file for [`Document::create`].
+#[derive(Debug)]
+pub enum NewSource<'a> {
+    /// An empty file, for text documents whose text is added afterwards.
+    Empty,
+    /// Contents given in memory.
+    Bytes(&'a [u8]),
+    /// A file to copy. It must exist, and it is left in place.
+    CopyFrom(PathBuf),
+}
+
+impl<'a> NewSource<'a> {
+    async fn write_to(self, file: &mut fs::File) -> std::io::Result<()> {
+        match self {
+            NewSource::Empty => Ok(()),
+            NewSource::Bytes(data) => file.write_all(&data).await,
+            NewSource::CopyFrom(from) => {
+                let mut input = fs::File::open(from).await?;
+                tokio::io::copy(&mut input, file).await.map(|_| ())
+            }
+        }
+    }
+}
+
 impl Document {
     /// Returns the relative path to the document within its workspace.
     pub fn path(&self) -> &Path {
@@ -418,39 +442,111 @@ impl Document {
         Ok(())
     }
 
-    pub(crate) async fn create(
+    /// Creates a new document, writing its source file to `path`.
+    ///
+    /// `path` is where the new source file goes. It may be relative to the current directory. Its
+    /// parent directory must exist, and the file itself must not.
+    ///
+    /// `source` supplies the file contents. Text documents may use [`NewSource::Empty`] and add
+    /// text afterwards with [`Document::text_mut`] and [`Document::save`]. Binary documents need
+    /// [`NewSource::Bytes`] or [`NewSource::CopyFrom`].
+    ///
+    /// Markdown keeps its metadata in the source file. Other sources keep it in a sidecar file
+    /// next to the source. The returned document's `absolute_path` is the canonical form of `path`.
+    pub(crate) async fn create<'a>(
         workspace: Workspace,
-        absolute_path: &Path,
+        path: &Path,
+        source: NewSource<'a>,
     ) -> Result<Self, AccessLibraryError> {
-        // TODO: Add unit tests
-        // Check if path is valid and does not already exist
-        let absolute_path = fs::canonicalize(absolute_path.parent().unwrap())
+        let parent = path
+            .parent()
+            .ok_or_else(|| AccessLibraryError::DirectoryNotFound(path.to_path_buf()))?;
+        let parent = fs::canonicalize(parent).await.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                AccessLibraryError::DirectoryNotFound(parent.to_path_buf())
+            } else {
+                AccessLibraryError::Io(e)
+            }
+        })?;
+        let file_name = path.file_name().ok_or_else(|| {
+            AccessLibraryError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "path has no file name",
+            ))
+        })?;
+        let absolute_path = parent.join(file_name);
+        if !absolute_path.starts_with(workspace.path()) {
+            return Err(AccessLibraryError::NotInWorkspace(absolute_path));
+        }
+
+        let mut metadata = DocumentMetadata::from_path(&absolute_path);
+        if matches!(source, NewSource::Empty) && !metadata.source_is_text() {
+            return Err(AccessLibraryError::SourceRequired(absolute_path));
+        }
+        if let NewSource::CopyFrom(from) = &source
+            && !fs::try_exists(from).await?
+        {
+            return Err(AccessLibraryError::FileNotFound(from.clone()));
+        }
+        metadata.metadata_location = if metadata.source_is_markdown() {
+            MetadataLocation::SourceFile
+        } else {
+            MetadataLocation::MetadataFile
+        };
+
+        let sidecar = absolute_path.with_added_extension(METADATA_EXTENSION);
+        if fs::try_exists(&sidecar).await? {
+            return Err(AccessLibraryError::FileAlreadyExists(sidecar));
+        }
+
+        // `create_new` fails if the file exists. Errors from here on are not cleaned up, since
+        // the file would then belong to someone else.
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&absolute_path)
             .await
             .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    AccessLibraryError::DirectoryNotFound(
-                        absolute_path.parent().unwrap().to_path_buf(),
-                    )
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    AccessLibraryError::FileAlreadyExists(absolute_path.clone())
                 } else {
                     AccessLibraryError::Io(e)
                 }
             })?;
-        if absolute_path.exists() {
-            todo!("Handle error when creating document with path that already exists");
-            // return Err(AccessStorageError::FileAlreadyExists(absolute_path.to_path_buf()));
-        }
-        let metadata = DocumentMetadata::from_path(&absolute_path);
+        let written = source.write_to(&mut file).await;
+        drop(file);
+
         let mut doc = Self {
             absolute_path,
             workspace,
-            text: Default::default(),
+            text: Text::new().into(),
             metadata,
             metadata_hash: Default::default(),
             cache: Default::default(),
             chunker_cache: Default::default(),
         };
-        doc.save().await?;
+        let result = match written {
+            Ok(()) => doc.finish_create().await,
+            Err(e) => Err(e.into()),
+        };
+        if let Err(e) = result {
+            // Remove only what this call created.
+            let _ = fs::remove_file(&doc.absolute_path).await;
+            let _ = fs::remove_file(&sidecar).await;
+            return Err(e);
+        }
         Ok(doc)
+    }
+
+    /// Loads the text of a newly written text source and saves the document's metadata.
+    async fn finish_create(&mut self) -> Result<(), AccessLibraryError> {
+        if self.metadata.source_is_text() {
+            let content = fs::read_to_string(&self.absolute_path).await?;
+            if !content.is_empty() {
+                self.text_mut().await?.import(Some(&content), None);
+            }
+        }
+        self.save().await
     }
 
     pub(crate) async fn open(
@@ -1595,5 +1691,186 @@ extensions:
             metadata,
             "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\nmetadata_location: metadata-file\n---\nHello world"
         );
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn create_fails_when_parent_directory_is_missing() {
+        let dir = TempTree::new(fs_tree! {}).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+
+        let err = Document::create(ws, &dir.join("missing").join("doc.md"), NewSource::Empty)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AccessLibraryError::DirectoryNotFound(_)),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn create_markdown_with_text_and_metadata_in_same_file() {
+        let dir = TempTree::new(fs_tree! {}).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+
+        let mut doc = Document::create(ws.clone(), &dir.join("doc.md"), NewSource::Empty)
+            .await
+            .unwrap();
+        doc.text_mut()
+            .await
+            .unwrap()
+            .import(Some("Hello world"), None);
+        doc.save().await.unwrap();
+
+        let content = fs::read_to_string(&dir.join("doc.md")).await.unwrap();
+        let expected_metadata = serde_yaml_ng::to_string(&doc.metadata).unwrap();
+        assert_eq!(
+            content,
+            format!("---\n{}---\nHello world", expected_metadata)
+        );
+        assert!(
+            !fs::try_exists(dir.join(format!("doc.md.{}", METADATA_EXTENSION)))
+                .await
+                .unwrap()
+        );
+
+        let reopened = Document::open(ws, &dir.join("doc.md")).await.unwrap();
+        assert_eq!(reopened.id(), doc.id());
+        assert_eq!(
+            reopened.text().await.unwrap().export(&mut None).as_deref(),
+            Some("Hello world")
+        );
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn create_does_not_overwrite_existing_file() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "keep me",
+        })
+        .await
+        .unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+
+        let err = Document::create(ws, &dir.join("doc.md"), NewSource::Empty)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AccessLibraryError::FileAlreadyExists(_)),
+            "{err}"
+        );
+        assert_eq!(
+            fs::read_to_string(&dir.join("doc.md")).await.unwrap(),
+            "keep me"
+        );
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn create_binary_document_from_copied_file() {
+        let src = TempTree::new(fs_tree! {
+            "scan.png" => b"png-bytes",
+        })
+        .await
+        .unwrap();
+        let dir = TempTree::new(fs_tree! {}).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+
+        let doc = Document::create(
+            ws.clone(),
+            &dir.join("scan.png"),
+            NewSource::CopyFrom(src.join("scan.png")),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(doc.metadata().mime, mime::IMAGE_PNG);
+        assert_eq!(fs::read(&dir.join("scan.png")).await.unwrap(), b"png-bytes");
+        assert!(
+            fs::try_exists(dir.join(format!("scan.png.{}", METADATA_EXTENSION)))
+                .await
+                .unwrap()
+        );
+
+        let reopened = Document::open(ws, &dir.join("scan.png")).await.unwrap();
+        assert_eq!(reopened.id(), doc.id());
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn create_text_document_from_bytes_keeps_content() {
+        let dir = TempTree::new(fs_tree! {}).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+
+        let doc = Document::create(
+            ws,
+            &dir.join("notes.txt"),
+            NewSource::Bytes(&b"first line\nsecond line\n".to_vec()),
+        )
+        .await
+        .unwrap();
+
+        // `create` must load a text source's content before saving, because
+        // saving rewrites the source file from the document's text.
+        assert_eq!(
+            doc.text().await.unwrap().export(&mut None).as_deref(),
+            Some("first line\nsecond line\n")
+        );
+        assert_eq!(
+            fs::read_to_string(&dir.join("notes.txt")).await.unwrap(),
+            "first line\nsecond line\n"
+        );
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn create_from_missing_source_file_leaves_nothing_behind() {
+        let dir = TempTree::new(fs_tree! {}).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+
+        let err = Document::create(
+            ws,
+            &dir.join("scan.png"),
+            NewSource::CopyFrom(dir.join("missing.png")),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, AccessLibraryError::FileNotFound(_)), "{err}");
+        assert!(!fs::try_exists(dir.join("scan.png")).await.unwrap());
+        assert!(
+            !fs::try_exists(dir.join(format!("scan.png.{}", METADATA_EXTENSION)))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn create_keeps_existing_sidecar_when_source_is_missing() {
+        let sidecar = format!("scan.png.{}", METADATA_EXTENSION);
+        let dir = TempTree::new(fs_tree! {
+            sidecar.clone() => "orphaned metadata",
+        })
+        .await
+        .unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+
+        let err = Document::create(
+            ws,
+            &dir.join("scan.png"),
+            NewSource::Bytes(&b"png-bytes".to_vec()),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, AccessLibraryError::FileAlreadyExists(_)),
+            "{err}"
+        );
+        assert_eq!(
+            fs::read_to_string(&dir.join(&sidecar)).await.unwrap(),
+            "orphaned metadata"
+        );
+        assert!(!fs::try_exists(dir.join("scan.png")).await.unwrap());
     }
 }
