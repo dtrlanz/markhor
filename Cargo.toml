@@ -5,6 +5,7 @@ members = [
     "cli",
     "cli/sim",
     "cli/chat",
+    "cli/import",
     "extensions", "markhor",
     "gui", 
     "markhor", 

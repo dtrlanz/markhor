@@ -15,7 +15,7 @@ use crate::{
 
 #[derive(Debug, Error)]
 pub enum ImportError {
-    #[error("OCR failed: {0}")]
+    #[error(transparent)]
     Ocr(#[from] OcrError),
 
     #[error("Library error: {0}")]
@@ -41,7 +41,7 @@ enum Original {
 ///
 /// The name is checked before any work is done, and recognition runs before anything is written,
 /// so a failed import leaves no files behind.
-pub(crate) async fn import(
+pub async fn import(
     folder: &Folder,
     input: OcrInput,
     model: &dyn OcrModel,

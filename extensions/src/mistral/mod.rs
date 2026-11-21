@@ -21,7 +21,7 @@
 
 use std::sync::Arc;
 
-use markhor_core::dependencies::{ApiKey, Provide};
+use markhor_core::dependencies::{ApiKey, BuildFrom, Provide};
 use reqwest::RequestBuilder;
 
 // The wire types model fields that the public API doesn't expose (yet).
@@ -77,6 +77,22 @@ impl Client {
     /// Operations on files stored with Mistral (uploads, signed URLs, deletion).
     pub fn files(&self) -> Files<'_> {
         Files::new(&self.inner)
+    }
+}
+
+/// Lets callers pass a [`ClientConfig`] to `Session::add_extension`. The session-provided client
+/// supplies the API key and HTTP client, and the config replaces the default.
+impl BuildFrom<ClientConfig> for Client {
+    type Requirements = Client;
+
+    fn build_from(config: ClientConfig, client: Client) -> Self {
+        Client {
+            inner: Arc::new(ClientInner {
+                api_key: client.inner.api_key.clone(),
+                config: Arc::new(config),
+                http_client: client.inner.http_client.clone(),
+            }),
+        }
     }
 }
 

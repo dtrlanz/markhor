@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use tokio::fs::{self, ReadDir};
-use tracing::instrument;
+use tracing::{debug, instrument};
 
 use crate::library::{AccessLibraryError, Document, NewSource};
 
@@ -77,9 +77,9 @@ impl Folder {
         match Workspace::open(&path).await {
             Ok(workspace) => Ok(workspace.root()),
             Err(AccessLibraryError::InWorkspace(ws)) => {
-                println!("In workspace: {:?}", ws);
+                debug!("In workspace: {:?}", ws);
                 let ws = Workspace::open(ws).await?;
-                println!("Opened workspace: {:?}", ws);
+                debug!("Opened workspace: {:?}", ws);
                 ws.folder(path).await
             }
             Err(e) => Err(e),
