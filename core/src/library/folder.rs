@@ -202,11 +202,10 @@ impl Read {
                         let document = match Document::open(self.workspace.clone(), &path).await {
                             Ok(document) => document,
                             // A bad file must not stop the listing of its siblings.
-                            Err(e @ AccessLibraryError::UnknownPermission { .. }) => {
-                                error!("Skipping document: {e}");
+                            Err(e) => {
+                                error!("Skipping {}: {e}", path.display());
                                 continue;
                             }
-                            Err(e) => return Err(e),
                         };
                         ReadEntry::Document(document)
                     } else {
@@ -278,10 +277,11 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn listing_skips_documents_with_unknown_permissions() {
+    async fn listing_skips_bad_documents() {
         let dir = TempTree::new(fs_tree! {
             "good.md" => "hello",
             "bad.md" => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/markdown\nrequired_permissions: [no-such-permission]\n---\nhello",
+            "broken.md" => b"\xff\xfe",
         })
         .await
         .unwrap();
