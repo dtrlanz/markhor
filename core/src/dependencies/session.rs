@@ -1,4 +1,5 @@
 use thiserror::Error;
+use tokio::fs;
 use tracing::warn;
 
 use crate::{
@@ -7,15 +8,19 @@ use crate::{
         dependency_slot::DependencySlot,
     },
     extension::{Extension, ExtensionConfig, InitExtensionError},
-    library::{Collection, Document, Scope},
-    permissions::{self, Actor, Authorized, Permission, Resource, Restricted},
+    library::{AccessLibraryError, Document, Folder, Scope},
+    permissions::{self, Actor, Authorized, Permission, Resource, Restricted, all_permissions},
 };
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 pub struct Session {
-    collection: Option<Collection>,
-    documents: Vec<Document>,
+    folder: Option<Folder>,
+    documents: BTreeMap<PathBuf, Document>,
     api_keys: Vec<DependencySlot<ApiKey>>,
     extensions: Vec<DependencySlot<Arc<dyn Extension>>>,
     // Acts as an upper bound for what the session may access (imposed externally downstream, all
@@ -32,12 +37,20 @@ pub struct Session {
 impl Session {
     pub fn new() -> Self {
         Self {
-            collection: None,
-            documents: vec![],
+            folder: None,
+            documents: BTreeMap::new(),
             api_keys: vec![],
             extensions: vec![],
-            permissions_granted: vec![],
+            permissions_granted: all_permissions(),
             permissions_required: vec![],
+        }
+    }
+
+    /// Creates a session whose working folder is `folder`.
+    pub fn with_folder(folder: Folder) -> Self {
+        Self {
+            folder: Some(folder),
+            ..Self::new()
         }
     }
 
@@ -196,9 +209,16 @@ impl Session {
     // This method will probably not be the only (or even the primary) way to add documents to a
     // session. Still, this implementation outlines how document permissions relate to session
     // permissions. Other ways of adding documents should conform to the same constraints.
-    pub async fn add_document(&mut self, document: Document) -> Result<(), AddDocumentError> {
+    fn add_document(&mut self, document: Document) -> Result<(), AddDocumentError> {
+        self.check_access(&document)?;
+        self.documents
+            .insert(document.absolute_path.clone(), document);
+        Ok(())
+    }
+
+    fn check_access(&self, document: &Document) -> Result<(), AddDocumentError> {
         // This session must have been granted permission to access the document
-        if !self.may_access(&document) {
+        if !self.may_access(document) {
             return Err(AddDocumentError::NotAuthorized(
                 document.permissions_required().to_vec(),
             ));
@@ -206,14 +226,37 @@ impl Session {
 
         // Anything with access to this session must have permission to access the document
         // This includes the session's own extensions
-        if !Actor(&self.permissions_required).may_access(&document) {
+        if !Actor(&self.permissions_required).may_access(document) {
             return Err(AddDocumentError::ElevationRequired(
                 self.permissions_granted.clone(),
             ));
         }
 
-        self.documents.push(document);
         Ok(())
+    }
+
+    /// Returns the document at `path` and adds it to the session. A relative `path` is resolved
+    /// against the working folder.
+    ///
+    /// Documents are cached by canonical path. The document must be in the working folder's
+    /// collection, and the session must have the permissions it requires (see `add_document`).
+    pub async fn document(
+        &mut self,
+        path: impl AsRef<Path>,
+    ) -> Result<&Document, AccessDocumentError> {
+        let folder = self
+            .folder
+            .as_ref()
+            .ok_or(AccessDocumentError::NoWorkingFolder)?;
+        let key = canonical_document_path(folder, path.as_ref()).await?;
+        if self.documents.contains_key(&key) {
+            // Permissions may have changed since the document was added
+            self.check_access(&self.documents[&key])?;
+        } else {
+            let document = folder.document(&key).await?;
+            self.add_document(document)?;
+        }
+        Ok(&self.documents[&key])
     }
 
     // TODO: Bikeshed method name and error type
@@ -369,15 +412,47 @@ impl<'a> PermissionTracker<'a> {
     }
 }
 
+/// Resolves `path` (relative to `folder` unless absolute) to a canonical path, which is the key
+/// under which a session caches documents.
+async fn canonical_document_path(
+    folder: &Folder,
+    path: &Path,
+) -> Result<PathBuf, AccessLibraryError> {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        folder.collection().path().join(folder.path()).join(path)
+    };
+    fs::canonicalize(&path).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            AccessLibraryError::FileNotFound(path.clone())
+        } else {
+            AccessLibraryError::Io(e)
+        }
+    })
+}
+
 #[derive(Debug, Error)]
 pub enum AddDocumentError {
-    #[error("Session lacks required permissions: {}", 
+    #[error("Session lacks required permissions: {}",
         .0.iter().map(|p| p.name()).collect::<Vec<_>>().join(", "))]
     NotAuthorized(Vec<Permission>),
 
-    #[error("Session restrictions must be elevated to required permissions: {}", 
+    #[error("Session restrictions must be elevated to required permissions: {}",
         .0.iter().map(|p| p.name()).collect::<Vec<_>>().join(", "))]
     ElevationRequired(Vec<Permission>),
+}
+
+#[derive(Debug, Error)]
+pub enum AccessDocumentError {
+    #[error("Session has no working folder")]
+    NoWorkingFolder,
+
+    #[error(transparent)]
+    Library(#[from] AccessLibraryError),
+
+    #[error(transparent)]
+    Permission(#[from] AddDocumentError),
 }
 
 #[derive(Debug, Error)]
@@ -403,7 +478,7 @@ pub enum RestrictAccessError {
     #[error("Extensions lack required permissions: {}", .0.join(", "))]
     ExtensionNotAuthorized(Vec<String>),
 
-    #[error("Target permissions exceed those granted to extension: {}", 
+    #[error("Target permissions exceed those granted to extension: {}",
         .0.iter().map(|p| p.name()).collect::<Vec<_>>().join(", "))]
     PermissionDenied(Vec<Permission>),
 }
@@ -418,6 +493,8 @@ mod tests {
     use crate::embedding::EmbeddingModel;
     use crate::embedding::test_utils::MockEmbedderExtension;
     use crate::extension::Comp;
+    use crate::library::NewSource;
+    use crate::library::fs_test_utils::{TempTree, fs_tree};
     use crate::permissions::{GDPR, NOT_USED_FOR_TRAINING, ON_DEVICE, PUBLIC};
     use std::mem;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1287,5 +1364,122 @@ mod tests {
             ]))
             .unwrap_err();
         assert!(matches!(err, AddApiKeysError::InvalidName(_)));
+    }
+
+    #[tokio::test]
+    async fn document_requires_working_folder() {
+        let mut session = Session::new();
+        assert!(matches!(
+            session.document("doc.md").await,
+            Err(AccessDocumentError::NoWorkingFolder)
+        ));
+    }
+
+    #[tokio::test]
+    async fn document_resolves_path_relative_to_working_folder() {
+        let dir = TempTree::new(fs_tree! {
+            "child" => {},
+        })
+        .await
+        .unwrap();
+        let root = Folder::open(&dir).await.unwrap();
+        let child = root.folder("child").await.unwrap();
+        child
+            .create_document("doc.md", NewSource::Bytes(b"nested"), Some(&[]))
+            .await
+            .unwrap();
+
+        let mut session = Session::with_folder(root);
+        let doc = session.document("child/doc.md").await.unwrap();
+        assert_eq!(doc.path(), "child/doc.md");
+
+        let mut session = Session::with_folder(child);
+        let doc = session.document("doc.md").await.unwrap();
+        assert_eq!(doc.path(), "child/doc.md");
+    }
+
+    #[tokio::test]
+    async fn document_rejects_path_outside_collection() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "foo",
+        })
+        .await
+        .unwrap();
+        let other = TempTree::new(fs_tree! {
+            "other.md" => "bar",
+        })
+        .await
+        .unwrap();
+        let mut session = Session::with_folder(Folder::open(&dir).await.unwrap());
+
+        assert!(matches!(
+            session.document(other.join("other.md")).await,
+            Err(AccessDocumentError::Library(
+                AccessLibraryError::NotInCollection(_)
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn document_requires_session_permissions() {
+        // Documents without metadata default to `ON_DEVICE`
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "foo",
+        })
+        .await
+        .unwrap();
+        let mut session = Session::with_folder(Folder::open(&dir).await.unwrap());
+
+        // Sessions grant all permissions by default, but require none
+        assert!(matches!(
+            session.document("doc.md").await,
+            Err(AccessDocumentError::Permission(
+                AddDocumentError::ElevationRequired(_)
+            ))
+        ));
+        assert!(session.documents.is_empty());
+
+        session.permissions_granted = vec![];
+        session.permissions_required = vec![ON_DEVICE];
+        assert!(matches!(
+            session.document("doc.md").await,
+            Err(AccessDocumentError::Permission(
+                AddDocumentError::NotAuthorized(_)
+            ))
+        ));
+        assert!(session.documents.is_empty());
+
+        session.permissions_granted = vec![ON_DEVICE];
+        let doc = session.document("doc.md").await.unwrap();
+        assert_eq!(doc.path(), "doc.md");
+        assert_eq!(session.documents.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn document_is_cached_by_canonical_path() {
+        // Documents without metadata default to `ON_DEVICE`
+        let dir = TempTree::new(fs_tree! {
+            "child" => {
+                "doc.md" => "nested",
+            },
+        })
+        .await
+        .unwrap();
+        let mut session = Session::with_folder(Folder::open(&dir).await.unwrap());
+        session.permissions_required = vec![ON_DEVICE];
+
+        session.document("child/doc.md").await.unwrap();
+        session.document("child/../child/./doc.md").await.unwrap();
+        assert_eq!(session.documents.len(), 1);
+
+        // Cached documents are still subject to the session's current permissions
+        session.permissions_required = vec![];
+        assert!(matches!(
+            session.document("child/doc.md").await,
+            Err(AccessDocumentError::Permission(
+                AddDocumentError::ElevationRequired(_)
+            ))
+        ));
+        assert_eq!(session.documents.len(), 1);
     }
 }
