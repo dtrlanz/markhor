@@ -26,9 +26,9 @@ pub struct ImportArgs {
     #[arg(long, value_delimiter = ',')]
     pages: Option<Vec<u32>>,
 
-    /// Also store the images found in the document as attachments.
+    /// Do not store the images found in the document. They are stored by default.
     #[arg(long)]
-    include_images: bool,
+    no_images: bool,
 
     /// How pages are laid out in the text.
     #[arg(long, value_enum, default_value_t = PageModeArg::Milestones)]
@@ -85,7 +85,7 @@ pub async fn run(args: ImportArgs) -> Result<()> {
     let options = ImportOptions {
         ocr: OcrOptions {
             pages: args.pages,
-            include_images: args.include_images,
+            include_images: !args.no_images,
         },
         page_mode: args.page_mode.into(),
     };

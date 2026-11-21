@@ -23,7 +23,7 @@ cargo run -p markhor_cli -- chat
 cargo run -p markhor_cli -- chat --model gemma-4-31b-it
 cargo run -p markhor_cli -- import scan.pdf
 cargo run -p markhor_cli -- import https://example.com/report.pdf --folder notes
-cargo run -p markhor_cli -- import scan.pdf --pages 0,1 --include-images
+cargo run -p markhor_cli -- import scan.pdf --pages 0,1 --no-images
 ```
 
 ### `chat`
@@ -49,13 +49,15 @@ folder.
 - `--folder` is the folder to import into. It defaults to the current directory
   and must be inside a workspace.
 - `--pages` takes zero-based page numbers. It defaults to all pages.
-- `--include-images` also stores the images found in the document.
+- `--no-images` does not store the images found in the document. By default they
+  are stored as attachments. Without them, image links in the text are left as
+  the OCR output wrote them and point at nothing.
 - `--page-mode` chooses how pages are laid out in the text:
   - `milestones` (default): each page starts with a
     `<milestone unit="page" n="{index}" />` marker, where `n` is the zero-based
     page index. The markers stay in the text, including what chunkers and
     embedding models see.
-  - `part-per-page`: each page becomes its own part.
+  - `parts`: each page becomes its own part.
   - `merged`: pages are joined by blank lines, with no markers. Page boundaries
     are lost.
 
