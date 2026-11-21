@@ -16,7 +16,7 @@ use crate::{
     extension::Comp,
     library::{ATTACHMENTS_DIR, AccessLibraryError, HashValue, METADATA_EXTENSION, Tag, Workspace},
     markdown::{ToMarkdown, WITH_MILESTONES},
-    permissions::Restricted,
+    permissions::{Permission, Restricted, permission_by_name},
 };
 
 pub mod chunks;
@@ -457,6 +457,7 @@ impl Document {
         workspace: Workspace,
         path: &Path,
         source: NewSource<'a>,
+        required_permissions: &[Permission],
     ) -> Result<Self, AccessLibraryError> {
         let parent = path
             .parent()
@@ -479,7 +480,7 @@ impl Document {
             return Err(AccessLibraryError::NotInWorkspace(absolute_path));
         }
 
-        let mut metadata = DocumentMetadata::from_path(&absolute_path);
+        let mut metadata = DocumentMetadata::from_path(&absolute_path, required_permissions);
         if matches!(source, NewSource::Empty) && !metadata.source_is_text() {
             return Err(AccessLibraryError::SourceRequired(absolute_path));
         }
@@ -566,7 +567,7 @@ impl Document {
             return Err(AccessLibraryError::NotInWorkspace(absolute_path));
         }
 
-        let metadata = DocumentMetadata::from_path(&absolute_path);
+        let metadata = DocumentMetadata::from_path(&absolute_path, workspace.default_permissions());
         let mut doc = Document {
             absolute_path,
             workspace,
@@ -592,13 +593,17 @@ impl Document {
             || self.metadata.metadata_location == MetadataLocation::Unknown
         {
             // Attempt to load metadata from metadata file
-            match read_markdown_file::<DocumentMetadata>(&self.metadata_path()).await {
-                Ok((text, Ok(metadata))) => {
+            match read_markdown_file::<DocumentMetadataFile>(&self.metadata_path()).await {
+                Ok((text, Ok(file))) => {
                     debug!(
                         "Loaded metadata from metadata file {:?}",
                         self.metadata_path()
                     );
-                    if metadata.metadata_location == MetadataLocation::MetadataFile {
+                    if file.metadata_location == MetadataLocation::MetadataFile {
+                        let metadata = file.into_metadata(
+                            self.workspace.default_permissions(),
+                            &self.metadata_path(),
+                        );
                         if metadata.source_is_text() {
                             // Source is text file. Ignore any text suffixed to metadata.
                             if text.trim_end() != "" {
@@ -658,9 +663,11 @@ impl Document {
         {
             // Read text and metadata from source file
             let (text, metadata_result) =
-                read_markdown_file::<DocumentMetadata>(&self.absolute_path).await?;
+                read_markdown_file::<DocumentMetadataFile>(&self.absolute_path).await?;
             let metadata = match metadata_result {
-                Ok(metadata) => metadata,
+                Ok(file) => {
+                    file.into_metadata(self.workspace.default_permissions(), &self.absolute_path)
+                }
                 Err(e) => {
                     if self.metadata.metadata_location == MetadataLocation::SourceFile {
                         // Metadata was expected. Return error.
@@ -672,7 +679,10 @@ impl Document {
                         self.absolute_path, e
                     );
                     // Create default metadata
-                    let mut metadata = DocumentMetadata::from_path(&self.absolute_path);
+                    let mut metadata = DocumentMetadata::from_path(
+                        &self.absolute_path,
+                        self.workspace.default_permissions(),
+                    );
                     metadata.metadata_location = MetadataLocation::None;
                     metadata
                 }
@@ -751,6 +761,14 @@ impl Document {
                 }
             }
             MetadataLocation::None => {
+                if self.metadata.required_permissions != self.workspace.default_permissions() {
+                    // Permissions are inferred from the workspace default on load, so they cannot
+                    // be stored without a metadata location. Fail before anything is written.
+                    return Err(AccessLibraryError::MetadataLocation(
+                        MetadataLocation::None,
+                        "Cannot save required_permissions that differ from the workspace default without a metadata location".into(),
+                    ));
+                }
                 if let Some(text) = text_export {
                     if self.metadata.source_is_text() {
                         debug!(
@@ -765,7 +783,10 @@ impl Document {
                         );
                     }
                 }
-                if !self.metadata.inferrable(&self.absolute_path) {
+                if !self
+                    .metadata
+                    .inferrable(&self.absolute_path, self.workspace.default_permissions())
+                {
                     warn!(
                         "Metadata will not be saved for document {:?} because metadata_location is None.",
                         self.absolute_path
@@ -871,16 +892,15 @@ impl Document {
     }
 }
 
-// TODO: Besides adding permissions to document metadata and then completing this implementation,
-// a bit more thought should go into what exactly these permissions apply to. You'll want an agent
-// to be able to search through documents in its scope and read at least some metadata before
+// TODO: A bit more thought should go into what exactly these permissions apply to. You'll want an
+// agent to be able to search through documents in its scope and read at least some metadata before
 // accessing the document content and thus incurring any restrictions attached to that document.
 // But you could also leak sensitive information via metadata. We'll probably start with a fairly
 // pragmatic approach that's explictly not watertight. Permissions could become more finegrained
 // later on.
 impl Restricted for Document {
-    fn permissions_required(&self) -> &[crate::permissions::Permission] {
-        todo!("Implement permissions for Document");
+    fn permissions_required(&self) -> &[Permission] {
+        &self.metadata.required_permissions
     }
 }
 
@@ -940,7 +960,7 @@ impl Default for MetadataLocation {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DocumentMetadata {
     pub id: Uuid,
     #[serde(with = "mime_serde")]
@@ -953,25 +973,28 @@ pub struct DocumentMetadata {
     #[serde(default)]
     #[serde(skip_serializing_if = "is_default")]
     pub doc_parts: Option<String>,
+    #[serde(with = "permission_names")]
+    pub required_permissions: Vec<Permission>,
     #[serde(flatten)]
     other_fields: serde_yaml_ng::Mapping,
 }
 
 impl DocumentMetadata {
-    pub fn new(mime: Mime) -> Self {
+    pub fn new(mime: Mime, required_permissions: &[Permission]) -> Self {
         Self {
             id: Uuid::new_v4(),
             mime,
             // text_location: Default::default(),
             metadata_location: MetadataLocation::Unknown,
             doc_parts: Default::default(),
+            required_permissions: required_permissions.to_vec(),
             other_fields: Default::default(),
         }
     }
 
-    pub fn from_path(path: &Path) -> Self {
+    pub fn from_path(path: &Path, required_permissions: &[Permission]) -> Self {
         let mime = mime_guess2::from_path(path).first_or_octet_stream();
-        Self::new(mime)
+        Self::new(mime, required_permissions)
     }
 
     pub fn source_is_text(&self) -> bool {
@@ -986,15 +1009,54 @@ impl DocumentMetadata {
 
     /// Checks if the document metadata that could be inferred correctly.
     ///
-    /// Tests whether the metadata that would be inferred given the provided path (e.g., when
-    /// creating a new document) matches the existing metadata. The document ID is ignored since
-    /// this can never be inferred.
+    /// Tests whether the metadata that would be inferred given the provided path and default
+    /// permissions (e.g., when creating a new document) matches the existing metadata. The document
+    /// ID is ignored since this can never be inferred.
     ///
     /// This method is useful when testing whether metadata needs to be saved to avoid data loss.
-    pub fn inferrable(&self, path: &Path) -> bool {
-        let mut inferred = Self::from_path(path);
+    pub fn inferrable(&self, path: &Path, default_permissions: &[Permission]) -> bool {
+        let mut inferred = Self::from_path(path, default_permissions);
         inferred.id = self.id; // ID should not affect inferrability
         inferred == *self
+    }
+}
+
+/// On-disk form of [`DocumentMetadata`], used when reading.
+///
+/// `required_permissions` is optional here so that metadata written before the attribute existed
+/// can be recognized and given the workspace default. Such metadata must never load as unrestricted.
+#[derive(Deserialize)]
+struct DocumentMetadataFile {
+    id: Uuid,
+    #[serde(with = "mime_serde")]
+    mime: Mime,
+    #[serde(default)]
+    metadata_location: MetadataLocation,
+    #[serde(default)]
+    doc_parts: Option<String>,
+    #[serde(default, with = "permission_names::optional")]
+    required_permissions: Option<Vec<Permission>>,
+    #[serde(flatten)]
+    other_fields: serde_yaml_ng::Mapping,
+}
+
+impl DocumentMetadataFile {
+    fn into_metadata(self, default_permissions: &[Permission], origin: &Path) -> DocumentMetadata {
+        let required_permissions = self.required_permissions.unwrap_or_else(|| {
+            warn!(
+                "Metadata for {:?} has no `required_permissions`; using the workspace default. Saving the document will record it.",
+                origin
+            );
+            default_permissions.to_vec()
+        });
+        DocumentMetadata {
+            id: self.id,
+            mime: self.mime,
+            metadata_location: self.metadata_location,
+            doc_parts: self.doc_parts,
+            required_permissions,
+            other_fields: self.other_fields,
+        }
     }
 }
 
@@ -1015,6 +1077,43 @@ mod mime_serde {
     {
         let s = String::deserialize(deserializer)?;
         s.parse::<Mime>().map_err(serde::de::Error::custom)
+    }
+}
+
+/// Serde helpers for permission lists. Permissions are stored by name and resolved only here, so
+/// `Permission` itself has no serde impls for other crates to depend on.
+mod permission_names {
+    use super::*;
+    use serde::{Deserializer, Serializer};
+
+    fn lookup<E: serde::de::Error>(name: &str) -> Result<Permission, E> {
+        permission_by_name(name).ok_or_else(|| E::custom(format!("unknown permission {name:?}")))
+    }
+
+    pub fn serialize<S: Serializer>(
+        permissions: &[Permission],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(permissions.iter().map(Permission::name))
+    }
+
+    /// Like the parent module's helpers, but for an attribute that may be absent. An absent
+    /// attribute is `None`, never an empty list.
+    pub mod optional {
+        use super::*;
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<Vec<Permission>>, D::Error> {
+            Option::<Vec<String>>::deserialize(deserializer)?
+                .map(|names| {
+                    names
+                        .iter()
+                        .map(|name| lookup::<D::Error>(name))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()
+        }
     }
 }
 
@@ -1043,11 +1142,13 @@ mod tests {
     use crate::extension::TryIntoComp;
     use crate::library::document::text::Part;
     use crate::library::fs_test_utils::{TempTree, fs_tree};
+    use crate::permissions::ON_DEVICE;
     use crate::{chunking::test_chunker::FixedSizeChunkerExtension, embedding::Embedding};
 
     #[tokio::test]
     async fn document_open() {
-        let metadata: DocumentMetadata = DocumentMetadata::new("text/markdown".parse().unwrap());
+        let metadata: DocumentMetadata =
+            DocumentMetadata::new("text/markdown".parse().unwrap(), &[]);
         let metadata_str = serde_yaml_ng::to_string(&metadata).unwrap();
 
         let dir = TempTree::new(fs_tree! {
@@ -1484,7 +1585,7 @@ extensions:
     #[test_log::test]
     async fn markdown_with_integrated_metadata() {
         let dir = TempTree::new(fs_tree! {
-            "doc.md" => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/markdown\n---\nhello world",
+            "doc.md" => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/markdown\nrequired_permissions: []\n---\nhello world",
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
 
@@ -1509,7 +1610,7 @@ extensions:
         let content = fs::read_to_string(&dir.join("doc.md")).await.unwrap();
         assert_eq!(
             content,
-            "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/markdown\n---\nhello world"
+            "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/markdown\nrequired_permissions: []\n---\nhello world"
         );
     }
 
@@ -1518,7 +1619,7 @@ extensions:
     async fn markdown_with_separate_metadata_file() {
         let dir = TempTree::new(fs_tree! {
             "doc.md" => "hello world",
-            format!("doc.md.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/markdown\nmetadata_location: metadata-file\n---\n",
+            format!("doc.md.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/markdown\nmetadata_location: metadata-file\nrequired_permissions: []\n---\n",
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
 
@@ -1547,7 +1648,7 @@ extensions:
             .unwrap();
         assert_eq!(
             metadata,
-            "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/markdown\nmetadata_location: metadata-file\n---\n"
+            "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/markdown\nmetadata_location: metadata-file\nrequired_permissions: []\n---\n"
         );
     }
 
@@ -1586,7 +1687,7 @@ extensions:
     async fn csv_with_separate_metadata_file() {
         let dir = TempTree::new(fs_tree! {
             "doc.csv" => "a,b,c\n1,2,3",
-            format!("doc.csv.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/csv\nmetadata_location: metadata-file\n---\n",
+            format!("doc.csv.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/csv\nmetadata_location: metadata-file\nrequired_permissions: []\n---\n",
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
 
@@ -1615,7 +1716,7 @@ extensions:
             .unwrap();
         assert_eq!(
             metadata,
-            "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/csv\nmetadata_location: metadata-file\n---\n"
+            "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/csv\nmetadata_location: metadata-file\nrequired_permissions: []\n---\n"
         );
     }
 
@@ -1652,7 +1753,7 @@ extensions:
     async fn pdf_with_metadata_without_text() {
         let dir = TempTree::new(fs_tree! {
             "doc.pdf" => "%PDF-1.4\n%âãÏÓ\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF",
-            format!("doc.pdf.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\nmetadata_location: metadata-file\n---\n",
+            format!("doc.pdf.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\nmetadata_location: metadata-file\nrequired_permissions: []\n---\n",
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
 
@@ -1681,7 +1782,7 @@ extensions:
             .unwrap();
         assert_eq!(
             metadata,
-            "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\nmetadata_location: metadata-file\n---\n"
+            "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\nmetadata_location: metadata-file\nrequired_permissions: []\n---\n"
         );
     }
 
@@ -1690,7 +1791,7 @@ extensions:
     async fn pdf_with_text_and_metadata() {
         let dir = TempTree::new(fs_tree! {
             "doc.pdf" => "%PDF-1.4\n%âãÏÓ\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF",
-            format!("doc.pdf.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\nmetadata_location: metadata-file\n---\nHello world",
+            format!("doc.pdf.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\nmetadata_location: metadata-file\nrequired_permissions: []\n---\nHello world",
         }).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
 
@@ -1722,7 +1823,7 @@ extensions:
             .unwrap();
         assert_eq!(
             metadata,
-            "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\nmetadata_location: metadata-file\n---\nHello world"
+            "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\nmetadata_location: metadata-file\nrequired_permissions: []\n---\nHello world"
         );
     }
 
@@ -1732,9 +1833,14 @@ extensions:
         let dir = TempTree::new(fs_tree! {}).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
 
-        let err = Document::create(ws, &dir.join("missing").join("doc.md"), NewSource::Empty)
-            .await
-            .unwrap_err();
+        let err = Document::create(
+            ws,
+            &dir.join("missing").join("doc.md"),
+            NewSource::Empty,
+            &[],
+        )
+        .await
+        .unwrap_err();
         assert!(
             matches!(err, AccessLibraryError::DirectoryNotFound(_)),
             "{err}"
@@ -1747,7 +1853,7 @@ extensions:
         let dir = TempTree::new(fs_tree! {}).await.unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
 
-        let mut doc = Document::create(ws.clone(), &dir.join("doc.md"), NewSource::Empty)
+        let mut doc = Document::create(ws.clone(), &dir.join("doc.md"), NewSource::Empty, &[])
             .await
             .unwrap();
         doc.text_mut()
@@ -1786,7 +1892,7 @@ extensions:
         .unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
 
-        let err = Document::create(ws, &dir.join("doc.md"), NewSource::Empty)
+        let err = Document::create(ws, &dir.join("doc.md"), NewSource::Empty, &[])
             .await
             .unwrap_err();
         assert!(
@@ -1814,6 +1920,7 @@ extensions:
             ws.clone(),
             &dir.join("scan.png"),
             NewSource::CopyFrom(src.join("scan.png")),
+            &[],
         )
         .await
         .unwrap();
@@ -1840,6 +1947,7 @@ extensions:
             ws,
             &dir.join("notes.txt"),
             NewSource::Bytes(&b"first line\nsecond line\n".to_vec()),
+            &[],
         )
         .await
         .unwrap();
@@ -1866,6 +1974,7 @@ extensions:
             ws,
             &dir.join("scan.png"),
             NewSource::CopyFrom(dir.join("missing.png")),
+            &[],
         )
         .await
         .unwrap_err();
@@ -1893,6 +2002,7 @@ extensions:
             ws,
             &dir.join("scan.png"),
             NewSource::Bytes(&b"png-bytes".to_vec()),
+            &[],
         )
         .await
         .unwrap_err();
@@ -1905,5 +2015,113 @@ extensions:
             "orphaned metadata"
         );
         assert!(!fs::try_exists(dir.join("scan.png")).await.unwrap());
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn unknown_permission_name_falls_back_to_strict_default() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/markdown\nrequired_permissions: [no-such-permission]\n---\nhello",
+        })
+        .await
+        .unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+
+        // The block cannot be parsed, so it is ignored. The document must not become unrestricted.
+        let doc = Document::open(ws, &dir.join("doc.md")).await.unwrap();
+        assert_eq!(doc.permissions_required(), &[ON_DEVICE]);
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn legacy_metadata_without_permissions_gets_workspace_default() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/markdown\n---\nhello world",
+        })
+        .await
+        .unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+
+        let mut doc = Document::open(ws.clone(), &dir.join("doc.md"))
+            .await
+            .unwrap();
+        assert_eq!(doc.permissions_required(), &[ON_DEVICE]);
+
+        // The next save records the default explicitly, so a reopened document stays restricted.
+        doc.save().await.unwrap();
+        let reopened = Document::open(ws, &dir.join("doc.md")).await.unwrap();
+        assert_eq!(reopened.permissions_required(), &[ON_DEVICE]);
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn create_document_stores_requested_permissions() {
+        use crate::permissions::{Actor, Authorized, PUBLIC, Permission};
+
+        let dir = TempTree::new(fs_tree! {}).await.unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+        let folder = ws.root();
+
+        folder
+            .create_document("default.md", NewSource::Empty, None)
+            .await
+            .unwrap();
+        folder
+            .create_document("public.md", NewSource::Empty, Some(&[PUBLIC]))
+            .await
+            .unwrap();
+        folder
+            .create_document("open.md", NewSource::Empty, Some(&[]))
+            .await
+            .unwrap();
+
+        let default = Document::open(ws.clone(), &dir.join("default.md"))
+            .await
+            .unwrap();
+        assert_eq!(default.permissions_required(), &[ON_DEVICE]);
+        assert!(!Actor(Vec::<Permission>::new()).may_access(&default));
+
+        let public = Document::open(ws.clone(), &dir.join("public.md"))
+            .await
+            .unwrap();
+        assert_eq!(public.permissions_required(), &[PUBLIC]);
+
+        let open = Document::open(ws, &dir.join("open.md")).await.unwrap();
+        assert!(open.permissions_required().is_empty());
+        assert!(Actor(Vec::<Permission>::new()).may_access(&open));
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn save_refuses_to_drop_non_default_permissions_from_inferred_metadata() {
+        let dir = TempTree::new(fs_tree! {
+            "notes.txt" => "hello",
+        })
+        .await
+        .unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+        let mut doc = Document::open(ws, &dir.join("notes.txt")).await.unwrap();
+        assert_eq!(doc.metadata.metadata_location, MetadataLocation::None);
+
+        doc.metadata.required_permissions = Vec::new();
+        doc.text_mut().await.unwrap().import(Some("changed"), None);
+        let err = doc.save().await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AccessLibraryError::MetadataLocation(MetadataLocation::None, _)
+            ),
+            "{err}"
+        );
+
+        assert_eq!(
+            fs::read_to_string(&dir.join("notes.txt")).await.unwrap(),
+            "hello"
+        );
+        assert!(
+            !fs::try_exists(dir.join(format!("notes.txt.{}", METADATA_EXTENSION)))
+                .await
+                .unwrap()
+        );
     }
 }

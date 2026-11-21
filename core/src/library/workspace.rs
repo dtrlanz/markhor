@@ -13,6 +13,7 @@ use crate::{
     library::{
         AccessLibraryError, Document, Folder, WORKSPACE_CONFIG_DIR, WORKSPACE_METADATA_FILENAME,
     },
+    permissions::{ON_DEVICE, Permission},
     vector_store::VectorStore,
 };
 
@@ -54,6 +55,14 @@ impl Workspace {
     /// Returns the root folder of the workspace.
     pub fn root(&self) -> Folder {
         Folder::new(self.inner.absolute_path.clone(), self.clone())
+    }
+
+    /// Returns the permissions given to documents that do not specify their own.
+    ///
+    /// This is the strictest level, so documents are restricted unless their owner says otherwise.
+    /// It is a placeholder until permissions can be configured per workspace.
+    pub fn default_permissions(&self) -> &[Permission] {
+        &[ON_DEVICE]
     }
 
     /// Opens an existing directory as a workspace.

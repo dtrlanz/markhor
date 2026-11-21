@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use clap::{Args, ValueEnum};
 use markhor::import::{ImportOptions, PageMode, import};
 use markhor_core::{
@@ -10,6 +10,7 @@ use markhor_core::{
     extension::{Comp, ExtensionConfig},
     library::Folder,
     ocr::{OcrInput, OcrModel, OcrOptions},
+    permissions::{NOT_USED_FOR_TRAINING, ON_DEVICE, PUBLIC, Permission},
 };
 use markhor_extensions::mistral::{Client, ClientConfig};
 
@@ -34,6 +35,12 @@ pub struct ImportArgs {
     /// How pages are laid out in the text.
     #[arg(long, value_enum, default_value_t = PageModeArg::Milestones)]
     page_mode: PageModeArg,
+
+    /// Permissions needed to access the document, comma-separated: `on-device`,
+    /// `not-used-for-training`, or `public`. Use `none` for an unrestricted document. Defaults
+    /// to the workspace default.
+    #[arg(long, value_delimiter = ',')]
+    required_permissions: Option<Vec<String>>,
 }
 
 /// Command-line names for [`PageMode`].
@@ -89,6 +96,11 @@ pub async fn run(args: ImportArgs) -> Result<()> {
             include_images: !args.no_images,
         },
         page_mode: args.page_mode.into(),
+        required_permissions: args
+            .required_permissions
+            .as_deref()
+            .map(parse_permissions)
+            .transpose()?,
     };
 
     let doc = import(&folder, input, &*model, &options)
@@ -96,4 +108,44 @@ pub async fn run(args: ImportArgs) -> Result<()> {
         .context("import failed")?;
     println!("{}", doc.path().display());
     Ok(())
+}
+
+/// Parses command-line permission names. `none` alone means an unrestricted document.
+fn parse_permissions(names: &[String]) -> Result<Vec<Permission>> {
+    if names.iter().any(|name| name == "none") {
+        ensure!(
+            names.len() == 1,
+            "`none` cannot be combined with other permissions"
+        );
+        return Ok(Vec::new());
+    }
+    names
+        .iter()
+        .map(|name| match name.as_str() {
+            "on-device" => Ok(ON_DEVICE),
+            "not-used-for-training" => Ok(NOT_USED_FOR_TRAINING),
+            "public" => Ok(PUBLIC),
+            other => bail!("unknown permission `{other}`"),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_permissions_accepts_names_and_none() {
+        assert_eq!(
+            parse_permissions(&["on-device".into(), "public".into()]).unwrap(),
+            vec![ON_DEVICE, PUBLIC]
+        );
+        assert!(parse_permissions(&["none".into()]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_permissions_rejects_none_combined_and_unknown_names() {
+        assert!(parse_permissions(&["none".into(), "public".into()]).is_err());
+        assert!(parse_permissions(&["gdpr".into()]).is_err());
+    }
 }

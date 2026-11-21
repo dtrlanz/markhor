@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use markhor_core::{
     library::{AccessLibraryError, Document, Folder, NewSource, Part},
     ocr::{OcrError, OcrInput, OcrModel, OcrOptions, OcrPage, media_type_from_url},
+    permissions::Permission,
 };
 use thiserror::Error;
 
@@ -60,6 +61,9 @@ pub enum PageMode {
 pub struct ImportOptions {
     pub ocr: OcrOptions,
     pub page_mode: PageMode,
+    /// Permissions needed to access the imported document. `None` uses the workspace default;
+    /// `Some(vec![])` makes the document unrestricted.
+    pub required_permissions: Option<Vec<Permission>>,
 }
 
 /// Recognizes `input` and stores it in `folder` under the input's file name.
@@ -112,12 +116,20 @@ pub async fn import(
     let created = match &original {
         Original::File(path) => {
             folder
-                .create_document(&name, NewSource::CopyFrom(path.clone()))
+                .create_document(
+                    &name,
+                    NewSource::CopyFrom(path.clone()),
+                    options.required_permissions.as_deref(),
+                )
                 .await
         }
         Original::Data(data) => {
             folder
-                .create_document(&name, NewSource::Bytes(data.as_slice()))
+                .create_document(
+                    &name,
+                    NewSource::Bytes(data.as_slice()),
+                    options.required_permissions.as_deref(),
+                )
                 .await
         }
     };
@@ -330,6 +342,45 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    async fn import_uses_workspace_default_unless_permissions_are_given() {
+        use markhor_core::permissions::{ON_DEVICE, PUBLIC, Restricted};
+
+        let (_ws_dir, ws) = workspace().await;
+        let cases = [
+            ("default.png", None),
+            ("public.png", Some(vec![PUBLIC])),
+            ("open.png", Some(vec![])),
+        ];
+        for (name, required_permissions) in cases {
+            let (_src_dir, src) = source(name, b"png-bytes");
+            let options = ImportOptions {
+                required_permissions,
+                ..Default::default()
+            };
+            import(&ws.root(), OcrInput::Path(src), &two_page_model(), &options)
+                .await
+                .unwrap();
+        }
+
+        let reopen = |name: &'static str| ws.document(name);
+        assert_eq!(
+            reopen("default.png").await.unwrap().permissions_required(),
+            &[ON_DEVICE]
+        );
+        assert_eq!(
+            reopen("public.png").await.unwrap().permissions_required(),
+            &[PUBLIC]
+        );
+        assert!(
+            reopen("open.png")
+                .await
+                .unwrap()
+                .permissions_required()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

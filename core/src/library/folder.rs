@@ -4,6 +4,7 @@ use tokio::fs::{self, ReadDir};
 use tracing::{debug, instrument};
 
 use crate::library::{AccessLibraryError, Document, METADATA_EXTENSION, NewSource};
+use crate::permissions::Permission;
 
 use super::Workspace;
 
@@ -86,10 +87,15 @@ impl Folder {
         }
     }
 
+    /// Creates a document named `name` in this folder.
+    ///
+    /// `required_permissions` are the permissions needed to access the document. `None` uses the
+    /// workspace default, and `Some(&[])` makes the document unrestricted.
     pub async fn create_document<'a>(
         &self,
         name: impl AsRef<str>,
         source: NewSource<'a>,
+        required_permissions: Option<&[Permission]>,
     ) -> Result<Document, AccessLibraryError> {
         let name = name.as_ref();
         if name.contains(std::path::MAIN_SEPARATOR) {
@@ -98,7 +104,9 @@ impl Folder {
             );
         }
         let path = self.absolute_path.join(name);
-        Document::create(self.workspace.clone(), &path, source).await
+        let required_permissions =
+            required_permissions.unwrap_or_else(|| self.workspace.default_permissions());
+        Document::create(self.workspace.clone(), &path, source, required_permissions).await
     }
 
     /// Returns whether a document or its metadata file already exists under `name`.
