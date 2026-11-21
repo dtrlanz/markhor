@@ -4,10 +4,9 @@ members = [
     "core_derive_provide",
     "cli",
     "cli/sim",
-    "extensions", "markhor",
-    "gui", 
-    "markhor", 
-    "util", 
+    "extensions",
+    "markhor",
+    "util",
 ]
 resolver = "3" # Use the edition 2024 resolver
 
