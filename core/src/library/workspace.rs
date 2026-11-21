@@ -13,7 +13,7 @@ use crate::{
     library::{
         AccessLibraryError, Document, Folder, WORKSPACE_CONFIG_DIR, WORKSPACE_METADATA_FILENAME,
     },
-    permissions::{ON_DEVICE, Permission},
+    permissions::{ON_DEVICE, Permission, all_permissions},
     vector_store::VectorStore,
 };
 
@@ -63,6 +63,13 @@ impl Workspace {
     /// It is a placeholder until permissions can be configured per workspace.
     pub fn default_permissions(&self) -> &[Permission] {
         &[ON_DEVICE]
+    }
+
+    /// Returns the permissions that may be used in this workspace.
+    ///
+    /// These are the built-in permissions for now. They will become configurable per workspace.
+    pub fn available_permissions(&self) -> Vec<Permission> {
+        all_permissions()
     }
 
     /// Opens an existing directory as a workspace.

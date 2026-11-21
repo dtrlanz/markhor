@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
 use markhor::import::{ImportOptions, PageMode, import};
 use markhor_core::{
@@ -10,7 +10,7 @@ use markhor_core::{
     extension::{Comp, ExtensionConfig},
     library::Folder,
     ocr::{OcrInput, OcrModel, OcrOptions},
-    permissions::{NOT_USED_FOR_TRAINING, ON_DEVICE, PUBLIC, Permission},
+    permissions::{Permission, Restricted},
 };
 use markhor_extensions::mistral::{Client, ClientConfig};
 
@@ -36,11 +36,14 @@ pub struct ImportArgs {
     #[arg(long, value_enum, default_value_t = PageModeArg::Milestones)]
     page_mode: PageModeArg,
 
-    /// Permissions needed to access the document, comma-separated: `on-device`,
-    /// `not-used-for-training`, or `public`. Use `none` for an unrestricted document. Defaults
-    /// to the workspace default.
-    #[arg(long, value_delimiter = ',')]
-    required_permissions: Option<Vec<String>>,
+    /// Who may access the document, e.g. `on-device`. Separate several with commas. Defaults to
+    /// the workspace default. Redundant permissions are not stored.
+    #[arg(short, long, value_delimiter = ',', conflicts_with = "unrestricted")]
+    access: Option<Vec<String>>,
+
+    /// Let anyone access the document. Cannot be combined with `--access`.
+    #[arg(long)]
+    unrestricted: bool,
 }
 
 /// Command-line names for [`PageMode`].
@@ -90,62 +93,112 @@ pub async fn run(args: ImportArgs) -> Result<()> {
     } else {
         OcrInput::Path(PathBuf::from(args.input))
     };
+    let requested = if args.unrestricted {
+        Some(Vec::new())
+    } else {
+        let available = folder.workspace().available_permissions();
+        args.access
+            .as_deref()
+            .map(|names| resolve_permissions(names, &available))
+            .transpose()?
+    };
     let options = ImportOptions {
         ocr: OcrOptions {
             pages: args.pages,
             include_images: !args.no_images,
         },
         page_mode: args.page_mode.into(),
-        required_permissions: args
-            .required_permissions
-            .as_deref()
-            .map(parse_permissions)
-            .transpose()?,
+        required_permissions: requested.clone(),
     };
 
     let doc = import(&folder, input, &*model, &options)
         .await
         .context("import failed")?;
+    if let Some(requested) = &requested {
+        report_implied(requested, doc.permissions_required());
+    }
     println!("{}", doc.path().display());
     Ok(())
 }
 
-/// Parses command-line permission names. `none` alone means an unrestricted document.
-fn parse_permissions(names: &[String]) -> Result<Vec<Permission>> {
-    if names.iter().any(|name| name == "none") {
-        ensure!(
-            names.len() == 1,
-            "`none` cannot be combined with other permissions"
-        );
-        return Ok(Vec::new());
-    }
+/// Looks up names among the `available` permissions. An unknown name is an error that lists the
+/// valid names.
+fn resolve_permissions(names: &[String], available: &[Permission]) -> Result<Vec<Permission>> {
     names
         .iter()
-        .map(|name| match name.as_str() {
-            "on-device" => Ok(ON_DEVICE),
-            "not-used-for-training" => Ok(NOT_USED_FOR_TRAINING),
-            "public" => Ok(PUBLIC),
-            other => bail!("unknown permission `{other}`"),
+        .map(|name| {
+            available
+                .iter()
+                .find(|permission| permission.name() == name.as_str())
+                .cloned()
+                .with_context(|| {
+                    let valid: Vec<_> = available.iter().map(Permission::name).collect();
+                    format!(
+                        "unknown permission `{name}`; valid permissions are {}",
+                        valid.join(", ")
+                    )
+                })
         })
         .collect()
+}
+
+/// Notes each requested permission that was not stored because a stored one implies it.
+fn report_implied(requested: &[Permission], stored: &[Permission]) {
+    for permission in requested {
+        if stored.contains(permission) {
+            continue;
+        }
+        if let Some(implier) = stored.iter().find(|s| *s > permission) {
+            eprintln!(
+                "note: `{}` is implied by `{}` and was not stored",
+                permission.name(),
+                implier.name()
+            );
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use markhor_core::permissions::{ON_DEVICE, PUBLIC};
 
-    #[test]
-    fn parse_permissions_accepts_names_and_none() {
-        assert_eq!(
-            parse_permissions(&["on-device".into(), "public".into()]).unwrap(),
-            vec![ON_DEVICE, PUBLIC]
-        );
-        assert!(parse_permissions(&["none".into()]).unwrap().is_empty());
+    fn parse(args: &[&str]) -> Result<ImportArgs, clap::Error> {
+        let matches =
+            ImportArgs::augment_args(clap::Command::new("import")).try_get_matches_from(args)?;
+        <ImportArgs as clap::FromArgMatches>::from_arg_matches(&matches)
     }
 
     #[test]
-    fn parse_permissions_rejects_none_combined_and_unknown_names() {
-        assert!(parse_permissions(&["none".into(), "public".into()]).is_err());
-        assert!(parse_permissions(&["gdpr".into()]).is_err());
+    fn access_splits_comma_separated_names() {
+        let args = parse(&["import", "scan.pdf", "--access", "on-device,public"]).unwrap();
+        assert_eq!(
+            args.access,
+            Some(vec!["on-device".to_owned(), "public".to_owned()])
+        );
+    }
+
+    #[test]
+    fn unrestricted_conflicts_with_access() {
+        assert!(
+            parse(&["import", "scan.pdf", "--unrestricted"])
+                .unwrap()
+                .unrestricted
+        );
+        assert!(parse(&["import", "scan.pdf", "--unrestricted", "--access", "public"]).is_err());
+    }
+
+    #[test]
+    fn unknown_names_are_rejected_and_the_valid_ones_are_listed() {
+        let available = [ON_DEVICE, PUBLIC];
+        assert_eq!(
+            resolve_permissions(&["public".to_owned()], &available).unwrap(),
+            vec![PUBLIC]
+        );
+        let message = resolve_permissions(&["gdpr".to_owned()], &available)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("`gdpr`"), "{message}");
+        assert!(message.contains("on-device, public"), "{message}");
     }
 }

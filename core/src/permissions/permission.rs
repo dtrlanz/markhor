@@ -142,6 +142,19 @@ pub(crate) const GDPR: Permission = Permission {
     entailed: &[&PUBLIC],
 };
 
+/// Returns `permissions` without any permission implied by another in the list, sorted by name.
+///
+/// Access does not change. An actor that satisfies the normalized list also satisfies the original.
+pub fn normalize(permissions: &[Permission]) -> Vec<Permission> {
+    let mut kept = Vec::new();
+    for permission in permissions {
+        Permission::insert(&mut kept, permission.clone());
+    }
+    kept.sort_by(|a, b| a.name().cmp(b.name()));
+    kept
+}
+
+/// Every permission known to this build.
 pub(crate) fn all_permissions() -> Vec<Permission> {
     #[cfg(test)]
     return vec![ON_DEVICE, NOT_USED_FOR_TRAINING, PUBLIC, GDPR];
@@ -155,6 +168,16 @@ pub(crate) fn permission_by_name(name: &str) -> Option<Permission> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_drops_implied_permissions_and_sorts() {
+        assert_eq!(
+            normalize(&[PUBLIC, ON_DEVICE, NOT_USED_FOR_TRAINING]),
+            vec![ON_DEVICE]
+        );
+        assert_eq!(normalize(&[ON_DEVICE, GDPR]), vec![GDPR, ON_DEVICE]);
+        assert_eq!(normalize(&[ON_DEVICE, ON_DEVICE]), vec![ON_DEVICE]);
+    }
 
     #[test]
     fn permission_hierarchy() {

@@ -16,7 +16,7 @@ use crate::{
     extension::Comp,
     library::{ATTACHMENTS_DIR, AccessLibraryError, HashValue, METADATA_EXTENSION, Tag, Workspace},
     markdown::{ToMarkdown, WITH_MILESTONES},
-    permissions::{Permission, Restricted, permission_by_name},
+    permissions::{Permission, Restricted, normalize, permission_by_name},
 };
 
 pub mod chunks;
@@ -480,7 +480,8 @@ impl Document {
             return Err(AccessLibraryError::NotInWorkspace(absolute_path));
         }
 
-        let mut metadata = DocumentMetadata::from_path(&absolute_path, required_permissions);
+        let required_permissions = normalize(required_permissions);
+        let mut metadata = DocumentMetadata::from_path(&absolute_path, &required_permissions);
         if matches!(source, NewSource::Empty) && !metadata.source_is_text() {
             return Err(AccessLibraryError::SourceRequired(absolute_path));
         }
@@ -2084,6 +2085,10 @@ extensions:
             .create_document("open.md", NewSource::Empty, Some(&[]))
             .await
             .unwrap();
+        folder
+            .create_document("redundant.md", NewSource::Empty, Some(&[PUBLIC, ON_DEVICE]))
+            .await
+            .unwrap();
 
         let default = Document::open(ws.clone(), &dir.join("default.md"))
             .await
@@ -2095,6 +2100,11 @@ extensions:
             .await
             .unwrap();
         assert_eq!(public.permissions_required(), &[PUBLIC]);
+
+        let redundant = Document::open(ws.clone(), &dir.join("redundant.md"))
+            .await
+            .unwrap();
+        assert_eq!(redundant.permissions_required(), &[ON_DEVICE]);
 
         let open = Document::open(ws, &dir.join("open.md")).await.unwrap();
         assert!(open.permissions_required().is_empty());

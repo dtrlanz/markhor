@@ -23,7 +23,7 @@ mod permission;
 mod restricted;
 
 pub use authorized::{Actor, Authorized};
-pub use permission::{NOT_USED_FOR_TRAINING, ON_DEVICE, PUBLIC, Permission};
+pub use permission::{NOT_USED_FOR_TRAINING, ON_DEVICE, PUBLIC, Permission, normalize};
 pub use restricted::{Resource, Restricted};
 
 #[cfg(test)]
