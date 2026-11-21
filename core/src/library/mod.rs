@@ -61,6 +61,9 @@ pub enum AccessLibraryError {
     #[error("Invalid metadata location: {0:?} ({1})")]
     MetadataLocation(MetadataLocation, String),
 
+    #[error("Unknown permission {name:?} in metadata of {path}")]
+    UnknownPermission { name: String, path: PathBuf },
+
     #[error("Invalid ID: {0}")]
     InvalidId(String),
 

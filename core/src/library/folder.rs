@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use tokio::fs::{self, ReadDir};
-use tracing::{debug, instrument};
+use tracing::{debug, error, instrument};
 
 use crate::library::{AccessLibraryError, Document, METADATA_EXTENSION, NewSource};
 use crate::permissions::Permission;
@@ -199,7 +199,15 @@ impl Read {
                         {
                             continue;
                         }
-                        let document = Document::open(self.workspace.clone(), &path).await?;
+                        let document = match Document::open(self.workspace.clone(), &path).await {
+                            Ok(document) => document,
+                            // A bad file must not stop the listing of its siblings.
+                            Err(e @ AccessLibraryError::UnknownPermission { .. }) => {
+                                error!("Skipping document: {e}");
+                                continue;
+                            }
+                            Err(e) => return Err(e),
+                        };
                         ReadEntry::Document(document)
                     } else {
                         // Ignore other types of entries (symlinks, etc.)
@@ -268,6 +276,28 @@ mod tests {
     use crate::library::fs_test_utils::{TempTree, fs_tree};
 
     use super::*;
+
+    #[tokio::test]
+    async fn listing_skips_documents_with_unknown_permissions() {
+        let dir = TempTree::new(fs_tree! {
+            "good.md" => "hello",
+            "bad.md" => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/markdown\nrequired_permissions: [no-such-permission]\n---\nhello",
+        })
+        .await
+        .unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+
+        let docs = ws
+            .root()
+            .read_recursive()
+            .await
+            .unwrap()
+            .into_vec()
+            .await
+            .unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].path(), "good.md");
+    }
 
     #[tokio::test]
     async fn folder_open() {

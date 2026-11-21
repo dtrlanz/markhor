@@ -603,7 +603,7 @@ impl Document {
                         let metadata = file.into_metadata(
                             self.workspace.default_permissions(),
                             &self.metadata_path(),
-                        );
+                        )?;
                         if metadata.source_is_text() {
                             // Source is text file. Ignore any text suffixed to metadata.
                             if text.trim_end() != "" {
@@ -666,7 +666,7 @@ impl Document {
                 read_markdown_file::<DocumentMetadataFile>(&self.absolute_path).await?;
             let metadata = match metadata_result {
                 Ok(file) => {
-                    file.into_metadata(self.workspace.default_permissions(), &self.absolute_path)
+                    file.into_metadata(self.workspace.default_permissions(), &self.absolute_path)?
                 }
                 Err(e) => {
                     if self.metadata.metadata_location == MetadataLocation::SourceFile {
@@ -1034,29 +1034,46 @@ struct DocumentMetadataFile {
     metadata_location: MetadataLocation,
     #[serde(default)]
     doc_parts: Option<String>,
-    #[serde(default, with = "permission_names::optional")]
-    required_permissions: Option<Vec<Permission>>,
+    #[serde(default)]
+    required_permissions: Option<Vec<String>>,
     #[serde(flatten)]
     other_fields: serde_yaml_ng::Mapping,
 }
 
 impl DocumentMetadataFile {
-    fn into_metadata(self, default_permissions: &[Permission], origin: &Path) -> DocumentMetadata {
-        let required_permissions = self.required_permissions.unwrap_or_else(|| {
-            warn!(
-                "Metadata for {:?} has no `required_permissions`; using the workspace default. Saving the document will record it.",
-                origin
-            );
-            default_permissions.to_vec()
-        });
-        DocumentMetadata {
+    /// Resolves the stored permission names. An unknown name is an error, never dropped, since
+    /// dropping a restriction would make the document more accessible than intended.
+    fn into_metadata(
+        self,
+        default_permissions: &[Permission],
+        origin: &Path,
+    ) -> Result<DocumentMetadata, AccessLibraryError> {
+        let required_permissions = match self.required_permissions {
+            Some(names) => names
+                .iter()
+                .map(|name| {
+                    permission_by_name(name).ok_or_else(|| AccessLibraryError::UnknownPermission {
+                        name: name.clone(),
+                        path: origin.to_path_buf(),
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            None => {
+                warn!(
+                    "Metadata for {:?} has no `required_permissions`; using the workspace default. Saving the document will record it.",
+                    origin
+                );
+                default_permissions.to_vec()
+            }
+        };
+        Ok(DocumentMetadata {
             id: self.id,
             mime: self.mime,
             metadata_location: self.metadata_location,
             doc_parts: self.doc_parts,
             required_permissions,
             other_fields: self.other_fields,
-        }
+        })
     }
 }
 
@@ -1084,36 +1101,13 @@ mod mime_serde {
 /// `Permission` itself has no serde impls for other crates to depend on.
 mod permission_names {
     use super::*;
-    use serde::{Deserializer, Serializer};
-
-    fn lookup<E: serde::de::Error>(name: &str) -> Result<Permission, E> {
-        permission_by_name(name).ok_or_else(|| E::custom(format!("unknown permission {name:?}")))
-    }
+    use serde::Serializer;
 
     pub fn serialize<S: Serializer>(
         permissions: &[Permission],
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         serializer.collect_seq(permissions.iter().map(Permission::name))
-    }
-
-    /// Like the parent module's helpers, but for an attribute that may be absent. An absent
-    /// attribute is `None`, never an empty list.
-    pub mod optional {
-        use super::*;
-
-        pub fn deserialize<'de, D: Deserializer<'de>>(
-            deserializer: D,
-        ) -> Result<Option<Vec<Permission>>, D::Error> {
-            Option::<Vec<String>>::deserialize(deserializer)?
-                .map(|names| {
-                    names
-                        .iter()
-                        .map(|name| lookup::<D::Error>(name))
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .transpose()
-        }
     }
 }
 
@@ -2019,7 +2013,7 @@ extensions:
 
     #[tokio::test]
     #[test_log::test]
-    async fn unknown_permission_name_falls_back_to_strict_default() {
+    async fn unknown_permission_name_is_an_error() {
         let dir = TempTree::new(fs_tree! {
             "doc.md" => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/markdown\nrequired_permissions: [no-such-permission]\n---\nhello",
         })
@@ -2027,7 +2021,23 @@ extensions:
         .unwrap();
         let ws = Workspace::open(&dir).await.unwrap();
 
-        // The block cannot be parsed, so it is ignored. The document must not become unrestricted.
+        let err = Document::open(ws, &dir.join("doc.md")).await.unwrap_err();
+        assert!(
+            matches!(&err, AccessLibraryError::UnknownPermission { name, .. } if name == "no-such-permission"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn malformed_metadata_block_still_falls_back_to_strict_default() {
+        let dir = TempTree::new(fs_tree! {
+            "doc.md" => "---\nid: [unclosed\n---\nhello",
+        })
+        .await
+        .unwrap();
+        let ws = Workspace::open(&dir).await.unwrap();
+
         let doc = Document::open(ws, &dir.join("doc.md")).await.unwrap();
         assert_eq!(doc.permissions_required(), &[ON_DEVICE]);
     }
