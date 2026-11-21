@@ -14,7 +14,9 @@ use uuid::Uuid;
 use crate::{
     chunking::{Chunker, ChunkerError},
     extension::Comp,
-    library::{ATTACHMENTS_DIR, AccessLibraryError, HashValue, METADATA_EXTENSION, Tag, Workspace},
+    library::{
+        ATTACHMENTS_DIR, AccessLibraryError, Collection, HashValue, METADATA_EXTENSION, Tag,
+    },
     markdown::{ToMarkdown, WITH_MILESTONES},
     permissions::{Permission, Restricted, normalize, permission_by_name},
 };
@@ -29,8 +31,8 @@ pub struct Document {
     /// Absolute path to the source file
     pub(crate) absolute_path: PathBuf,
 
-    /// Workspace owning this document
-    workspace: Workspace,
+    /// Collection owning this document
+    collection: Collection,
     text: tokio::sync::OnceCell<Text>,
     metadata: DocumentMetadata,
     metadata_hash: std::sync::OnceLock<HashValue>,
@@ -63,10 +65,10 @@ impl<'a> NewSource<'a> {
 }
 
 impl Document {
-    /// Returns the relative path to the document within its workspace.
+    /// Returns the relative path to the document within its collection.
     pub fn path(&self) -> &Path {
         self.absolute_path
-            .strip_prefix(&self.workspace.path())
+            .strip_prefix(&self.collection.path())
             .unwrap()
     }
 
@@ -77,9 +79,9 @@ impl Document {
             .unwrap()
     }
 
-    /// Returns the workspace owning this document.
-    pub fn workspace(&self) -> &Workspace {
-        &self.workspace
+    /// Returns the collection owning this document.
+    pub fn collection(&self) -> &Collection {
+        &self.collection
     }
 
     pub fn id(&self) -> &Uuid {
@@ -454,7 +456,7 @@ impl Document {
     /// Markdown keeps its metadata in the source file. Other sources keep it in a sidecar file
     /// next to the source. The returned document's `absolute_path` is the canonical form of `path`.
     pub(crate) async fn create<'a>(
-        workspace: Workspace,
+        collection: Collection,
         path: &Path,
         source: NewSource<'a>,
         required_permissions: &[Permission],
@@ -476,8 +478,8 @@ impl Document {
             ))
         })?;
         let absolute_path = parent.join(file_name);
-        if !absolute_path.starts_with(workspace.path()) {
-            return Err(AccessLibraryError::NotInWorkspace(absolute_path));
+        if !absolute_path.starts_with(collection.path()) {
+            return Err(AccessLibraryError::NotInCollection(absolute_path));
         }
 
         let required_permissions = normalize(required_permissions);
@@ -520,7 +522,7 @@ impl Document {
 
         let mut doc = Self {
             absolute_path,
-            workspace,
+            collection,
             text: Text::new().into(),
             metadata,
             metadata_hash: Default::default(),
@@ -552,7 +554,7 @@ impl Document {
     }
 
     pub(crate) async fn open(
-        workspace: Workspace,
+        collection: Collection,
         absolute_path: &Path,
     ) -> Result<Self, AccessLibraryError> {
         // Check if path exists and all that
@@ -563,15 +565,16 @@ impl Document {
                 AccessLibraryError::Io(e)
             }
         })?;
-        // Check if path is inside of workspace
-        if !absolute_path.starts_with(&workspace.path()) {
-            return Err(AccessLibraryError::NotInWorkspace(absolute_path));
+        // Check if path is inside of collection
+        if !absolute_path.starts_with(&collection.path()) {
+            return Err(AccessLibraryError::NotInCollection(absolute_path));
         }
 
-        let metadata = DocumentMetadata::from_path(&absolute_path, workspace.default_permissions());
+        let metadata =
+            DocumentMetadata::from_path(&absolute_path, collection.default_permissions());
         let mut doc = Document {
             absolute_path,
-            workspace,
+            collection,
             text: Default::default(),
             metadata,
             metadata_hash: Default::default(),
@@ -602,7 +605,7 @@ impl Document {
                     );
                     if file.metadata_location == MetadataLocation::MetadataFile {
                         let metadata = file.into_metadata(
-                            self.workspace.default_permissions(),
+                            self.collection.default_permissions(),
                             &self.metadata_path(),
                         )?;
                         if metadata.source_is_text() {
@@ -667,7 +670,7 @@ impl Document {
                 read_markdown_file::<DocumentMetadataFile>(&self.absolute_path).await?;
             let metadata = match metadata_result {
                 Ok(file) => {
-                    file.into_metadata(self.workspace.default_permissions(), &self.absolute_path)?
+                    file.into_metadata(self.collection.default_permissions(), &self.absolute_path)?
                 }
                 Err(e) => {
                     if self.metadata.metadata_location == MetadataLocation::SourceFile {
@@ -682,7 +685,7 @@ impl Document {
                     // Create default metadata
                     let mut metadata = DocumentMetadata::from_path(
                         &self.absolute_path,
-                        self.workspace.default_permissions(),
+                        self.collection.default_permissions(),
                     );
                     metadata.metadata_location = MetadataLocation::None;
                     metadata
@@ -762,12 +765,12 @@ impl Document {
                 }
             }
             MetadataLocation::None => {
-                if self.metadata.required_permissions != self.workspace.default_permissions() {
-                    // Permissions are inferred from the workspace default on load, so they cannot
+                if self.metadata.required_permissions != self.collection.default_permissions() {
+                    // Permissions are inferred from the collection default on load, so they cannot
                     // be stored without a metadata location. Fail before anything is written.
                     return Err(AccessLibraryError::MetadataLocation(
                         MetadataLocation::None,
-                        "Cannot save required_permissions that differ from the workspace default without a metadata location".into(),
+                        "Cannot save required_permissions that differ from the collection default without a metadata location".into(),
                     ));
                 }
                 if let Some(text) = text_export {
@@ -786,7 +789,7 @@ impl Document {
                 }
                 if !self
                     .metadata
-                    .inferrable(&self.absolute_path, self.workspace.default_permissions())
+                    .inferrable(&self.absolute_path, self.collection.default_permissions())
                 {
                     warn!(
                         "Metadata will not be saved for document {:?} because metadata_location is None.",
@@ -819,13 +822,13 @@ impl Document {
     }
 
     fn attachment_path_raw(&self, name: &str) -> PathBuf {
-        //     .../workspace/doc.md
+        //     .../collection/doc.md
         self.absolute_path
-            // .../workspace/attachments
+            // .../collection/attachments
             .with_file_name(ATTACHMENTS_DIR)
-            // .../workspace/attachments/doc.md
+            // .../collection/attachments/doc.md
             .join(self.absolute_path.file_name().unwrap())
-            // .../workspace/attachments/doc.md/attachment_name
+            // .../collection/attachments/doc.md/attachment_name
             .join(name)
     }
 
@@ -1025,7 +1028,7 @@ impl DocumentMetadata {
 /// On-disk form of [`DocumentMetadata`], used when reading.
 ///
 /// `required_permissions` is optional here so that metadata written before the attribute existed
-/// can be recognized and given the workspace default. Such metadata must never load as unrestricted.
+/// can be recognized and given the collection default. Such metadata must never load as unrestricted.
 #[derive(Deserialize)]
 struct DocumentMetadataFile {
     id: Uuid,
@@ -1061,7 +1064,7 @@ impl DocumentMetadataFile {
                 .collect::<Result<Vec<_>, _>>()?,
             None => {
                 warn!(
-                    "Metadata for {:?} has no `required_permissions`; using the workspace default. Saving the document will record it.",
+                    "Metadata for {:?} has no `required_permissions`; using the collection default. Saving the document will record it.",
                     origin
                 );
                 default_permissions.to_vec()
@@ -1152,25 +1155,25 @@ mod tests {
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
         // Document without metadata
-        let doc = Document::open(ws.clone(), &dir.join("doc.md"))
+        let doc = Document::open(collection.clone(), &dir.join("doc.md"))
             .await
             .unwrap();
         assert_eq!(doc.path(), "doc.md");
-        assert_eq!(doc.workspace(), &ws);
+        assert_eq!(doc.collection(), &collection);
         assert_eq!(
             doc.text().await.unwrap().export(&mut None).as_deref(),
             Some("foo")
         );
 
         // Document with metadata
-        let doc = Document::open(ws.clone(), &dir.join("doc2.md"))
+        let doc = Document::open(collection.clone(), &dir.join("doc2.md"))
             .await
             .unwrap();
         assert_eq!(doc.path(), "doc2.md");
-        assert_eq!(doc.workspace(), &ws);
+        assert_eq!(doc.collection(), &collection);
         assert_eq!(doc.metadata.id, metadata.id);
         assert_eq!(
             doc.text().await.unwrap().export(&mut None).as_deref(),
@@ -1193,13 +1196,13 @@ extensions:
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
-        let doc = Document::open(ws.clone(), &dir.join("doc.md"))
+        let collection = Collection::open(&dir).await.unwrap();
+        let doc = Document::open(collection.clone(), &dir.join("doc.md"))
             .await
             .unwrap();
 
         assert_eq!(doc.path(), "doc.md");
-        assert_eq!(doc.workspace(), &ws);
+        assert_eq!(doc.collection(), &collection);
         assert_eq!(
             doc.text().await.unwrap().export(&mut None).as_deref(),
             Some("hello world")
@@ -1220,8 +1223,8 @@ extensions:
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
-        let mut doc = Document::open(ws.clone(), &dir.join("doc.md"))
+        let collection = Collection::open(&dir).await.unwrap();
+        let mut doc = Document::open(collection.clone(), &dir.join("doc.md"))
             .await
             .unwrap();
 
@@ -1259,8 +1262,8 @@ extensions:
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
-        let mut doc = Document::open(ws.clone(), &dir.join("doc.md"))
+        let collection = Collection::open(&dir).await.unwrap();
+        let mut doc = Document::open(collection.clone(), &dir.join("doc.md"))
             .await
             .unwrap();
         let initial_doc_hash = doc.doc_hash().await.unwrap();
@@ -1284,8 +1287,8 @@ extensions:
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
-        let mut doc = Document::open(ws.clone(), &dir.join("doc.md"))
+        let collection = Collection::open(&dir).await.unwrap();
+        let mut doc = Document::open(collection.clone(), &dir.join("doc.md"))
             .await
             .unwrap();
 
@@ -1317,8 +1320,8 @@ extensions:
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
-        let mut doc = Document::open(ws.clone(), &dir.join("doc.md"))
+        let collection = Collection::open(&dir).await.unwrap();
+        let mut doc = Document::open(collection.clone(), &dir.join("doc.md"))
             .await
             .unwrap();
 
@@ -1354,8 +1357,8 @@ extensions:
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
-        let mut doc = Document::open(ws.clone(), &dir.join("doc.pdf"))
+        let collection = Collection::open(&dir).await.unwrap();
+        let mut doc = Document::open(collection.clone(), &dir.join("doc.pdf"))
             .await
             .unwrap();
 
@@ -1394,8 +1397,8 @@ extensions:
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
-        let mut doc = Document::open(ws.clone(), &dir.join("doc.md"))
+        let collection = Collection::open(&dir).await.unwrap();
+        let mut doc = Document::open(collection.clone(), &dir.join("doc.md"))
             .await
             .unwrap();
 
@@ -1428,8 +1431,8 @@ extensions:
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
-        let mut doc = Document::open(ws.clone(), &dir.join("doc.md"))
+        let collection = Collection::open(&dir).await.unwrap();
+        let mut doc = Document::open(collection.clone(), &dir.join("doc.md"))
             .await
             .unwrap();
 
@@ -1486,8 +1489,8 @@ extensions:
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
-        let mut doc = Document::open(ws.clone(), &dir.join("doc.md"))
+        let collection = Collection::open(&dir).await.unwrap();
+        let mut doc = Document::open(collection.clone(), &dir.join("doc.md"))
             .await
             .unwrap();
 
@@ -1554,10 +1557,10 @@ extensions:
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
         // Load document
-        let mut doc = Document::open(ws.clone(), &dir.join("doc.md"))
+        let mut doc = Document::open(collection.clone(), &dir.join("doc.md"))
             .await
             .unwrap();
         assert_eq!(doc.path(), "doc.md");
@@ -1582,10 +1585,10 @@ extensions:
         let dir = TempTree::new(fs_tree! {
             "doc.md" => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/markdown\nrequired_permissions: []\n---\nhello world",
         }).await.unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
         // Load document
-        let mut doc = Document::open(ws.clone(), &dir.join("doc.md"))
+        let mut doc = Document::open(collection.clone(), &dir.join("doc.md"))
             .await
             .unwrap();
         assert_eq!(doc.path(), "doc.md");
@@ -1616,10 +1619,10 @@ extensions:
             "doc.md" => "hello world",
             format!("doc.md.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/markdown\nmetadata_location: metadata-file\nrequired_permissions: []\n---\n",
         }).await.unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
         // Load document
-        let mut doc = Document::open(ws.clone(), &dir.join("doc.md"))
+        let mut doc = Document::open(collection.clone(), &dir.join("doc.md"))
             .await
             .unwrap();
         assert_eq!(doc.path(), "doc.md");
@@ -1655,10 +1658,10 @@ extensions:
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
         // Load document
-        let mut doc = Document::open(ws.clone(), &dir.join("doc.csv"))
+        let mut doc = Document::open(collection.clone(), &dir.join("doc.csv"))
             .await
             .unwrap();
         assert_eq!(doc.path(), "doc.csv");
@@ -1684,10 +1687,10 @@ extensions:
             "doc.csv" => "a,b,c\n1,2,3",
             format!("doc.csv.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/csv\nmetadata_location: metadata-file\nrequired_permissions: []\n---\n",
         }).await.unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
         // Load document
-        let mut doc = Document::open(ws.clone(), &dir.join("doc.csv"))
+        let mut doc = Document::open(collection.clone(), &dir.join("doc.csv"))
             .await
             .unwrap();
         assert_eq!(doc.path(), "doc.csv");
@@ -1721,10 +1724,10 @@ extensions:
         let dir = TempTree::new(fs_tree! {
             "doc.pdf" => "%PDF-1.4\n%âãÏÓ\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF",
         }).await.unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
         // Load document
-        let mut doc = Document::open(ws.clone(), &dir.join("doc.pdf"))
+        let mut doc = Document::open(collection.clone(), &dir.join("doc.pdf"))
             .await
             .unwrap();
         assert_eq!(doc.path(), "doc.pdf");
@@ -1750,10 +1753,10 @@ extensions:
             "doc.pdf" => "%PDF-1.4\n%âãÏÓ\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF",
             format!("doc.pdf.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\nmetadata_location: metadata-file\nrequired_permissions: []\n---\n",
         }).await.unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
         // Load document
-        let mut doc = Document::open(ws.clone(), &dir.join("doc.pdf"))
+        let mut doc = Document::open(collection.clone(), &dir.join("doc.pdf"))
             .await
             .unwrap();
         assert_eq!(doc.path(), "doc.pdf");
@@ -1788,10 +1791,10 @@ extensions:
             "doc.pdf" => "%PDF-1.4\n%âãÏÓ\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF",
             format!("doc.pdf.{}", METADATA_EXTENSION) => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: application/pdf\nmetadata_location: metadata-file\nrequired_permissions: []\n---\nHello world",
         }).await.unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
         // Load document
-        let mut doc = Document::open(ws.clone(), &dir.join("doc.pdf"))
+        let mut doc = Document::open(collection.clone(), &dir.join("doc.pdf"))
             .await
             .unwrap();
         assert_eq!(doc.path(), "doc.pdf");
@@ -1826,10 +1829,10 @@ extensions:
     #[test_log::test]
     async fn create_fails_when_parent_directory_is_missing() {
         let dir = TempTree::new(fs_tree! {}).await.unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
         let err = Document::create(
-            ws,
+            collection,
             &dir.join("missing").join("doc.md"),
             NewSource::Empty,
             &[],
@@ -1846,11 +1849,16 @@ extensions:
     #[test_log::test]
     async fn create_markdown_with_text_and_metadata_in_same_file() {
         let dir = TempTree::new(fs_tree! {}).await.unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
-        let mut doc = Document::create(ws.clone(), &dir.join("doc.md"), NewSource::Empty, &[])
-            .await
-            .unwrap();
+        let mut doc = Document::create(
+            collection.clone(),
+            &dir.join("doc.md"),
+            NewSource::Empty,
+            &[],
+        )
+        .await
+        .unwrap();
         doc.text_mut()
             .await
             .unwrap()
@@ -1869,7 +1877,9 @@ extensions:
                 .unwrap()
         );
 
-        let reopened = Document::open(ws, &dir.join("doc.md")).await.unwrap();
+        let reopened = Document::open(collection, &dir.join("doc.md"))
+            .await
+            .unwrap();
         assert_eq!(reopened.id(), doc.id());
         assert_eq!(
             reopened.text().await.unwrap().export(&mut None).as_deref(),
@@ -1885,9 +1895,9 @@ extensions:
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
-        let err = Document::create(ws, &dir.join("doc.md"), NewSource::Empty, &[])
+        let err = Document::create(collection, &dir.join("doc.md"), NewSource::Empty, &[])
             .await
             .unwrap_err();
         assert!(
@@ -1909,10 +1919,10 @@ extensions:
         .await
         .unwrap();
         let dir = TempTree::new(fs_tree! {}).await.unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
         let doc = Document::create(
-            ws.clone(),
+            collection.clone(),
             &dir.join("scan.png"),
             NewSource::CopyFrom(src.join("scan.png")),
             &[],
@@ -1928,7 +1938,9 @@ extensions:
                 .unwrap()
         );
 
-        let reopened = Document::open(ws, &dir.join("scan.png")).await.unwrap();
+        let reopened = Document::open(collection, &dir.join("scan.png"))
+            .await
+            .unwrap();
         assert_eq!(reopened.id(), doc.id());
     }
 
@@ -1936,10 +1948,10 @@ extensions:
     #[test_log::test]
     async fn create_text_document_from_bytes_keeps_content() {
         let dir = TempTree::new(fs_tree! {}).await.unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
         let doc = Document::create(
-            ws,
+            collection,
             &dir.join("notes.txt"),
             NewSource::Bytes(&b"first line\nsecond line\n".to_vec()),
             &[],
@@ -1963,10 +1975,10 @@ extensions:
     #[test_log::test]
     async fn create_from_missing_source_file_leaves_nothing_behind() {
         let dir = TempTree::new(fs_tree! {}).await.unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
         let err = Document::create(
-            ws,
+            collection,
             &dir.join("scan.png"),
             NewSource::CopyFrom(dir.join("missing.png")),
             &[],
@@ -1991,10 +2003,10 @@ extensions:
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
         let err = Document::create(
-            ws,
+            collection,
             &dir.join("scan.png"),
             NewSource::Bytes(&b"png-bytes".to_vec()),
             &[],
@@ -2020,9 +2032,11 @@ extensions:
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
-        let err = Document::open(ws, &dir.join("doc.md")).await.unwrap_err();
+        let err = Document::open(collection, &dir.join("doc.md"))
+            .await
+            .unwrap_err();
         assert!(
             matches!(&err, AccessLibraryError::UnknownPermission { name, .. } if name == "no-such-permission"),
             "{err}"
@@ -2037,30 +2051,34 @@ extensions:
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
-        let doc = Document::open(ws, &dir.join("doc.md")).await.unwrap();
+        let doc = Document::open(collection, &dir.join("doc.md"))
+            .await
+            .unwrap();
         assert_eq!(doc.permissions_required(), &[ON_DEVICE]);
     }
 
     #[tokio::test]
     #[test_log::test]
-    async fn legacy_metadata_without_permissions_gets_workspace_default() {
+    async fn legacy_metadata_without_permissions_gets_collection_default() {
         let dir = TempTree::new(fs_tree! {
             "doc.md" => "---\nid: 123e4567-e89b-12d3-a456-426614174000\nmime: text/markdown\n---\nhello world",
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
-        let mut doc = Document::open(ws.clone(), &dir.join("doc.md"))
+        let mut doc = Document::open(collection.clone(), &dir.join("doc.md"))
             .await
             .unwrap();
         assert_eq!(doc.permissions_required(), &[ON_DEVICE]);
 
         // The next save records the default explicitly, so a reopened document stays restricted.
         doc.save().await.unwrap();
-        let reopened = Document::open(ws, &dir.join("doc.md")).await.unwrap();
+        let reopened = Document::open(collection, &dir.join("doc.md"))
+            .await
+            .unwrap();
         assert_eq!(reopened.permissions_required(), &[ON_DEVICE]);
     }
 
@@ -2070,8 +2088,8 @@ extensions:
         use crate::permissions::{Actor, Authorized, PUBLIC, Permission};
 
         let dir = TempTree::new(fs_tree! {}).await.unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
-        let folder = ws.root();
+        let collection = Collection::open(&dir).await.unwrap();
+        let folder = collection.root();
 
         folder
             .create_document("default.md", NewSource::Empty, None)
@@ -2090,23 +2108,25 @@ extensions:
             .await
             .unwrap();
 
-        let default = Document::open(ws.clone(), &dir.join("default.md"))
+        let default = Document::open(collection.clone(), &dir.join("default.md"))
             .await
             .unwrap();
         assert_eq!(default.permissions_required(), &[ON_DEVICE]);
         assert!(!Actor(Vec::<Permission>::new()).may_access(&default));
 
-        let public = Document::open(ws.clone(), &dir.join("public.md"))
+        let public = Document::open(collection.clone(), &dir.join("public.md"))
             .await
             .unwrap();
         assert_eq!(public.permissions_required(), &[PUBLIC]);
 
-        let redundant = Document::open(ws.clone(), &dir.join("redundant.md"))
+        let redundant = Document::open(collection.clone(), &dir.join("redundant.md"))
             .await
             .unwrap();
         assert_eq!(redundant.permissions_required(), &[ON_DEVICE]);
 
-        let open = Document::open(ws, &dir.join("open.md")).await.unwrap();
+        let open = Document::open(collection, &dir.join("open.md"))
+            .await
+            .unwrap();
         assert!(open.permissions_required().is_empty());
         assert!(Actor(Vec::<Permission>::new()).may_access(&open));
     }
@@ -2119,8 +2139,10 @@ extensions:
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
-        let mut doc = Document::open(ws, &dir.join("notes.txt")).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
+        let mut doc = Document::open(collection, &dir.join("notes.txt"))
+            .await
+            .unwrap();
         assert_eq!(doc.metadata.metadata_location, MetadataLocation::None);
 
         doc.metadata.required_permissions = Vec::new();

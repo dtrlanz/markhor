@@ -74,7 +74,7 @@ const WORDS: &[&str] = &[
     "document",
     "chunk",
     "embedding",
-    "workspace",
+    "collection",
     "member",
     "thread",
     "summary",

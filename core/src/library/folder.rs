@@ -6,32 +6,32 @@ use tracing::{debug, error, instrument};
 use crate::library::{AccessLibraryError, Document, METADATA_EXTENSION, NewSource};
 use crate::permissions::Permission;
 
-use super::Workspace;
+use super::Collection;
 
-/// Represents a directory within a Workspace or another Folder,
+/// Represents a directory within a Collection or another Folder,
 /// which can contain Documents and other Folders.
 #[derive(Debug, Clone)]
 pub struct Folder {
     // Absolute path to the folder
     absolute_path: PathBuf,
-    // Workspace owning this document
-    workspace: Workspace,
+    // Collection owning this document
+    collection: Collection,
 }
 
 impl Folder {
     /// Creates a Folder instance. Intended for internal use.
-    /// Assumes the path already points to a valid, existing directory *inside* the workspace.
-    pub(crate) fn new(absolute_path: PathBuf, workspace: Workspace) -> Self {
+    /// Assumes the path already points to a valid, existing directory *inside* the collection.
+    pub(crate) fn new(absolute_path: PathBuf, collection: Collection) -> Self {
         Folder {
             absolute_path,
-            workspace,
+            collection,
         }
     }
 
-    /// Returns the relative path to the folder within its workspace.
+    /// Returns the relative path to the folder within its collection.
     pub fn path(&self) -> &Path {
         self.absolute_path
-            .strip_prefix(&self.workspace.path())
+            .strip_prefix(&self.collection.path())
             .unwrap()
     }
 
@@ -44,9 +44,9 @@ impl Folder {
             .expect("Not supported: Folder name is not valid UTF-8")
     }
 
-    /// Returns the workspace owning this folder.
-    pub fn workspace(&self) -> &Workspace {
-        &self.workspace
+    /// Returns the collection owning this folder.
+    pub fn collection(&self) -> &Collection {
+        &self.collection
     }
 
     /// Returns a stream over the entries in this folder. Each entry is either a Folder or a
@@ -54,7 +54,7 @@ impl Folder {
     pub async fn read(&self) -> Result<Read, std::io::Error> {
         let read_dir = fs::read_dir(&self.absolute_path).await?;
         Ok(Read {
-            workspace: self.workspace.clone(),
+            collection: self.collection.clone(),
             read_dir,
         })
     }
@@ -64,24 +64,24 @@ impl Folder {
         Ok(ReadRecursive { vec: vec![read] })
     }
 
-    /// Opens the specified directory as a workspace folder.
+    /// Opens the specified directory as a collection folder.
     ///
-    /// If the directory is located inside of an explicit workspace (with a workspace config
-    /// directory), the directory is opened as a folder of that workspace. If no such workspace
-    /// exists, the directory is opened as the root folder of an implicit workspace.
+    /// If the directory is located inside of an explicit collection (with a collection config
+    /// directory), the directory is opened as a folder of that collection. If no such collection
+    /// exists, the directory is opened as the root folder of an implicit collection.
     ///
     /// # Errors
     ///
     /// Returns an error if the directory cannot be opened or does not exist.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, AccessLibraryError> {
         let path = std::path::absolute(path)?;
-        match Workspace::open(&path).await {
-            Ok(workspace) => Ok(workspace.root()),
-            Err(AccessLibraryError::InWorkspace(ws)) => {
-                debug!("In workspace: {:?}", ws);
-                let ws = Workspace::open(ws).await?;
-                debug!("Opened workspace: {:?}", ws);
-                ws.folder(path).await
+        match Collection::open(&path).await {
+            Ok(collection) => Ok(collection.root()),
+            Err(AccessLibraryError::InCollection(collection)) => {
+                debug!("In collection: {:?}", collection);
+                let collection = Collection::open(collection).await?;
+                debug!("Opened collection: {:?}", collection);
+                collection.folder(path).await
             }
             Err(e) => Err(e),
         }
@@ -90,7 +90,7 @@ impl Folder {
     /// Creates a document named `name` in this folder.
     ///
     /// `required_permissions` are the permissions needed to access the document. `None` uses the
-    /// workspace default, and `Some(&[])` makes the document unrestricted.
+    /// collection default, and `Some(&[])` makes the document unrestricted.
     pub async fn create_document<'a>(
         &self,
         name: impl AsRef<str>,
@@ -105,8 +105,8 @@ impl Folder {
         }
         let path = self.absolute_path.join(name);
         let required_permissions =
-            required_permissions.unwrap_or_else(|| self.workspace.default_permissions());
-        Document::create(self.workspace.clone(), &path, source, required_permissions).await
+            required_permissions.unwrap_or_else(|| self.collection.default_permissions());
+        Document::create(self.collection.clone(), &path, source, required_permissions).await
     }
 
     /// Returns whether a document or its metadata file already exists under `name`.
@@ -128,7 +128,7 @@ impl Folder {
         } else {
             self.absolute_path.join(path)
         };
-        open_folder(absolute_path, self.workspace.clone()).await
+        open_folder(absolute_path, self.collection.clone()).await
     }
 
     /// Opens the document with the specified name.
@@ -144,13 +144,13 @@ impl Folder {
         } else {
             self.absolute_path.join(path)
         };
-        Document::open(self.workspace.clone(), &absolute_path).await
+        Document::open(self.collection.clone(), &absolute_path).await
     }
 }
 
 async fn open_folder(
     absolute_path: PathBuf,
-    workspace: Workspace,
+    collection: Collection,
 ) -> Result<Folder, AccessLibraryError> {
     // Check if path exists and all that
     let absolute_path = fs::canonicalize(&absolute_path).await.map_err(|e| {
@@ -160,9 +160,9 @@ async fn open_folder(
             AccessLibraryError::Io(e)
         }
     })?;
-    // Check if path is inside of workspace
-    if !absolute_path.starts_with(&workspace.path()) {
-        return Err(AccessLibraryError::NotInWorkspace(absolute_path));
+    // Check if path is inside of collection
+    if !absolute_path.starts_with(&collection.path()) {
+        return Err(AccessLibraryError::NotInCollection(absolute_path));
     }
     // Check if path points to a directory
     let path_metadata = fs::metadata(&absolute_path).await?;
@@ -172,13 +172,13 @@ async fn open_folder(
     // All good
     Ok(Folder {
         absolute_path,
-        workspace,
+        collection,
     })
 }
 
 #[derive(Debug)]
 pub struct Read {
-    workspace: Workspace,
+    collection: Collection,
     read_dir: ReadDir,
 }
 
@@ -190,7 +190,7 @@ impl Read {
                     let path = entry.path();
                     let metadata = entry.metadata().await?;
                     let entry = if metadata.is_dir() {
-                        let folder = open_folder(path, self.workspace.clone()).await?;
+                        let folder = open_folder(path, self.collection.clone()).await?;
                         ReadEntry::Folder(folder)
                     } else if metadata.is_file() {
                         // Include source files only, ignore metadata files
@@ -199,7 +199,7 @@ impl Read {
                         {
                             continue;
                         }
-                        let document = match Document::open(self.workspace.clone(), &path).await {
+                        let document = match Document::open(self.collection.clone(), &path).await {
                             Ok(document) => document,
                             // A bad file must not stop the listing of its siblings.
                             Err(e) => {
@@ -271,7 +271,7 @@ impl ReadRecursive {
 
 #[cfg(test)]
 mod tests {
-    use crate::library::WORKSPACE_CONFIG_DIR;
+    use crate::library::COLLECTION_CONFIG_DIR;
     use crate::library::fs_test_utils::{TempTree, fs_tree};
 
     use super::*;
@@ -285,9 +285,9 @@ mod tests {
         })
         .await
         .unwrap();
-        let ws = Workspace::open(&dir).await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
 
-        let docs = ws
+        let docs = collection
             .root()
             .read_recursive()
             .await
@@ -309,35 +309,35 @@ mod tests {
         .await
         .unwrap();
 
-        // Open path in implicit workspace
+        // Open path in implicit collection
         let folder = Folder::open(&dir).await.unwrap();
-        let ws_path = folder.workspace().path();
+        let collection_path = folder.collection().path();
         assert_eq!(folder.path(), "");
         assert_eq!(
-            fs::canonicalize(ws_path).await.unwrap(),
+            fs::canonicalize(collection_path).await.unwrap(),
             fs::canonicalize(&dir).await.unwrap()
         );
 
-        // Open path as root of explict workspace
+        // Open path as root of explict collection
         dir.add(fs_tree! {
-            WORKSPACE_CONFIG_DIR => {},
+            COLLECTION_CONFIG_DIR => {},
         })
         .await
         .unwrap();
         let folder = Folder::open(&dir).await.unwrap();
         assert_eq!(folder.path(), "");
         assert_eq!(
-            fs::canonicalize(ws_path).await.unwrap(),
+            fs::canonicalize(collection_path).await.unwrap(),
             fs::canonicalize(&dir).await.unwrap()
         );
 
-        // Open path as child of explicit workspace
+        // Open path as child of explicit collection
         let child_path = dir.join("child");
         let folder = Folder::open(&child_path).await.unwrap();
         assert_eq!(folder.path(), "child");
-        let ws_path = folder.workspace().path();
+        let collection_path = folder.collection().path();
         assert_eq!(
-            fs::canonicalize(ws_path).await.unwrap(),
+            fs::canonicalize(collection_path).await.unwrap(),
             fs::canonicalize(&dir).await.unwrap()
         );
     }
@@ -385,7 +385,7 @@ mod tests {
         let folder = Folder::open(&dir).await.unwrap();
         let doc = folder.document("doc.md").await.unwrap();
         assert_eq!(doc.path(), "doc.md");
-        assert_eq!(doc.workspace(), folder.workspace());
+        assert_eq!(doc.collection(), folder.collection());
         assert_eq!(
             doc.text().await.unwrap().export(&mut None).as_deref(),
             Some("foo")

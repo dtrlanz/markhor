@@ -1,4 +1,4 @@
-//! Imports a visual document into a workspace, recognizing its text with Mistral OCR.
+//! Imports a visual document into a collection, recognizing its text with Mistral OCR.
 
 use std::path::PathBuf;
 
@@ -20,7 +20,7 @@ pub struct ImportArgs {
     /// A local file, or an http(s) URL that Markhor downloads.
     input: String,
 
-    /// Folder to import into. Defaults to the current directory. It must be inside a workspace.
+    /// Folder to import into. Defaults to the current directory. It must be inside a collection.
     #[arg(long)]
     folder: Option<PathBuf>,
 
@@ -37,7 +37,7 @@ pub struct ImportArgs {
     page_mode: PageModeArg,
 
     /// Who may access the document, e.g. `on-device`. Separate several with commas. Defaults to
-    /// the workspace default. Redundant permissions are not stored.
+    /// the collection default. Redundant permissions are not stored.
     #[arg(short, long, value_delimiter = ',', conflicts_with = "unrestricted")]
     access: Option<Vec<String>>,
 
@@ -96,7 +96,7 @@ pub async fn run(args: ImportArgs) -> Result<()> {
     let requested = if args.unrestricted {
         Some(Vec::new())
     } else {
-        let available = folder.workspace().available_permissions();
+        let available = folder.collection().available_permissions();
         args.access
             .as_deref()
             .map(|names| resolve_permissions(names, &available))

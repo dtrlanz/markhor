@@ -1,9 +1,9 @@
+mod collection;
 mod document;
 mod folder;
 mod retriever;
 mod scope;
 mod tag;
-mod workspace;
 
 use serde::{Deserialize, Serialize};
 use sha2::{
@@ -13,6 +13,7 @@ use sha2::{
 use std::{borrow::Borrow, ops::BitXor, path::PathBuf};
 use thiserror::Error;
 
+pub use collection::Collection;
 pub(crate) use document::chunks::ChunkIdx;
 pub use document::{
     Document,
@@ -28,12 +29,11 @@ pub use folder::{Folder, ReadEntry};
 pub use retriever::Retriever;
 pub use scope::{PrelimFilter, Scope};
 pub use tag::Tag;
-pub use workspace::Workspace;
 
 const METADATA_EXTENSION: &str = "mark";
 const ATTACHMENTS_DIR: &str = "attachments";
-const WORKSPACE_CONFIG_DIR: &str = ".markhor";
-const WORKSPACE_METADATA_FILENAME: &str = "workspace.yaml";
+const COLLECTION_CONFIG_DIR: &str = ".markhor";
+const COLLECTION_METADATA_FILENAME: &str = "collection.yaml";
 
 #[derive(Debug, Error)]
 pub enum AccessLibraryError {
@@ -49,11 +49,11 @@ pub enum AccessLibraryError {
     #[error("Path is not a directory: {0}")]
     NotADirectory(PathBuf),
 
-    #[error("Path is outside of workspace: {0}")]
-    NotInWorkspace(PathBuf),
+    #[error("Path is outside of collection: {0}")]
+    NotInCollection(PathBuf),
 
-    #[error("Workspaces may not be nested. Outer workspace: {0}")]
-    InWorkspace(PathBuf),
+    #[error("Collections may not be nested. Outer collection: {0}")]
+    InCollection(PathBuf),
 
     #[error("Metadata serialization/deserialization error")]
     MetadataFormat(#[from] serde_yaml_ng::Error),

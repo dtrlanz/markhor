@@ -13,12 +13,12 @@ use crate::{
     chunking::{Chunker, ChunkerError},
     embedding::{Embedding, EmbeddingError, EmbeddingModel},
     extension::Comp,
-    library::{AccessLibraryError, ChunkIdx, Document, HashValue, Scope, Workspace},
+    library::{AccessLibraryError, ChunkIdx, Collection, Document, HashValue, Scope},
     vector_store::{DocVersionId, VectorView},
 };
 
 pub struct Retriever {
-    workspace: Workspace,
+    collection: Collection,
     scope: Scope,
     docs: HashMap<Uuid, IncludedDoc>,
     chunker: Comp<dyn Chunker>,
@@ -29,20 +29,20 @@ pub struct Retriever {
 impl Retriever {
     #[instrument(skip(chunker, embedder))]
     pub async fn new(
-        workspace: Workspace,
+        collection: Collection,
         scope: Scope,
         chunker: Comp<dyn Chunker>,
         embedder: Comp<dyn EmbeddingModel>,
     ) -> Result<Self, InitRetrieverError> {
         debug!("Initializing retriever for scope {:?}", scope);
-        let vector_store = workspace.vector_store(&embedder);
+        let vector_store = collection.vector_store(&embedder);
         let utils = Arc::new((chunker, embedder));
 
         // Collect complete list of documents and identify which are not yet included in the
         // vector store.
         let mut loaded_docs = Vec::new();
         let mut doc_map = HashMap::new();
-        let mut doc_stream = scope.docs(&workspace).await?;
+        let mut doc_stream = scope.docs(&collection).await?;
         while let Some(doc) = doc_stream.next_doc().await.unwrap() {
             trace!(
                 "Found doc {} with hash {:?}",
@@ -104,7 +104,7 @@ impl Retriever {
         let (chunker, embedder) = Arc::into_inner(utils).unwrap();
 
         Ok(Self {
-            workspace,
+            collection,
             scope,
             docs: doc_map,
             chunker,
@@ -172,7 +172,7 @@ impl Retriever {
                 IncludedDoc::OnDisk(hash, path) => {
                     assert_eq!(hash, &r.doc_hash);
                     trace!("Loading doc {} from disk for top-k result", path.display());
-                    let mut doc = self.workspace.document(path).await?;
+                    let mut doc = self.collection.document(path).await?;
                     doc.chunker_cache_mut(&self.chunker.metadata_id()).await?;
                     Arc::new(doc)
                 }
@@ -190,7 +190,7 @@ enum IncludedDoc {
 
 #[derive(Debug, Error)]
 pub enum InitRetrieverError {
-    /// An error occurred while accessing the document or workspace storage.
+    /// An error occurred while accessing the document or collection storage.
     #[error("Retriever initialization failed due to error accessing library: {0}")]
     Library(#[from] AccessLibraryError),
 
@@ -221,8 +221,8 @@ mod tests {
         .await
         .unwrap();
 
-        let ws = Workspace::open(&dir).await.unwrap();
-        let scope = Scope::from(ws.root());
+        let collection = Collection::open(&dir).await.unwrap();
+        let scope = Scope::from(collection.root());
 
         let chunker = TryIntoComp(FixedSizeChunkerExtension::new(28))
             .try_into()
@@ -241,7 +241,9 @@ mod tests {
             .unwrap()
             .pop()
             .unwrap();
-        let retriever = Retriever::new(ws, scope, chunker, embedder).await.unwrap();
+        let retriever = Retriever::new(collection, scope, chunker, embedder)
+            .await
+            .unwrap();
 
         // Verify that the retriever has initialized with the expected number of documents and chunks
         let view = retriever.embeddings;
@@ -269,8 +271,8 @@ mod tests {
         .await
         .unwrap();
 
-        let ws = Workspace::open(&dir).await.unwrap();
-        let scope = Scope::from(ws.root());
+        let collection = Collection::open(&dir).await.unwrap();
+        let scope = Scope::from(collection.root());
 
         let chunker = TryIntoComp(FixedSizeChunkerExtension::new(28))
             .try_into()
@@ -289,7 +291,7 @@ mod tests {
             .unwrap()
             .pop()
             .unwrap();
-        let retriever = Retriever::new(ws.clone(), scope, chunker, embedder)
+        let retriever = Retriever::new(collection.clone(), scope, chunker, embedder)
             .await
             .unwrap();
 

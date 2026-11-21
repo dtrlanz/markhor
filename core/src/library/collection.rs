@@ -11,20 +11,20 @@ use crate::{
     embedding::EmbeddingModel,
     extension::Comp,
     library::{
-        AccessLibraryError, Document, Folder, WORKSPACE_CONFIG_DIR, WORKSPACE_METADATA_FILENAME,
+        AccessLibraryError, COLLECTION_CONFIG_DIR, COLLECTION_METADATA_FILENAME, Document, Folder,
     },
     permissions::{ON_DEVICE, Permission, all_permissions},
     vector_store::VectorStore,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Workspace {
-    inner: Arc<WorkspaceInner>,
+pub struct Collection {
+    inner: Arc<CollectionInner>,
 }
 
-impl Workspace {
+impl Collection {
     pub async fn create(path: impl AsRef<Path>) -> Result<Self, AccessLibraryError> {
-        // TODO: consider creating workspace config directory and files directly, or add options
+        // TODO: consider creating collection config directory and files directly, or add options
         // to control this behavior
         // TODO: add unit tests
         let absolute_path = fs::canonicalize(path.as_ref()).await.map_err(|e| {
@@ -34,25 +34,25 @@ impl Workspace {
                 AccessLibraryError::Io(e)
             }
         })?;
-        if let Some(ws) = find_workspace_descendant(&absolute_path).await? {
-            return Err(AccessLibraryError::InWorkspace(ws));
+        if let Some(collection) = find_collection_descendant(&absolute_path).await? {
+            return Err(AccessLibraryError::InCollection(collection));
         }
         fs::create_dir_all(&absolute_path).await?;
         Ok(Self {
-            inner: Arc::new(WorkspaceInner {
+            inner: Arc::new(CollectionInner {
                 absolute_path,
-                metadata: WorkspaceMetadata::default(),
+                metadata: CollectionMetadata::default(),
                 embeddings: Default::default(),
             }),
         })
     }
 
-    /// Returns the root path of the workspace.
+    /// Returns the root path of the collection.
     pub fn path(&self) -> &Path {
         self.inner.absolute_path.as_path()
     }
 
-    /// Returns the root folder of the workspace.
+    /// Returns the root folder of the collection.
     pub fn root(&self) -> Folder {
         Folder::new(self.inner.absolute_path.clone(), self.clone())
     }
@@ -60,21 +60,21 @@ impl Workspace {
     /// Returns the permissions given to documents that do not specify their own.
     ///
     /// This is the strictest level, so documents are restricted unless their owner says otherwise.
-    /// It is a placeholder until permissions can be configured per workspace.
+    /// It is a placeholder until permissions can be configured per collection.
     pub fn default_permissions(&self) -> &[Permission] {
         &[ON_DEVICE]
     }
 
-    /// Returns the permissions that may be used in this workspace.
+    /// Returns the permissions that may be used in this collection.
     ///
-    /// These are the built-in permissions for now. They will become configurable per workspace.
+    /// These are the built-in permissions for now. They will become configurable per collection.
     pub fn available_permissions(&self) -> Vec<Permission> {
         all_permissions()
     }
 
-    /// Opens an existing directory as a workspace.
+    /// Opens an existing directory as a collection.
     ///
-    /// Loads workspace metadata from the config subdirectory if it exists.
+    /// Loads collection metadata from the config subdirectory if it exists.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, AccessLibraryError> {
         let absolute_path = fs::canonicalize(path.as_ref()).await.map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -87,22 +87,22 @@ impl Workspace {
         if !path_metadata.is_dir() {
             return Err(AccessLibraryError::NotADirectory(absolute_path));
         }
-        if let Some(ws) = find_workspace_descendant(&absolute_path).await? {
-            return Err(AccessLibraryError::InWorkspace(ws));
+        if let Some(collection) = find_collection_descendant(&absolute_path).await? {
+            return Err(AccessLibraryError::InCollection(collection));
         }
 
-        let config_dir = absolute_path.join(WORKSPACE_CONFIG_DIR);
-        let wd_md_path = config_dir.join(WORKSPACE_METADATA_FILENAME);
-        let metadata: WorkspaceMetadata = match fs::read_to_string(wd_md_path).await {
+        let config_dir = absolute_path.join(COLLECTION_CONFIG_DIR);
+        let wd_md_path = config_dir.join(COLLECTION_METADATA_FILENAME);
+        let metadata: CollectionMetadata = match fs::read_to_string(wd_md_path).await {
             Ok(content) => serde_yaml_ng::from_str(&content)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => WorkspaceMetadata::default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => CollectionMetadata::default(),
             Err(e) => {
                 return Err(AccessLibraryError::Io(e));
             }
         };
 
         Ok(Self {
-            inner: Arc::new(WorkspaceInner {
+            inner: Arc::new(CollectionInner {
                 absolute_path,
                 metadata,
                 embeddings: Default::default(),
@@ -136,36 +136,36 @@ impl Workspace {
 }
 
 #[derive(Debug)]
-struct WorkspaceInner {
+struct CollectionInner {
     absolute_path: PathBuf,
-    metadata: WorkspaceMetadata,
+    metadata: CollectionMetadata,
     embeddings: Mutex<HashMap<String, VectorStore>>,
 }
 
-impl PartialEq for WorkspaceInner {
+impl PartialEq for CollectionInner {
     fn eq(&self, other: &Self) -> bool {
         self.absolute_path == other.absolute_path
     }
 }
 
-impl Eq for WorkspaceInner {}
+impl Eq for CollectionInner {}
 
-/// Checks if a given path is a descendant of any workspace and returns its path if it is.
+/// Checks if a given path is a descendant of any collection and returns its path if it is.
 ///
-/// A workspace is considered to be a directory containing a workspace config directory. This
-/// function is used to check for nested workspaces, which are currently disallowed.
+/// A collection is considered to be a directory containing a collection config directory. This
+/// function is used to check for nested collections, which are currently disallowed.
 ///
 /// Returns
 ///
-/// - `Some` if the path is a descendant of a workspace
-/// - `None` if the path is outside of any workspace
-/// - `None` if the path is a workspace itself (i.e., points to the root directory)
-pub(crate) async fn find_workspace_descendant(
+/// - `Some` if the path is a descendant of a collection
+/// - `None` if the path is outside of any collection
+/// - `None` if the path is a collection itself (i.e., points to the root directory)
+pub(crate) async fn find_collection_descendant(
     absolute_path: &Path,
 ) -> Result<Option<PathBuf>, AccessLibraryError> {
     if let Some(parent) = absolute_path.parent() {
         for ancestor in parent.ancestors() {
-            let config_dir = ancestor.join(WORKSPACE_CONFIG_DIR);
+            let config_dir = ancestor.join(COLLECTION_CONFIG_DIR);
             match fs::metadata(&config_dir).await {
                 Ok(metadata) => {
                     if metadata.is_dir() {
@@ -185,7 +185,7 @@ pub(crate) async fn find_workspace_descendant(
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct WorkspaceMetadata {
+pub struct CollectionMetadata {
     foo: String,
 }
 
@@ -195,7 +195,7 @@ mod tests {
     use crate::library::fs_test_utils::{TempTree, fs_tree};
 
     #[tokio::test]
-    async fn workspace_open() {
+    async fn collection_open() {
         let mut dir = TempTree::new(fs_tree! {
             "file.txt" => "hello world",
             "child" => {},
@@ -203,56 +203,56 @@ mod tests {
         .await
         .unwrap();
 
-        // Open empty directory as workspace
-        let ws = Workspace::open(&dir).await.unwrap();
-        assert_eq!(ws.path(), fs::canonicalize(&dir).await.unwrap());
-        assert_eq!(ws.inner.metadata, WorkspaceMetadata::default());
+        // Open empty directory as collection
+        let collection = Collection::open(&dir).await.unwrap();
+        assert_eq!(collection.path(), fs::canonicalize(&dir).await.unwrap());
+        assert_eq!(collection.inner.metadata, CollectionMetadata::default());
 
         // Create config directory
         dir.add(fs_tree! {
-            WORKSPACE_CONFIG_DIR => {},
+            COLLECTION_CONFIG_DIR => {},
         })
         .await
         .unwrap();
 
-        // Open workspace with empty config directory
-        let ws = Workspace::open(&dir).await.unwrap();
-        assert_eq!(ws.path(), fs::canonicalize(&dir).await.unwrap());
-        assert_eq!(ws.inner.metadata, WorkspaceMetadata::default());
+        // Open collection with empty config directory
+        let collection = Collection::open(&dir).await.unwrap();
+        assert_eq!(collection.path(), fs::canonicalize(&dir).await.unwrap());
+        assert_eq!(collection.inner.metadata, CollectionMetadata::default());
 
         // Create metadata file
         dir.add(fs_tree! {
-            WORKSPACE_CONFIG_DIR => {
-                WORKSPACE_METADATA_FILENAME => "foo: bar",
+            COLLECTION_CONFIG_DIR => {
+                COLLECTION_METADATA_FILENAME => "foo: bar",
             },
         })
         .await
         .unwrap();
 
-        // Open workspace with metadata file
-        let ws = Workspace::open(&dir).await.unwrap();
-        assert_eq!(ws.path(), fs::canonicalize(&dir).await.unwrap());
+        // Open collection with metadata file
+        let collection = Collection::open(&dir).await.unwrap();
+        assert_eq!(collection.path(), fs::canonicalize(&dir).await.unwrap());
         assert_eq!(
-            ws.inner.metadata,
-            WorkspaceMetadata {
+            collection.inner.metadata,
+            CollectionMetadata {
                 foo: "bar".to_string(),
             }
         );
 
-        // Try opening workspace descendant as workspace
-        let result = Workspace::open(&dir.join("child")).await;
+        // Try opening collection descendant as collection
+        let result = Collection::open(&dir.join("child")).await;
         match result {
-            Err(AccessLibraryError::InWorkspace(path)) => {
-                let ws_path = fs::canonicalize(&dir).await.unwrap();
-                assert_eq!(path, ws_path);
+            Err(AccessLibraryError::InCollection(path)) => {
+                let collection_path = fs::canonicalize(&dir).await.unwrap();
+                assert_eq!(path, collection_path);
             }
             _ => {
                 panic!("Wrong error type: {:?}", result);
             }
         }
 
-        // Try opening non-existent workspace
-        let result = Workspace::open(&dir.join("fake")).await;
+        // Try opening non-existent collection
+        let result = Collection::open(&dir.join("fake")).await;
         assert!(result.is_err());
         match result {
             Err(AccessLibraryError::DirectoryNotFound(path)) => {
@@ -264,7 +264,7 @@ mod tests {
         }
 
         // Try opening non-directory
-        let result = Workspace::open(&dir.join("file.txt")).await;
+        let result = Collection::open(&dir.join("file.txt")).await;
         assert!(result.is_err());
         match result {
             Err(AccessLibraryError::NotADirectory(path)) => {
@@ -277,7 +277,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_document() {
+    async fn collection_document() {
         let dir = TempTree::new(fs_tree! {
             "doc.md" => "foo",
             "child" => {
@@ -287,19 +287,19 @@ mod tests {
         .await
         .unwrap();
 
-        let ws = Workspace::open(&dir).await.unwrap();
-        let doc = ws.document("doc.md").await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
+        let doc = collection.document("doc.md").await.unwrap();
         assert_eq!(doc.path(), "doc.md");
-        assert_eq!(doc.workspace().path(), ws.path());
+        assert_eq!(doc.collection().path(), collection.path());
         assert_eq!(
             doc.text().await.unwrap().export(&mut None).as_deref(),
             Some("foo")
         );
 
-        let child = ws.folder("child").await.unwrap();
+        let child = collection.folder("child").await.unwrap();
         let doc = child.document("nested.md").await.unwrap();
         assert_eq!(doc.path(), "child/nested.md");
-        assert_eq!(doc.workspace().path(), ws.path());
+        assert_eq!(doc.collection().path(), collection.path());
         assert_eq!(
             doc.text().await.unwrap().export(&mut None).as_deref(),
             Some("nested")

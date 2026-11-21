@@ -23,8 +23,8 @@ pub mod error {
         ModelError(String),
         #[error("Plugin Error: {0}")]
         PluginError(String),
-        #[error("Workspace Error: {0}")]
-        WorkspaceError(String),
+        #[error("Collection Error: {0}")]
+        CollectionError(String),
         #[error("Event Error: {0}")]
         EventError(String),
         #[error("IO Error: {0}")]

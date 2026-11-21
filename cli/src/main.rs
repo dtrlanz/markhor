@@ -8,7 +8,7 @@ use tracing_subscriber::EnvFilter;
 
 use commands::{chat::ChatArgs, import::ImportArgs};
 
-/// Markhor: chat with AI models and import documents into workspaces.
+/// Markhor: chat with AI models and import documents into collections.
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {

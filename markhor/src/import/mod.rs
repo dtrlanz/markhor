@@ -61,7 +61,7 @@ pub enum PageMode {
 pub struct ImportOptions {
     pub ocr: OcrOptions,
     pub page_mode: PageMode,
-    /// Permissions needed to access the imported document. `None` uses the workspace default;
+    /// Permissions needed to access the imported document. `None` uses the collection default;
     /// `Some(vec![])` makes the document unrestricted.
     pub required_permissions: Option<Vec<Permission>>,
 }
@@ -246,7 +246,7 @@ fn rewrite_image_link(markdown: &str, id: &str, target: &str) -> String {
 mod tests {
     use async_trait::async_trait;
     use markhor_core::{
-        library::{Part, Workspace},
+        library::{Collection, Part},
         markdown::{ToMarkdown, WITH_MILESTONES},
         ocr::{OcrImage, OcrOutput},
     };
@@ -311,11 +311,11 @@ mod tests {
         }
     }
 
-    /// An empty workspace. The temporary directory is returned so it lives as long as the test.
-    async fn workspace() -> (TempDir, Workspace) {
+    /// An empty collection. The temporary directory is returned so it lives as long as the test.
+    async fn collection() -> (TempDir, Collection) {
         let dir = tempfile::tempdir().unwrap();
-        let ws = Workspace::open(dir.path()).await.unwrap();
-        (dir, ws)
+        let collection = Collection::open(dir.path()).await.unwrap();
+        (dir, collection)
     }
 
     /// Writes a source file named `name` in a new temporary directory.
@@ -345,10 +345,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn import_uses_workspace_default_unless_permissions_are_given() {
+    async fn import_uses_collection_default_unless_permissions_are_given() {
         use markhor_core::permissions::{ON_DEVICE, PUBLIC, Restricted};
 
-        let (_ws_dir, ws) = workspace().await;
+        let (_collection_dir, collection) = collection().await;
         let cases = [
             ("default.png", None),
             ("public.png", Some(vec![PUBLIC])),
@@ -360,12 +360,17 @@ mod tests {
                 required_permissions,
                 ..Default::default()
             };
-            import(&ws.root(), OcrInput::Path(src), &two_page_model(), &options)
-                .await
-                .unwrap();
+            import(
+                &collection.root(),
+                OcrInput::Path(src),
+                &two_page_model(),
+                &options,
+            )
+            .await
+            .unwrap();
         }
 
-        let reopen = |name: &'static str| ws.document(name);
+        let reopen = |name: &'static str| collection.document(name);
         assert_eq!(
             reopen("default.png").await.unwrap().permissions_required(),
             &[ON_DEVICE]
@@ -385,11 +390,11 @@ mod tests {
 
     #[tokio::test]
     async fn local_file_is_copied_and_each_page_becomes_a_part() {
-        let (_ws_dir, ws) = workspace().await;
+        let (_collection_dir, collection) = collection().await;
         let (_src_dir, src) = source("scan.png", b"png-bytes");
 
         import(
-            &ws.root(),
+            &collection.root(),
             OcrInput::Path(src),
             &two_page_model(),
             &ImportOptions {
@@ -400,20 +405,21 @@ mod tests {
         .await
         .unwrap();
 
-        // The original is copied into the workspace and its metadata sidecar is `<name>.mark`.
+        // The original is copied into the collection and its metadata sidecar is `<name>.mark`.
         assert_eq!(
-            std::fs::read(ws.path().join("scan.png")).unwrap(),
+            std::fs::read(collection.path().join("scan.png")).unwrap(),
             b"png-bytes"
         );
         assert!(
-            ws.path()
+            collection
+                .path()
                 .join("scan.png")
                 .with_added_extension(METADATA_EXTENSION)
                 .is_file()
         );
 
         // Reopening from disk must yield the same parts, not one part holding raw milestones.
-        let reopened = ws.document("scan.png").await.unwrap();
+        let reopened = collection.document("scan.png").await.unwrap();
         assert_eq!(reopened.metadata().mime, mime::IMAGE_PNG);
         let contents: Vec<&str> = reopened
             .text()
@@ -428,11 +434,11 @@ mod tests {
 
     #[tokio::test]
     async fn default_import_marks_each_page_in_one_part() {
-        let (_ws_dir, ws) = workspace().await;
+        let (_collection_dir, collection) = collection().await;
         let (_src_dir, src) = source("scan.png", b"png-bytes");
 
         import(
-            &ws.root(),
+            &collection.root(),
             OcrInput::Path(src),
             &two_page_model(),
             &ImportOptions::default(),
@@ -440,7 +446,7 @@ mod tests {
         .await
         .unwrap();
 
-        let reopened = ws.document("scan.png").await.unwrap();
+        let reopened = collection.document("scan.png").await.unwrap();
         let text = reopened.text().await.unwrap();
         let parts = text.parts();
         assert_eq!(parts.len(), 1);
@@ -452,7 +458,7 @@ mod tests {
 
     #[tokio::test]
     async fn page_markers_do_not_join_blocks_across_pages() {
-        let (_ws_dir, ws) = workspace().await;
+        let (_collection_dir, collection) = collection().await;
         let (_src_dir, src) = source("scan.png", b"png-bytes");
         let model = FixedOcr {
             pages: vec![page(0, "First paragraph."), page(1, "Second paragraph.")],
@@ -460,7 +466,7 @@ mod tests {
         };
 
         import(
-            &ws.root(),
+            &collection.root(),
             OcrInput::Path(src),
             &model,
             &ImportOptions::default(),
@@ -468,7 +474,7 @@ mod tests {
         .await
         .unwrap();
 
-        let reopened = ws.document("scan.png").await.unwrap();
+        let reopened = collection.document("scan.png").await.unwrap();
         let text = reopened.text().await.unwrap();
         let html = text.parts()[0]
             .content()
@@ -480,7 +486,7 @@ mod tests {
 
     #[tokio::test]
     async fn merged_pages_are_joined_by_blank_lines_and_empty_pages_are_skipped() {
-        let (_ws_dir, ws) = workspace().await;
+        let (_collection_dir, collection) = collection().await;
         let (_src_dir, src) = source("scan.png", b"png-bytes");
         let model = FixedOcr {
             pages: vec![page(0, "page one\n"), page(1, "  \n"), page(2, "page two")],
@@ -491,11 +497,11 @@ mod tests {
             ..Default::default()
         };
 
-        import(&ws.root(), OcrInput::Path(src), &model, &options)
+        import(&collection.root(), OcrInput::Path(src), &model, &options)
             .await
             .unwrap();
 
-        let reopened = ws.document("scan.png").await.unwrap();
+        let reopened = collection.document("scan.png").await.unwrap();
         let text = reopened.text().await.unwrap();
         let parts = text.parts();
         assert_eq!(parts.len(), 1);
@@ -504,7 +510,7 @@ mod tests {
 
     #[tokio::test]
     async fn image_links_resolve_to_stored_attachments() {
-        let (_ws_dir, ws) = workspace().await;
+        let (_collection_dir, collection) = collection().await;
         let (_src_dir, src) = source("scan.png", b"png-bytes");
         let model = FixedOcr {
             pages: vec![OcrPage {
@@ -515,30 +521,35 @@ mod tests {
             fail: false,
         };
 
-        import(&ws.root(), OcrInput::Path(src), &model, &with_images())
-            .await
-            .unwrap();
+        import(
+            &collection.root(),
+            OcrInput::Path(src),
+            &model,
+            &with_images(),
+        )
+        .await
+        .unwrap();
 
         // Links are relative to the sidecar, which sits next to the document. Whatever target the
         // link is rewritten to, it must resolve to the stored image.
-        let text = ws.document("scan.png").await.unwrap();
+        let text = collection.document("scan.png").await.unwrap();
         let markdown = text.text().await.unwrap().parts()[0].content().to_owned();
         let destinations = image_destinations(&markdown);
         assert_eq!(destinations.len(), 1);
         assert_eq!(
-            std::fs::read(ws.path().join(&destinations[0])).unwrap(),
+            std::fs::read(collection.path().join(&destinations[0])).unwrap(),
             b"jpeg-bytes"
         );
     }
 
     #[tokio::test]
     async fn name_clash_is_an_error_and_keeps_existing_document() {
-        let (_ws_dir, ws) = workspace().await;
+        let (_collection_dir, collection) = collection().await;
         let (_first_dir, first) = source("scan.png", b"first");
         let (_second_dir, second) = source("scan.png", b"second");
 
         import(
-            &ws.root(),
+            &collection.root(),
             OcrInput::Path(first),
             &two_page_model(),
             &ImportOptions::default(),
@@ -547,7 +558,7 @@ mod tests {
         .unwrap();
 
         let err = import(
-            &ws.root(),
+            &collection.root(),
             OcrInput::Path(second),
             &two_page_model(),
             &ImportOptions::default(),
@@ -555,12 +566,15 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, ImportError::NameClash(_)), "{err}");
-        assert_eq!(std::fs::read(ws.path().join("scan.png")).unwrap(), b"first");
+        assert_eq!(
+            std::fs::read(collection.path().join("scan.png")).unwrap(),
+            b"first"
+        );
     }
 
     #[tokio::test]
     async fn failed_ocr_leaves_no_files_behind() {
-        let (_ws_dir, ws) = workspace().await;
+        let (_collection_dir, collection) = collection().await;
         let (_src_dir, src) = source("scan.png", b"png-bytes");
         let model = FixedOcr {
             pages: vec![],
@@ -568,7 +582,7 @@ mod tests {
         };
 
         let err = import(
-            &ws.root(),
+            &collection.root(),
             OcrInput::Path(src),
             &model,
             &ImportOptions::default(),
@@ -577,21 +591,22 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, ImportError::Ocr(_)), "{err}");
 
-        assert!(!ws.path().join("scan.png").exists());
+        assert!(!collection.path().join("scan.png").exists());
         assert!(
-            !ws.path()
+            !collection
+                .path()
                 .join("scan.png")
                 .with_added_extension(METADATA_EXTENSION)
                 .exists()
         );
-        assert!(!ws.path().join(ATTACHMENTS_DIR).exists());
+        assert!(!collection.path().join(ATTACHMENTS_DIR).exists());
     }
 
     #[tokio::test]
     async fn failed_attachment_write_removes_the_imported_document() {
-        let (_ws_dir, ws) = workspace().await;
+        let (_collection_dir, collection) = collection().await;
         // A file named `attachments` makes the attachment directory impossible to create.
-        std::fs::write(ws.path().join(ATTACHMENTS_DIR), "not a directory").unwrap();
+        std::fs::write(collection.path().join(ATTACHMENTS_DIR), "not a directory").unwrap();
         let (_src_dir, src) = source("scan.png", b"png-bytes");
         let model = FixedOcr {
             pages: vec![OcrPage {
@@ -602,20 +617,26 @@ mod tests {
             fail: false,
         };
 
-        let err = import(&ws.root(), OcrInput::Path(src), &model, &with_images())
-            .await
-            .unwrap_err();
+        let err = import(
+            &collection.root(),
+            OcrInput::Path(src),
+            &model,
+            &with_images(),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, ImportError::Library(_)), "{err}");
 
-        assert!(!ws.path().join("scan.png").exists());
+        assert!(!collection.path().join("scan.png").exists());
         assert!(
-            !ws.path()
+            !collection
+                .path()
                 .join("scan.png")
                 .with_added_extension(METADATA_EXTENSION)
                 .exists()
         );
         assert_eq!(
-            std::fs::read_to_string(ws.path().join(ATTACHMENTS_DIR)).unwrap(),
+            std::fs::read_to_string(collection.path().join(ATTACHMENTS_DIR)).unwrap(),
             "not a directory"
         );
     }
@@ -634,7 +655,7 @@ mod tests {
 
     #[tokio::test]
     async fn image_ids_repeated_across_pages_get_distinct_attachments() {
-        let (_ws_dir, ws) = workspace().await;
+        let (_collection_dir, collection) = collection().await;
         let (_src_dir, src) = source("scan.png", b"png-bytes");
         let model = FixedOcr {
             pages: vec![
@@ -652,27 +673,32 @@ mod tests {
             fail: false,
         };
 
-        import(&ws.root(), OcrInput::Path(src), &model, &with_images())
-            .await
-            .unwrap();
+        import(
+            &collection.root(),
+            OcrInput::Path(src),
+            &model,
+            &with_images(),
+        )
+        .await
+        .unwrap();
 
-        let reopened = ws.document("scan.png").await.unwrap();
+        let reopened = collection.document("scan.png").await.unwrap();
         let text = reopened.text().await.unwrap();
         let targets = image_destinations(text.parts()[0].content());
         assert_eq!(targets.len(), 2);
         assert_eq!(
-            std::fs::read(ws.path().join(&targets[0])).unwrap(),
+            std::fs::read(collection.path().join(&targets[0])).unwrap(),
             b"first"
         );
         assert_eq!(
-            std::fs::read(ws.path().join(&targets[1])).unwrap(),
+            std::fs::read(collection.path().join(&targets[1])).unwrap(),
             b"second"
         );
     }
 
     #[tokio::test]
     async fn names_with_spaces_resolve_to_their_attachments() {
-        let (_ws_dir, ws) = workspace().await;
+        let (_collection_dir, collection) = collection().await;
         let (_src_dir, src) = source("my scan.png", b"png-bytes");
         let model = FixedOcr {
             pages: vec![OcrPage {
@@ -683,16 +709,21 @@ mod tests {
             fail: false,
         };
 
-        import(&ws.root(), OcrInput::Path(src), &model, &with_images())
-            .await
-            .unwrap();
+        import(
+            &collection.root(),
+            OcrInput::Path(src),
+            &model,
+            &with_images(),
+        )
+        .await
+        .unwrap();
 
-        let reopened = ws.document("my scan.png").await.unwrap();
+        let reopened = collection.document("my scan.png").await.unwrap();
         let text = reopened.text().await.unwrap();
         let target = image_destinations(text.parts()[0].content());
         assert_eq!(target.len(), 1);
         assert_eq!(
-            std::fs::read(ws.path().join(&target[0])).unwrap(),
+            std::fs::read(collection.path().join(&target[0])).unwrap(),
             b"jpeg-bytes"
         );
     }
@@ -706,14 +737,14 @@ mod tests {
             .mount(&server)
             .await;
 
-        let (_ws_dir, ws) = workspace().await;
+        let (_collection_dir, collection) = collection().await;
         let input = OcrInput::Url {
             url: format!("{}/files/scan.png", server.uri()),
             mime: None,
         };
 
         import(
-            &ws.root(),
+            &collection.root(),
             input,
             &two_page_model(),
             &ImportOptions::default(),
@@ -723,7 +754,7 @@ mod tests {
 
         // The mock enforces a single download when the server is dropped.
         assert_eq!(
-            std::fs::read(ws.path().join("scan.png")).unwrap(),
+            std::fs::read(collection.path().join("scan.png")).unwrap(),
             b"png-bytes"
         );
     }

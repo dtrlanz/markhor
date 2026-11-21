@@ -7,14 +7,14 @@ use crate::{
         dependency_slot::DependencySlot,
     },
     extension::{Extension, ExtensionConfig, InitExtensionError},
-    library::{Document, Scope, Workspace},
+    library::{Collection, Document, Scope},
     permissions::{self, Actor, Authorized, Permission, Resource, Restricted},
 };
 
 use std::{collections::BTreeMap, sync::Arc};
 
 pub struct Session {
-    workspace: Option<Workspace>,
+    collection: Option<Collection>,
     documents: Vec<Document>,
     api_keys: Vec<DependencySlot<ApiKey>>,
     extensions: Vec<DependencySlot<Arc<dyn Extension>>>,
@@ -32,7 +32,7 @@ pub struct Session {
 impl Session {
     pub fn new() -> Self {
         Self {
-            workspace: None,
+            collection: None,
             documents: vec![],
             api_keys: vec![],
             extensions: vec![],

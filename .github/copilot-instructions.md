@@ -22,7 +22,7 @@ Package name differs from directory name:
 
 | Directory | Package | Role |
 |---|---|---|
-| `core/` | `markhor_core` | Domain logic: library (workspaces, documents, folders), chat/embedding traits, chunking, markdown, permissions, dependency injection, extension trait |
+| `core/` | `markhor_core` | Domain logic: library (collections, documents, folders), chat/embedding traits, chunking, markdown, permissions, dependency injection, extension trait |
 | `core_derive_provide/` | `derive_provide` | Proc macro `#[derive(Provide)]` used by `markhor_core` |
 | `extensions/` | `markhor_extensions` | Concrete extensions: `google` (Gemini API, serves Gemini/Gemma models), `anthropic`, `mistral` (OCR and files), `chunking::plaintext`, `plugin` |
 | `markhor/` | `markhor` | Library (no binary): `agent` (agent builder/config), `chat` (`Simple` chat orchestration), `user`. `cli.rs` holds clap definitions that no binary uses yet |
@@ -45,7 +45,7 @@ Dependency direction: `cli` and `cli/sim` and `markhor` → `markhor_extensions`
 **Permissions.** `core/src/permissions/` uses `Restricted` (resources declare `permissions_required()`) and `Authorized` (actors declare `permissions_granted()`). An actor may access a resource only if it holds all required permissions. Built-in permissions: `ON_DEVICE`, `NOT_USED_FOR_TRAINING`, `PUBLIC`. `Session::restrict_access` narrows what a session may do.
 
 **Library model.** `core/src/library/` is the on-disk knowledge base:
-- A workspace is a directory with a `.markhor/` config dir (`WORKSPACE_CONFIG_DIR` in `library/mod.rs`). `Workspace::open(path)` opens exactly that directory and returns `InWorkspace` if it sits inside one. `Folder::open(path)` walks up to the containing workspace. Nested workspaces are rejected (`find_workspace_descendant`, `library/workspace.rs`).
+- A collection is a directory with a `.markhor/` config dir (`COLLECTION_CONFIG_DIR` in `library/mod.rs`). `Collection::open(path)` opens exactly that directory and returns `InCollection` if it sits inside one. `Folder::open(path)` walks up to the containing collection. Nested collections are rejected (`find_collection_descendant`, `library/collection.rs`).
 - Documents are Markdown files with YAML metadata. Derived data goes to `attachments/<document file name>/` (`ATTACHMENTS_DIR`), with `.cache.yaml` and `.chunks_<chunker-id>.yaml` files.
 - Chunks are cached per chunker ID, so changing a chunker invalidates only its own cache.
 
@@ -66,7 +66,7 @@ When implementing a feature that touches these areas, finish the existing `todo!
 
 - Tests are inline `#[cfg(test)] mod tests` modules next to the code, plus a few integration tests in `core/tests/`. Follow the same pattern. Test helpers live in `pub(crate)` modules such as `chunking::test_chunker` and `embedding::test_utils`.
 - Test extensions implement `Extension` inline with a `markhor://test-...` URI. Reuse `MockEmbedderExtension` and `FixedSizeChunkerExtension` rather than writing new mocks.
-- Filesystem tests use `tempfile` (a dev-dependency of `markhor_core`) and open a workspace with `Workspace::open(&dir)`, as in `core/src/library/document/mod.rs` tests.
+- Filesystem tests use `tempfile` (a dev-dependency of `markhor_core`) and open a collection with `Collection::open(&dir)`, as in `core/src/library/document/mod.rs` tests.
 - Logging uses `tracing` macros. The binaries log to stderr, filtered by `RUST_LOG` (default `warn`), as in `cli/src/main.rs`.
 - Secrets: each binary calls `dotenv::dotenv()` at the start of `main` (e.g., `cli/src/main.rs`), and `**/.env` is git-ignored. Do not read, print, or commit `.env` files. Never hardcode API keys.
 - The root `tests/integration_test.rs` is never compiled, because the root manifest is a virtual workspace. Put new integration tests in a crate's `tests/` directory.

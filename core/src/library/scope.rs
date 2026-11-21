@@ -3,7 +3,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::library::{AccessLibraryError, Document, Folder, Tag, Workspace, folder::ReadRecursive};
+use crate::library::{
+    AccessLibraryError, Collection, Document, Folder, Tag, folder::ReadRecursive,
+};
 
 #[derive(Debug, Clone)]
 pub struct Scope {
@@ -16,7 +18,7 @@ impl Scope {
     pub fn contains(&self, document: &Document) -> bool {
         // Check path
         if !document
-            .workspace()
+            .collection()
             .path()
             .join(document.path())
             .starts_with(&self.folder_path)
@@ -32,12 +34,14 @@ impl Scope {
         true
     }
 
-    pub async fn docs(&self, workspace: &Workspace) -> Result<Docs<'_>, AccessLibraryError> {
-        // Check if workspace contains the scope's path
-        if !self.folder_path.starts_with(workspace.path()) {
-            return Err(AccessLibraryError::NotInWorkspace(self.folder_path.clone()));
+    pub async fn docs(&self, collection: &Collection) -> Result<Docs<'_>, AccessLibraryError> {
+        // Check if collection contains the scope's path
+        if !self.folder_path.starts_with(collection.path()) {
+            return Err(AccessLibraryError::NotInCollection(
+                self.folder_path.clone(),
+            ));
         }
-        let folder = workspace.folder(&self.folder_path).await?;
+        let folder = collection.folder(&self.folder_path).await?;
         let read_recursive = folder.read_recursive().await?;
         Ok(Docs {
             scope: self,
@@ -49,7 +53,7 @@ impl Scope {
 impl From<Folder> for Scope {
     fn from(folder: Folder) -> Self {
         Scope {
-            folder_path: folder.workspace().path().join(folder.path()),
+            folder_path: folder.collection().path().join(folder.path()),
             tags: HashSet::new(),
         }
     }
@@ -138,9 +142,15 @@ mod tests {
         .await
         .unwrap();
 
-        let ws = Workspace::open(&dir).await.unwrap();
-        let scope = Scope::from(ws.root());
-        let mut docs = scope.docs(&ws).await.unwrap().into_vec().await.unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
+        let scope = Scope::from(collection.root());
+        let mut docs = scope
+            .docs(&collection)
+            .await
+            .unwrap()
+            .into_vec()
+            .await
+            .unwrap();
         assert_eq!(docs.len(), 2);
 
         // Order of entries is not guaranteed, so we need to sort them

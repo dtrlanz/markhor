@@ -13,7 +13,7 @@ This project is still pre-alpha. Assume all APIs are experimental. Every version
 ## Packages
 
 -   `markhor`: App context and command-line interface
--   `markhor_core`: Core functionalities for AI (models, embeddings, etc.) and file management (workspaces, documents, metadata)
+-   `markhor_core`: Core functionalities for AI (models, embeddings, etc.) and file management (collections, documents, metadata)
 -   `markhor_extensions`: Various extensions (incl. clients for several APIs)
 
 ## Getting Started
@@ -53,7 +53,7 @@ In terms of implementation strategy, the following items are currently non-goals
 - [ ] File output
 - [ ] Workflows
 - [ ] Privacy metadata
-- [ ] App & workspace configuration
+- [ ] App & collection configuration
 - [ ] Tools
 - [ ] ...
 

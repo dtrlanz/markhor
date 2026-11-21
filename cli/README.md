@@ -40,14 +40,14 @@ Ctrl-C or end of input also ends the chat. Any other input, including unknown
 ### `import`
 
 Imports a visual document (PDF, image, or another format Mistral OCR accepts)
-into a folder of a Markhor workspace. The text is recognized with Mistral OCR and
+into a folder of a Markhor collection. The text is recognized with Mistral OCR and
 stored as one part of the new document. The original file is copied into the
 folder.
 
 - `<INPUT>` is a local file or an `http(s)` URL. URLs are downloaded once and
   stored with the document.
 - `--folder` is the folder to import into. It defaults to the current directory
-  and must be inside a workspace.
+  and must be inside a collection.
 - `--pages` takes zero-based page numbers. It defaults to all pages.
 - `--no-images` does not store the images found in the document. By default they
   are stored as attachments. Without them, image links in the text are left as
@@ -64,7 +64,7 @@ folder.
   In every mode, a page break inside a paragraph, list, table, or code block is
   kept, so that block may render differently from the original page.
 
-On success the path of the new document, relative to the workspace, is printed.
+On success the path of the new document, relative to the collection, is printed.
 An existing document or sidecar with the same name is an error, and nothing is
 changed.
 
