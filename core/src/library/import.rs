@@ -26,6 +26,9 @@ pub enum ImportError {
 
     #[error("A document named {0} already exists")]
     NameClash(PathBuf),
+
+    #[error("No document name can be derived from the input")]
+    UnnamedInput,
 }
 
 /// The original file, stored alongside the recognized text.
@@ -44,7 +47,153 @@ pub(crate) async fn import(
     model: &dyn OcrModel,
     options: &OcrOptions,
 ) -> Result<Document, ImportError> {
-    todo!()
+    let name = document_name(&input)?;
+    if name_is_taken(folder, &name).await? {
+        return Err(ImportError::NameClash(folder.path().join(&name)));
+    }
+
+    let (output, original) = match input {
+        OcrInput::Path(path) => {
+            let output = model
+                .recognize(OcrInput::Path(path.clone()), options)
+                .await?;
+            (output, Original::File(path))
+        }
+        OcrInput::Url { url, mime } => {
+            let mime = mime.or_else(|| media_type_from_url(&url)).ok_or_else(|| {
+                OcrError::UnsupportedInput(format!("cannot infer media type of {url}"))
+            })?;
+            // The download is both the original and the OCR input, so it is fetched only once.
+            let data = reqwest::get(url.as_str())
+                .await?
+                .error_for_status()?
+                .bytes()
+                .await?
+                .to_vec();
+            let output = model
+                .recognize(
+                    OcrInput::Bytes {
+                        data: data.clone(),
+                        mime,
+                    },
+                    options,
+                )
+                .await?;
+            (output, Original::Data(data))
+        }
+        OcrInput::Bytes { .. } => return Err(ImportError::UnnamedInput),
+    };
+
+    let created = match &original {
+        Original::File(path) => {
+            folder
+                .create_document(&name, NewSource::CopyFrom(path.clone()))
+                .await
+        }
+        Original::Data(data) => {
+            folder
+                .create_document(&name, NewSource::Bytes(data.as_slice()))
+                .await
+        }
+    };
+    let mut doc = created.map_err(|e| match e {
+        AccessLibraryError::FileAlreadyExists(_) => {
+            ImportError::NameClash(folder.path().join(&name))
+        }
+        e => ImportError::Library(e),
+    })?;
+
+    let mut attachments = Vec::new();
+    match store_text(&mut doc, output.pages, &mut attachments).await {
+        Ok(()) => Ok(doc),
+        Err(e) => {
+            discard(&doc, &attachments).await;
+            Err(e)
+        }
+    }
+}
+
+/// The name a document imported from `input` is given: the file name of a path, or the last
+/// segment of a URL.
+fn document_name(input: &OcrInput) -> Result<String, ImportError> {
+    let name = match input {
+        OcrInput::Path(path) => path.file_name().and_then(|n| n.to_str()).map(str::to_owned),
+        OcrInput::Url { url, .. } => reqwest::Url::parse(url).ok().and_then(|parsed| {
+            parsed
+                .path_segments()?
+                .last()
+                .filter(|segment| !segment.is_empty())
+                .map(str::to_owned)
+        }),
+        OcrInput::Bytes { .. } => None,
+    };
+    name.ok_or(ImportError::UnnamedInput)
+}
+
+/// A document or its metadata sidecar already exists under `name`.
+async fn name_is_taken(folder: &Folder, name: &str) -> Result<bool, AccessLibraryError> {
+    let path = folder.path().join(name);
+    Ok(fs::try_exists(&path).await?
+        || fs::try_exists(path.with_added_extension(METADATA_EXTENSION)).await?)
+}
+
+/// Writes each page as a part of `doc`, stores its images as attachments, and saves the document.
+///
+/// Every attachment written is pushed to `attachments`, so the caller can remove them on failure.
+async fn store_text(
+    doc: &mut Document,
+    pages: Vec<OcrPage>,
+    attachments: &mut Vec<PathBuf>,
+) -> Result<(), ImportError> {
+    let mut parts = Vec::with_capacity(pages.len());
+    for page in pages {
+        let mut markdown = page.markdown;
+        for image in page.images {
+            let Some(data) = image.data else { continue };
+            // Image ids are only unique within a page, so the page index is part of the name.
+            let name = format!("{}-{}", page.index, image.id);
+            let rel = doc.write_attachment(&name, &data).await?;
+            markdown = rewrite_image_link(&markdown, &image.id, &link_to(&rel));
+            attachments.push(rel);
+        }
+        parts.push(Part::new(page.index.to_string(), markdown));
+    }
+
+    let text = doc.text_mut().await?;
+    for part in parts {
+        text.push_part(part);
+    }
+    doc.save().await?;
+    Ok(())
+}
+
+/// Formats a path relative to the document's directory as a link target.
+fn link_to(rel: &Path) -> String {
+    rel.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Points the image link for `id` at `target`.
+fn rewrite_image_link(markdown: &str, id: &str, target: &str) -> String {
+    markdown.replace(&format!("]({id})"), &format!("]({target})"))
+}
+
+/// Removes what an import wrote. Directories are removed only when empty, so unrelated files
+/// are never deleted.
+async fn discard(doc: &Document, attachments: &[PathBuf]) {
+    let dir = doc.absolute_path.parent().unwrap();
+    for rel in attachments {
+        let path = dir.join(rel);
+        let _ = fs::remove_file(&path).await;
+        if let Some(parent) = path.parent() {
+            let _ = fs::remove_dir(parent).await;
+        }
+    }
+    let _ = fs::remove_dir(dir.join(ATTACHMENTS_DIR)).await;
+    let _ = fs::remove_file(&doc.absolute_path).await;
+    let _ = fs::remove_file(doc.absolute_path.with_added_extension(METADATA_EXTENSION)).await;
 }
 
 #[cfg(test)]
@@ -277,6 +426,60 @@ mod tests {
                 .exists()
         );
         assert!(!ws.path().join(ATTACHMENTS_DIR).exists());
+    }
+
+    #[tokio::test]
+    async fn failed_attachment_write_removes_the_imported_document() {
+        // A file named `attachments` makes the attachment directory impossible to create.
+        let ws_dir = TempTree::new(fs_tree! {
+            ATTACHMENTS_DIR => "not a directory",
+        })
+        .await
+        .unwrap();
+        let ws = Workspace::open(&ws_dir).await.unwrap();
+        let src = TempTree::new(fs_tree! {
+            "scan.png" => b"png-bytes",
+        })
+        .await
+        .unwrap();
+        let model = FixedOcr {
+            pages: vec![OcrPage {
+                index: 0,
+                markdown: "![img-0.jpeg](img-0.jpeg)".into(),
+                images: vec![OcrImage {
+                    id: "img-0.jpeg".into(),
+                    mime: Some(mime::IMAGE_JPEG),
+                    data: Some(b"jpeg-bytes".to_vec()),
+                }],
+            }],
+            fail: false,
+        };
+        let options = OcrOptions {
+            include_images: true,
+            ..Default::default()
+        };
+
+        let err = import(
+            &ws.root(),
+            OcrInput::Path(src.join("scan.png")),
+            &model,
+            &options,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ImportError::Library(_)), "{err}");
+
+        assert!(!ws.path().join("scan.png").exists());
+        assert!(
+            !ws.path()
+                .join("scan.png")
+                .with_added_extension(METADATA_EXTENSION)
+                .exists()
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.path().join(ATTACHMENTS_DIR)).unwrap(),
+            "not a directory"
+        );
     }
 
     #[tokio::test]

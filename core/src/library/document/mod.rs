@@ -819,6 +819,20 @@ impl Document {
         path
     }
 
+    /// Writes `data` as an attachment of this document. Returns the attachment's path relative to
+    /// the directory containing the document.
+    pub(crate) async fn write_attachment(
+        &self,
+        name: &str,
+        data: &[u8],
+    ) -> Result<PathBuf, AccessLibraryError> {
+        let path = self.attachment_path_escaped(name);
+        fs::create_dir_all(path.parent().unwrap()).await?;
+        fs::write(&path, data).await?;
+        let dir = self.absolute_path.parent().unwrap();
+        Ok(path.strip_prefix(dir).unwrap().to_path_buf())
+    }
+
     fn attachment_name(&self, path: &Path) -> Option<String> {
         let mut file_name = path
             .strip_prefix(self.attachment_path_raw(""))

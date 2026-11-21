@@ -83,18 +83,19 @@ impl Text {
                 self.parts.clear();
                 for r in text.to_markdown(WITH_MILESTONES).regions() {
                     if &*r.unit == "part" {
-                        let id = r
-                            .attribute("id")
-                            .flatten()
-                            .map(|s| s.to_string())
-                            .unwrap_or_default();
+                        // Use milestone's value (n=...) as part id
+                        let id = r.value.to_string();
                         if self.parts.iter().any(|part| part.id == id) {
                             warn!("Duplicate text part id '{}', skipping", id);
                             continue;
                         }
+                        // `export` writes a newline after each milestone and after each part.
+                        let content = r.content();
+                        let content = content.strip_prefix('\n').unwrap_or(content);
+                        let content = content.strip_suffix('\n').unwrap_or(content);
                         self.parts.push(Part {
                             id,
-                            content: r.content().to_string(),
+                            content: content.to_string(),
                         });
                     }
                 }
@@ -106,12 +107,16 @@ impl Text {
         }
     }
 
-    pub(crate) fn export(&self, _keyword: &mut Option<String>) -> Option<String> {
+    pub(crate) fn export(&self, keyword: &mut Option<String>) -> Option<String> {
         if self.parts.is_empty() {
+            *keyword = None;
             None
         } else if self.parts.len() == 1 && self.parts[0].id.is_empty() {
+            *keyword = None;
             Some(self.parts[0].content.clone())
         } else {
+            // Milestones are present, so `import` must split them back into parts.
+            *keyword = Some("".to_string());
             let mut text = String::new();
             for Part { id, content } in self.parts.iter() {
                 text.push_str(

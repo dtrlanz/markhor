@@ -252,7 +252,7 @@ pub struct Region<'a> {
 
 impl<'a> Region<'a> {
     pub fn content(&self) -> &'a str {
-        &self.md.content[self.range.clone()]
+        self.md.content
     }
 
     pub fn attribute(&self, name: &str) -> Option<Option<CowStr<'a>>> {
@@ -518,11 +518,13 @@ And more."#;
         assert_eq!(regions[0].unit, CowStr::from("part"));
         assert_eq!(regions[0].value, CowStr::from("1"));
         assert_eq!(&text[regions[0].range.clone()], "\nMore text.\n");
+        assert_eq!(regions[0].content(), "\nMore text.\n");
         assert_eq!(regions[0].to_html(), "<p>More text.</p>\n");
         println!("{:#?}", regions[1]);
         assert_eq!(regions[1].unit, CowStr::from("part"));
         assert_eq!(regions[1].value, CowStr::from("2"));
         assert_eq!(&text[regions[1].range.clone()], "\nAnd more.");
+        assert_eq!(regions[1].content(), "\nAnd more.");
         assert_eq!(regions[1].to_html(), "<p>And more.</p>\n");
     }
 
