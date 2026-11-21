@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::Args;
 use markhor_core::{
     dependencies::Session,
     extension::{Comp, ExtensionConfig},
@@ -11,12 +11,10 @@ use markhor_core::{
     ocr::{OcrInput, OcrModel, OcrOptions},
 };
 use markhor_extensions::mistral::{Client, ClientConfig};
-use tracing_subscriber::EnvFilter;
 
 /// Import a document, recognizing its text with OCR.
-#[derive(Parser)]
-#[command(version, about)]
-struct Args {
+#[derive(Args)]
+pub struct ImportArgs {
     /// A local file, or an http(s) URL that Markhor downloads.
     input: String,
 
@@ -33,17 +31,7 @@ struct Args {
     include_images: bool,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    dotenv::dotenv().ok();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
-        )
-        .with_writer(std::io::stderr)
-        .init();
-    let args = Args::parse();
-
+pub async fn run(args: ImportArgs) -> Result<()> {
     let mut session = Session::new();
     session
         .add_api_keys_from_env()

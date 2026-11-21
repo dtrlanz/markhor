@@ -21,7 +21,7 @@ This project is still pre-alpha. Assume all APIs are experimental. Every version
 1.  Clone the repository.
 2.  Navigate to the project directory.
 3.  Build the project using `cargo build`.
-4.  Run the CLI application using `cargo run --package markhor`.
+4.  Run the CLI application using `cargo run -p markhor_cli -- chat`.
 
 ## Project Goals
 

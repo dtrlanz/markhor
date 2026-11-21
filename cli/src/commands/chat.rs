@@ -1,42 +1,54 @@
-//! Console chat with a Gemma model served by the Gemini API.
-
-mod console;
+//! Console chat with a model served by the Gemini API.
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::Args;
 use markhor::chat::Simple;
+use markhor_cli::ConsoleChatUi;
 use markhor_core::{
-    chat::ChatModel,
+    chat::{ChatModel, ChatUi},
     dependencies::Session,
-    extension::{Comp, ExtensionConfig},
+    extension::{Comp, Extension, ExtensionConfig},
 };
 use markhor_extensions::google::{Client, ClientConfig};
-use tracing_subscriber::EnvFilter;
-
-use console::ConsoleExtension;
 
 const COMMANDS: [&str; 2] = ["help", "exit"];
 
-/// Chat with a Gemma model in the terminal.
-#[derive(Parser)]
-#[command(version, about)]
-struct Args {
-    /// Exact Gemma model id to use, e.g. `gemma-4-31b-it`. Defaults to the first listed Gemma 4 model.
+/// Chat with a model served by the Gemini API in the terminal.
+#[derive(Args)]
+pub struct ChatArgs {
+    /// Exact model id to use, e.g. `gemma-4-31b-it`. Defaults to `gemini-flash-lite-latest`.
     #[arg(long)]
     model: Option<String>,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    dotenv::dotenv().ok();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
-        )
-        .with_writer(std::io::stderr)
-        .init();
-    let args = Args::parse();
-    let allow = args.model.unwrap_or_else(|| "gemma-4*".to_string());
+/// Exposes the console chat UI as an extension, so that a `Session` can resolve it.
+#[derive(Clone, Default)]
+struct ConsoleExtension {
+    ui: ConsoleChatUi,
+}
+
+impl Extension for ConsoleExtension {
+    fn uri(&self) -> &str {
+        "markhor://console-ui"
+    }
+
+    fn name(&self) -> &str {
+        "Console chat UI"
+    }
+
+    fn description(&self) -> &str {
+        "Terminal chat interface"
+    }
+
+    fn chat_uis(&self) -> Vec<Box<dyn ChatUi>> {
+        vec![Box::new(self.ui.clone())]
+    }
+}
+
+pub async fn run(args: ChatArgs) -> Result<()> {
+    let allow = args
+        .model
+        .unwrap_or_else(|| "gemini-flash-lite-latest".to_string());
 
     let mut session = Session::new();
     session

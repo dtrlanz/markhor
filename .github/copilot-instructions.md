@@ -5,12 +5,12 @@ Markhor is a pre-alpha Rust workspace (edition 2024, resolver 3) for Markdown-ba
 ## Build, test, lint
 
 - Build: `cargo build` (whole workspace)
-- Run binaries. The `markhor` package is a library with no binary, so `cargo run -p markhor` fails:
-  - Chat: `cargo run -p markhor_chat -- --model <id>` (binary `markhor-chat`)
-  - Import with OCR: `cargo run -p markhor_import -- <file-or-url>` (binary `markhor-import`)
-  - Chat simulator: `cargo run -p markhor_chat_sim` (binary `markhor-chat-sim`)
+- Run binaries. The `markhor` package is a library with no binary, so `cargo run -p markhor` fails. The user-facing CLI is the `markhor` binary in package `markhor_cli`:
+  - Chat: `cargo run -p markhor_cli -- chat --model <id>`
+  - Import with OCR: `cargo run -p markhor_cli -- import <file-or-url>`
+  - Chat simulator (dev only): `cargo run -p markhor_chat_sim` (binary `markhor-chat-sim`)
 - Test all: `cargo test --workspace`
-- Test one crate: `cargo test -p markhor_core` (package names: `markhor_core`, `markhor_extensions`, `markhor`, `derive_provide`, `markhor_cli`, `markhor_chat`, `markhor_import`, `markhor_chat_sim`, `markhor_gui`, `markhor_util`)
+- Test one crate: `cargo test -p markhor_core` (package names: `markhor_core`, `markhor_extensions`, `markhor`, `derive_provide`, `markhor_cli`, `markhor_chat_sim`, `markhor_gui`, `markhor_util`)
 - Test one test by name: `cargo test -p markhor_core dependencies::provide::tests::derive_provide -- --exact`
   - Without `--exact`, a plain substring filter works: `cargo test -p markhor_core provide`
 - Include ignored tests: append `-- --ignored`. Ignored tests in `markhor_extensions` and `markhor/tests` call live APIs and need `GOOGLE_API_KEY`, `MISTRAL_API_KEY`, or `ANTHROPIC_API_KEY`; don't run them without keys.
@@ -24,13 +24,13 @@ Package name differs from directory name:
 |---|---|---|
 | `core/` | `markhor_core` | Domain logic: library (workspaces, documents, folders), chat/embedding traits, chunking, markdown, permissions, dependency injection, extension trait |
 | `core_derive_provide/` | `derive_provide` | Proc macro `#[derive(Provide)]` used by `markhor_core` |
-| `extensions/` | `markhor_extensions` | Concrete extensions: `google` (Gemini API, serves Gemma models), `anthropic`, `mistral` (OCR and files), `chunking::plaintext`, `plugin` |
+| `extensions/` | `markhor_extensions` | Concrete extensions: `google` (Gemini API, serves Gemini/Gemma models), `anthropic`, `mistral` (OCR and files), `chunking::plaintext`, `plugin` |
 | `markhor/` | `markhor` | Library (no binary): `agent` (agent builder/config), `chat` (`Simple` chat orchestration), `user`. `cli.rs` holds clap definitions that no binary uses yet |
-| `cli/` | `markhor_cli` | Terminal UI library: converts messages to HTML and renders them (`convert`, `html`, `ui`) |
-| `cli/chat`, `cli/import`, `cli/sim` | `markhor_chat`, `markhor_import`, `markhor_chat_sim` | The runnable binaries. They depend on `markhor` and `markhor_extensions` |
+| `cli/` | `markhor_cli` | The `markhor` binary (subcommands `chat`, `import`; sources in `cli/src/commands/`) and the terminal UI library (`convert`, `html`, `ui`) |
+| `cli/sim` | `markhor_chat_sim` | Unpublished dev simulator binary `markhor-chat-sim` |
 | `gui/`, `util/` | `markhor_gui`, `markhor_util` | Placeholders (`gui` is still hello-world) |
 
-Dependency direction: `cli/*` and `markhor` → `markhor_extensions` → `markhor_core` → `derive_provide`. Core must never depend on extensions.
+Dependency direction: `cli` and `cli/sim` and `markhor` → `markhor_extensions` → `markhor_core` → `derive_provide`. Core must never depend on extensions.
 
 ## Architecture (big picture)
 
@@ -67,8 +67,8 @@ When implementing a feature that touches these areas, finish the existing `todo!
 - Tests are inline `#[cfg(test)] mod tests` modules next to the code, plus a few integration tests in `core/tests/`. Follow the same pattern. Test helpers live in `pub(crate)` modules such as `chunking::test_chunker` and `embedding::test_utils`.
 - Test extensions implement `Extension` inline with a `markhor://test-...` URI. Reuse `MockEmbedderExtension` and `FixedSizeChunkerExtension` rather than writing new mocks.
 - Filesystem tests use `tempfile` (a dev-dependency of `markhor_core`) and open a workspace with `Workspace::open(&dir)`, as in `core/src/library/document/mod.rs` tests.
-- Logging uses `tracing` macros. The binaries log to stderr, filtered by `RUST_LOG` (default `warn`), as in `cli/chat/src/main.rs`.
-- Secrets: each binary calls `dotenv::dotenv()` at the start of `main` (e.g., `cli/chat/src/main.rs`), and `**/.env` is git-ignored. Do not read, print, or commit `.env` files. Never hardcode API keys.
+- Logging uses `tracing` macros. The binaries log to stderr, filtered by `RUST_LOG` (default `warn`), as in `cli/src/main.rs`.
+- Secrets: each binary calls `dotenv::dotenv()` at the start of `main` (e.g., `cli/src/main.rs`), and `**/.env` is git-ignored. Do not read, print, or commit `.env` files. Never hardcode API keys.
 - The root `tests/integration_test.rs` is never compiled, because the root manifest is a virtual workspace. Put new integration tests in a crate's `tests/` directory.
 - `target/` is a large build directory. Exclude it from searches.
 - Crate versions are shared via `version.workspace = true`; the version lives in the root `Cargo.toml` under `[workspace.package]`.
