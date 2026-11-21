@@ -225,8 +225,20 @@ fn link_to(rel: &Path) -> String {
 }
 
 /// Points the image link for `id` at `target`.
+///
+/// The target is written as a `<…>` link destination, which may contain spaces and parentheses.
+/// Backslashes and angle brackets in the target are escaped.
+// FIXME: This seems hacky and brittle.
 fn rewrite_image_link(markdown: &str, id: &str, target: &str) -> String {
-    markdown.replace(&format!("]({id})"), &format!("]({target})"))
+    let mut destination = String::from("<");
+    for c in target.chars() {
+        if matches!(c, '\\' | '<' | '>') {
+            destination.push('\\');
+        }
+        destination.push(c);
+    }
+    destination.push('>');
+    markdown.replace(&format!("]({id})"), &format!("]({destination})"))
 }
 
 /// Removes what an import wrote. Directories are removed only when empty, so unrelated files
@@ -497,13 +509,10 @@ mod tests {
         // link is rewritten to, it must resolve to the stored image.
         let text = ws.document("scan.png").await.unwrap();
         let markdown = text.text().await.unwrap().parts()[0].content().to_owned();
-        let target = markdown
-            .split("](")
-            .nth(1)
-            .and_then(|rest| rest.split(')').next())
-            .expect("image link present");
+        let destinations = image_destinations(&markdown);
+        assert_eq!(destinations.len(), 1);
         assert_eq!(
-            std::fs::read(ws.path().join(target)).unwrap(),
+            std::fs::read(ws.path().join(&destinations[0])).unwrap(),
             b"jpeg-bytes"
         );
     }
@@ -634,6 +643,127 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(ws.path().join(ATTACHMENTS_DIR)).unwrap(),
             "not a directory"
+        );
+    }
+
+    /// The destinations of the images in `markdown`, as CommonMark parses them.
+    fn image_destinations(markdown: &str) -> Vec<String> {
+        pulldown_cmark::Parser::new_ext(markdown, WITH_MILESTONES.md_options)
+            .filter_map(|event| match event {
+                pulldown_cmark::Event::Start(pulldown_cmark::Tag::Image { dest_url, .. }) => {
+                    Some(dest_url.into_string())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn image_ids_repeated_across_pages_get_distinct_attachments() {
+        let ws_dir = TempTree::new(fs_tree! {}).await.unwrap();
+        let ws = Workspace::open(&ws_dir).await.unwrap();
+        let src = TempTree::new(fs_tree! {
+            "scan.png" => b"png-bytes",
+        })
+        .await
+        .unwrap();
+        let image = |data: &[u8]| OcrImage {
+            id: "img-0.jpeg".into(),
+            mime: Some(mime::IMAGE_JPEG),
+            data: Some(data.to_vec()),
+        };
+        let model = FixedOcr {
+            pages: vec![
+                OcrPage {
+                    index: 0,
+                    markdown: "![img-0.jpeg](img-0.jpeg)".into(),
+                    images: vec![image(b"first")],
+                },
+                OcrPage {
+                    index: 1,
+                    markdown: "![img-0.jpeg](img-0.jpeg)".into(),
+                    images: vec![image(b"second")],
+                },
+            ],
+            fail: false,
+        };
+        let options = ImportOptions {
+            ocr: OcrOptions {
+                include_images: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        import(
+            &ws.root(),
+            OcrInput::Path(src.join("scan.png")),
+            &model,
+            &options,
+        )
+        .await
+        .unwrap();
+
+        let reopened = ws.document("scan.png").await.unwrap();
+        let text = reopened.text().await.unwrap();
+        let targets = image_destinations(text.parts()[0].content());
+        assert_eq!(targets.len(), 2);
+        assert_eq!(
+            std::fs::read(ws.path().join(&targets[0])).unwrap(),
+            b"first"
+        );
+        assert_eq!(
+            std::fs::read(ws.path().join(&targets[1])).unwrap(),
+            b"second"
+        );
+    }
+
+    #[tokio::test]
+    async fn names_with_spaces_resolve_to_their_attachments() {
+        let ws_dir = TempTree::new(fs_tree! {}).await.unwrap();
+        let ws = Workspace::open(&ws_dir).await.unwrap();
+        let src = TempTree::new(fs_tree! {
+            "my scan.png" => b"png-bytes",
+        })
+        .await
+        .unwrap();
+        let model = FixedOcr {
+            pages: vec![OcrPage {
+                index: 0,
+                markdown: "![img 0.jpeg](img 0.jpeg)".into(),
+                images: vec![OcrImage {
+                    id: "img 0.jpeg".into(),
+                    mime: Some(mime::IMAGE_JPEG),
+                    data: Some(b"jpeg-bytes".to_vec()),
+                }],
+            }],
+            fail: false,
+        };
+        let options = ImportOptions {
+            ocr: OcrOptions {
+                include_images: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        import(
+            &ws.root(),
+            OcrInput::Path(src.join("my scan.png")),
+            &model,
+            &options,
+        )
+        .await
+        .unwrap();
+
+        let reopened = ws.document("my scan.png").await.unwrap();
+        let text = reopened.text().await.unwrap();
+        let content = text.parts()[0].content();
+        let target = image_destinations(content);
+        assert_eq!(target.len(), 1);
+        assert_eq!(
+            std::fs::read(ws.path().join(&target[0])).unwrap(),
+            b"jpeg-bytes"
         );
     }
 
