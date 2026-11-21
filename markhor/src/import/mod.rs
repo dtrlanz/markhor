@@ -3,15 +3,11 @@
 
 use std::path::{Path, PathBuf};
 
-use thiserror::Error;
-use tokio::fs;
-
-use crate::{
-    library::{
-        ATTACHMENTS_DIR, AccessLibraryError, Document, Folder, METADATA_EXTENSION, NewSource, Part,
-    },
+use markhor_core::{
+    library::{AccessLibraryError, Document, Folder, NewSource, Part},
     ocr::{OcrError, OcrInput, OcrModel, OcrOptions, OcrPage, media_type_from_url},
 };
+use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ImportError {
@@ -77,7 +73,7 @@ pub async fn import(
     options: &ImportOptions,
 ) -> Result<Document, ImportError> {
     let name = document_name(&input)?;
-    if name_is_taken(folder, &name).await? {
+    if folder.has_document(&name).await? {
         return Err(ImportError::NameClash(folder.path().join(&name)));
     }
 
@@ -136,7 +132,7 @@ pub async fn import(
     match store_text(&mut doc, output.pages, options.page_mode, &mut attachments).await {
         Ok(()) => Ok(doc),
         Err(e) => {
-            discard(&doc, &attachments).await;
+            doc.discard(&attachments).await;
             Err(e)
         }
     }
@@ -157,13 +153,6 @@ fn document_name(input: &OcrInput) -> Result<String, ImportError> {
         OcrInput::Bytes { .. } => None,
     };
     name.ok_or(ImportError::UnnamedInput)
-}
-
-/// A document or its metadata sidecar already exists under `name`.
-async fn name_is_taken(folder: &Folder, name: &str) -> Result<bool, AccessLibraryError> {
-    let path = folder.path().join(name);
-    Ok(fs::try_exists(&path).await?
-        || fs::try_exists(path.with_added_extension(METADATA_EXTENSION)).await?)
 }
 
 /// Writes the pages of `doc` as text laid out according to `mode`, stores their images as
@@ -241,36 +230,23 @@ fn rewrite_image_link(markdown: &str, id: &str, target: &str) -> String {
     markdown.replace(&format!("]({id})"), &format!("]({destination})"))
 }
 
-/// Removes what an import wrote. Directories are removed only when empty, so unrelated files
-/// are never deleted.
-async fn discard(doc: &Document, attachments: &[PathBuf]) {
-    let dir = doc.absolute_path.parent().unwrap();
-    for rel in attachments {
-        let path = dir.join(rel);
-        let _ = fs::remove_file(&path).await;
-        if let Some(parent) = path.parent() {
-            let _ = fs::remove_dir(parent).await;
-        }
-    }
-    let _ = fs::remove_dir(dir.join(ATTACHMENTS_DIR)).await;
-    let _ = fs::remove_file(&doc.absolute_path).await;
-    let _ = fs::remove_file(doc.absolute_path.with_added_extension(METADATA_EXTENSION)).await;
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::library::{ATTACHMENTS_DIR, METADATA_EXTENSION};
     use async_trait::async_trait;
+    use markhor_core::{
+        library::{Part, Workspace},
+        markdown::{ToMarkdown, WITH_MILESTONES},
+        ocr::{OcrImage, OcrOutput},
+    };
     use mime::Mime;
+    use tempfile::TempDir;
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
     use super::*;
-    use crate::library::fs_test_utils::{TempTree, fs_tree};
-    use crate::markdown::{ToMarkdown, WITH_MILESTONES};
-    use crate::{
-        library::{Part, Workspace},
-        ocr::{OcrImage, OcrOutput, OcrPage},
-    };
+
+    // Mirror the layout constants used by `markhor_core::library`.
+    const ATTACHMENTS_DIR: &str = "attachments";
+    const METADATA_EXTENSION: &str = "mark";
 
     /// Returns fixed pages for any document, or fails if `fail` is set.
     struct FixedOcr {
@@ -323,19 +299,47 @@ mod tests {
         }
     }
 
+    /// An empty workspace. The temporary directory is returned so it lives as long as the test.
+    async fn workspace() -> (TempDir, Workspace) {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).await.unwrap();
+        (dir, ws)
+    }
+
+    /// Writes a source file named `name` in a new temporary directory.
+    fn source(name: &str, data: &[u8]) -> (TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        std::fs::write(&path, data).unwrap();
+        (dir, path)
+    }
+
+    fn image(id: &str, data: &[u8]) -> OcrImage {
+        OcrImage {
+            id: id.into(),
+            mime: Some(mime::IMAGE_JPEG),
+            data: Some(data.to_vec()),
+        }
+    }
+
+    fn with_images() -> ImportOptions {
+        ImportOptions {
+            ocr: OcrOptions {
+                include_images: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
     #[tokio::test]
     async fn local_file_is_copied_and_each_page_becomes_a_part() {
-        let ws_dir = TempTree::new(fs_tree! {}).await.unwrap();
-        let ws = Workspace::open(&ws_dir).await.unwrap();
-        let src = TempTree::new(fs_tree! {
-            "scan.png" => b"png-bytes",
-        })
-        .await
-        .unwrap();
+        let (_ws_dir, ws) = workspace().await;
+        let (_src_dir, src) = source("scan.png", b"png-bytes");
 
         import(
             &ws.root(),
-            OcrInput::Path(src.join("scan.png")),
+            OcrInput::Path(src),
             &two_page_model(),
             &ImportOptions {
                 page_mode: PageMode::PartPerPage,
@@ -373,17 +377,12 @@ mod tests {
 
     #[tokio::test]
     async fn default_import_marks_each_page_in_one_part() {
-        let ws_dir = TempTree::new(fs_tree! {}).await.unwrap();
-        let ws = Workspace::open(&ws_dir).await.unwrap();
-        let src = TempTree::new(fs_tree! {
-            "scan.png" => b"png-bytes",
-        })
-        .await
-        .unwrap();
+        let (_ws_dir, ws) = workspace().await;
+        let (_src_dir, src) = source("scan.png", b"png-bytes");
 
         import(
             &ws.root(),
-            OcrInput::Path(src.join("scan.png")),
+            OcrInput::Path(src),
             &two_page_model(),
             &ImportOptions::default(),
         )
@@ -402,13 +401,8 @@ mod tests {
 
     #[tokio::test]
     async fn page_markers_do_not_join_blocks_across_pages() {
-        let ws_dir = TempTree::new(fs_tree! {}).await.unwrap();
-        let ws = Workspace::open(&ws_dir).await.unwrap();
-        let src = TempTree::new(fs_tree! {
-            "scan.png" => b"png-bytes",
-        })
-        .await
-        .unwrap();
+        let (_ws_dir, ws) = workspace().await;
+        let (_src_dir, src) = source("scan.png", b"png-bytes");
         let model = FixedOcr {
             pages: vec![page(0, "First paragraph."), page(1, "Second paragraph.")],
             fail: false,
@@ -416,7 +410,7 @@ mod tests {
 
         import(
             &ws.root(),
-            OcrInput::Path(src.join("scan.png")),
+            OcrInput::Path(src),
             &model,
             &ImportOptions::default(),
         )
@@ -435,13 +429,8 @@ mod tests {
 
     #[tokio::test]
     async fn merged_pages_are_joined_by_blank_lines_and_empty_pages_are_skipped() {
-        let ws_dir = TempTree::new(fs_tree! {}).await.unwrap();
-        let ws = Workspace::open(&ws_dir).await.unwrap();
-        let src = TempTree::new(fs_tree! {
-            "scan.png" => b"png-bytes",
-        })
-        .await
-        .unwrap();
+        let (_ws_dir, ws) = workspace().await;
+        let (_src_dir, src) = source("scan.png", b"png-bytes");
         let model = FixedOcr {
             pages: vec![page(0, "page one\n"), page(1, "  \n"), page(2, "page two")],
             fail: false,
@@ -451,14 +440,9 @@ mod tests {
             ..Default::default()
         };
 
-        import(
-            &ws.root(),
-            OcrInput::Path(src.join("scan.png")),
-            &model,
-            &options,
-        )
-        .await
-        .unwrap();
+        import(&ws.root(), OcrInput::Path(src), &model, &options)
+            .await
+            .unwrap();
 
         let reopened = ws.document("scan.png").await.unwrap();
         let text = reopened.text().await.unwrap();
@@ -469,41 +453,20 @@ mod tests {
 
     #[tokio::test]
     async fn image_links_resolve_to_stored_attachments() {
-        let ws_dir = TempTree::new(fs_tree! {}).await.unwrap();
-        let ws = Workspace::open(&ws_dir).await.unwrap();
-        let src = TempTree::new(fs_tree! {
-            "scan.png" => b"png-bytes",
-        })
-        .await
-        .unwrap();
+        let (_ws_dir, ws) = workspace().await;
+        let (_src_dir, src) = source("scan.png", b"png-bytes");
         let model = FixedOcr {
             pages: vec![OcrPage {
                 index: 0,
                 markdown: "text ![img-0.jpeg](img-0.jpeg)".into(),
-                images: vec![OcrImage {
-                    id: "img-0.jpeg".into(),
-                    mime: Some(mime::IMAGE_JPEG),
-                    data: Some(b"jpeg-bytes".to_vec()),
-                }],
+                images: vec![image("img-0.jpeg", b"jpeg-bytes")],
             }],
             fail: false,
         };
-        let options = ImportOptions {
-            ocr: OcrOptions {
-                include_images: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
 
-        import(
-            &ws.root(),
-            OcrInput::Path(src.join("scan.png")),
-            &model,
-            &options,
-        )
-        .await
-        .unwrap();
+        import(&ws.root(), OcrInput::Path(src), &model, &with_images())
+            .await
+            .unwrap();
 
         // Links are relative to the sidecar, which sits next to the document. Whatever target the
         // link is rewritten to, it must resolve to the stored image.
@@ -519,20 +482,9 @@ mod tests {
 
     #[tokio::test]
     async fn name_clash_is_an_error_and_keeps_existing_document() {
-        let ws_dir = TempTree::new(fs_tree! {}).await.unwrap();
-        let ws = Workspace::open(&ws_dir).await.unwrap();
-        let first_src = TempTree::new(fs_tree! {
-            "scan.png" => b"first",
-        })
-        .await
-        .unwrap();
-        let second_src = TempTree::new(fs_tree! {
-            "scan.png" => b"second",
-        })
-        .await
-        .unwrap();
-        let first = first_src.join("scan.png");
-        let second = second_src.join("scan.png");
+        let (_ws_dir, ws) = workspace().await;
+        let (_first_dir, first) = source("scan.png", b"first");
+        let (_second_dir, second) = source("scan.png", b"second");
 
         import(
             &ws.root(),
@@ -557,13 +509,8 @@ mod tests {
 
     #[tokio::test]
     async fn failed_ocr_leaves_no_files_behind() {
-        let ws_dir = TempTree::new(fs_tree! {}).await.unwrap();
-        let ws = Workspace::open(&ws_dir).await.unwrap();
-        let src = TempTree::new(fs_tree! {
-            "scan.png" => b"png-bytes",
-        })
-        .await
-        .unwrap();
+        let (_ws_dir, ws) = workspace().await;
+        let (_src_dir, src) = source("scan.png", b"png-bytes");
         let model = FixedOcr {
             pages: vec![],
             fail: true,
@@ -571,7 +518,7 @@ mod tests {
 
         let err = import(
             &ws.root(),
-            OcrInput::Path(src.join("scan.png")),
+            OcrInput::Path(src),
             &model,
             &ImportOptions::default(),
         )
@@ -591,46 +538,22 @@ mod tests {
 
     #[tokio::test]
     async fn failed_attachment_write_removes_the_imported_document() {
+        let (_ws_dir, ws) = workspace().await;
         // A file named `attachments` makes the attachment directory impossible to create.
-        let ws_dir = TempTree::new(fs_tree! {
-            ATTACHMENTS_DIR => "not a directory",
-        })
-        .await
-        .unwrap();
-        let ws = Workspace::open(&ws_dir).await.unwrap();
-        let src = TempTree::new(fs_tree! {
-            "scan.png" => b"png-bytes",
-        })
-        .await
-        .unwrap();
+        std::fs::write(ws.path().join(ATTACHMENTS_DIR), "not a directory").unwrap();
+        let (_src_dir, src) = source("scan.png", b"png-bytes");
         let model = FixedOcr {
             pages: vec![OcrPage {
                 index: 0,
                 markdown: "![img-0.jpeg](img-0.jpeg)".into(),
-                images: vec![OcrImage {
-                    id: "img-0.jpeg".into(),
-                    mime: Some(mime::IMAGE_JPEG),
-                    data: Some(b"jpeg-bytes".to_vec()),
-                }],
+                images: vec![image("img-0.jpeg", b"jpeg-bytes")],
             }],
             fail: false,
         };
-        let options = ImportOptions {
-            ocr: OcrOptions {
-                include_images: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
 
-        let err = import(
-            &ws.root(),
-            OcrInput::Path(src.join("scan.png")),
-            &model,
-            &options,
-        )
-        .await
-        .unwrap_err();
+        let err = import(&ws.root(), OcrInput::Path(src), &model, &with_images())
+            .await
+            .unwrap_err();
         assert!(matches!(err, ImportError::Library(_)), "{err}");
 
         assert!(!ws.path().join("scan.png").exists());
@@ -660,49 +583,27 @@ mod tests {
 
     #[tokio::test]
     async fn image_ids_repeated_across_pages_get_distinct_attachments() {
-        let ws_dir = TempTree::new(fs_tree! {}).await.unwrap();
-        let ws = Workspace::open(&ws_dir).await.unwrap();
-        let src = TempTree::new(fs_tree! {
-            "scan.png" => b"png-bytes",
-        })
-        .await
-        .unwrap();
-        let image = |data: &[u8]| OcrImage {
-            id: "img-0.jpeg".into(),
-            mime: Some(mime::IMAGE_JPEG),
-            data: Some(data.to_vec()),
-        };
+        let (_ws_dir, ws) = workspace().await;
+        let (_src_dir, src) = source("scan.png", b"png-bytes");
         let model = FixedOcr {
             pages: vec![
                 OcrPage {
                     index: 0,
                     markdown: "![img-0.jpeg](img-0.jpeg)".into(),
-                    images: vec![image(b"first")],
+                    images: vec![image("img-0.jpeg", b"first")],
                 },
                 OcrPage {
                     index: 1,
                     markdown: "![img-0.jpeg](img-0.jpeg)".into(),
-                    images: vec![image(b"second")],
+                    images: vec![image("img-0.jpeg", b"second")],
                 },
             ],
             fail: false,
         };
-        let options = ImportOptions {
-            ocr: OcrOptions {
-                include_images: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
 
-        import(
-            &ws.root(),
-            OcrInput::Path(src.join("scan.png")),
-            &model,
-            &options,
-        )
-        .await
-        .unwrap();
+        import(&ws.root(), OcrInput::Path(src), &model, &with_images())
+            .await
+            .unwrap();
 
         let reopened = ws.document("scan.png").await.unwrap();
         let text = reopened.text().await.unwrap();
@@ -720,46 +621,24 @@ mod tests {
 
     #[tokio::test]
     async fn names_with_spaces_resolve_to_their_attachments() {
-        let ws_dir = TempTree::new(fs_tree! {}).await.unwrap();
-        let ws = Workspace::open(&ws_dir).await.unwrap();
-        let src = TempTree::new(fs_tree! {
-            "my scan.png" => b"png-bytes",
-        })
-        .await
-        .unwrap();
+        let (_ws_dir, ws) = workspace().await;
+        let (_src_dir, src) = source("my scan.png", b"png-bytes");
         let model = FixedOcr {
             pages: vec![OcrPage {
                 index: 0,
                 markdown: "![img 0.jpeg](img 0.jpeg)".into(),
-                images: vec![OcrImage {
-                    id: "img 0.jpeg".into(),
-                    mime: Some(mime::IMAGE_JPEG),
-                    data: Some(b"jpeg-bytes".to_vec()),
-                }],
+                images: vec![image("img 0.jpeg", b"jpeg-bytes")],
             }],
             fail: false,
         };
-        let options = ImportOptions {
-            ocr: OcrOptions {
-                include_images: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
 
-        import(
-            &ws.root(),
-            OcrInput::Path(src.join("my scan.png")),
-            &model,
-            &options,
-        )
-        .await
-        .unwrap();
+        import(&ws.root(), OcrInput::Path(src), &model, &with_images())
+            .await
+            .unwrap();
 
         let reopened = ws.document("my scan.png").await.unwrap();
         let text = reopened.text().await.unwrap();
-        let content = text.parts()[0].content();
-        let target = image_destinations(content);
+        let target = image_destinations(text.parts()[0].content());
         assert_eq!(target.len(), 1);
         assert_eq!(
             std::fs::read(ws.path().join(&target[0])).unwrap(),
@@ -776,8 +655,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let ws_dir = TempTree::new(fs_tree! {}).await.unwrap();
-        let ws = Workspace::open(&ws_dir).await.unwrap();
+        let (_ws_dir, ws) = workspace().await;
         let input = OcrInput::Url {
             url: format!("{}/files/scan.png", server.uri()),
             mime: None,

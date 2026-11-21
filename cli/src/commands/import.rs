@@ -4,10 +4,11 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
+use markhor::import::{ImportOptions, PageMode, import};
 use markhor_core::{
     dependencies::Session,
     extension::{Comp, ExtensionConfig},
-    library::{Folder, ImportOptions, PageMode, import},
+    library::Folder,
     ocr::{OcrInput, OcrModel, OcrOptions},
 };
 use markhor_extensions::mistral::{Client, ClientConfig};

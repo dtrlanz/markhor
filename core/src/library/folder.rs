@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use tokio::fs::{self, ReadDir};
 use tracing::{debug, instrument};
 
-use crate::library::{AccessLibraryError, Document, NewSource};
+use crate::library::{AccessLibraryError, Document, METADATA_EXTENSION, NewSource};
 
 use super::Workspace;
 
@@ -99,6 +99,13 @@ impl Folder {
         }
         let path = self.absolute_path.join(name);
         Document::create(self.workspace.clone(), &path, source).await
+    }
+
+    /// Returns whether a document or its metadata file already exists under `name`.
+    pub async fn has_document(&self, name: impl AsRef<str>) -> Result<bool, AccessLibraryError> {
+        let path = self.absolute_path.join(name.as_ref());
+        Ok(fs::try_exists(&path).await?
+            || fs::try_exists(path.with_added_extension(METADATA_EXTENSION)).await?)
     }
 
     /// Opens the folder with the specified name.

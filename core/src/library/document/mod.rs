@@ -821,7 +821,7 @@ impl Document {
 
     /// Writes `data` as an attachment of this document. Returns the attachment's path relative to
     /// the directory containing the document.
-    pub(crate) async fn write_attachment(
+    pub async fn write_attachment(
         &self,
         name: &str,
         data: &[u8],
@@ -831,6 +831,25 @@ impl Document {
         fs::write(&path, data).await?;
         let dir = self.absolute_path.parent().unwrap();
         Ok(path.strip_prefix(dir).unwrap().to_path_buf())
+    }
+
+    /// Removes the document, its metadata file, and the given attachments, as left by a failed
+    /// import. Directories are removed only when empty, so unrelated files are never deleted.
+    ///
+    /// `attachments` are paths relative to the directory containing the document, as returned by
+    /// [`write_attachment`](Self::write_attachment).
+    pub async fn discard(&self, attachments: &[PathBuf]) {
+        let dir = self.absolute_path.parent().unwrap();
+        for rel in attachments {
+            let path = dir.join(rel);
+            let _ = fs::remove_file(&path).await;
+            if let Some(parent) = path.parent() {
+                let _ = fs::remove_dir(parent).await;
+            }
+        }
+        let _ = fs::remove_dir(dir.join(ATTACHMENTS_DIR)).await;
+        let _ = fs::remove_file(&self.absolute_path).await;
+        let _ = fs::remove_file(self.absolute_path.with_added_extension(METADATA_EXTENSION)).await;
     }
 
     fn attachment_name(&self, path: &Path) -> Option<String> {
