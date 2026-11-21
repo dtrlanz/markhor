@@ -3,11 +3,11 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::Args;
+use clap::{Args, ValueEnum};
 use markhor_core::{
     dependencies::Session,
     extension::{Comp, ExtensionConfig},
-    library::{Folder, import},
+    library::{Folder, ImportOptions, PageMode, import},
     ocr::{OcrInput, OcrModel, OcrOptions},
 };
 use markhor_extensions::mistral::{Client, ClientConfig};
@@ -29,6 +29,28 @@ pub struct ImportArgs {
     /// Also store the images found in the document as attachments.
     #[arg(long)]
     include_images: bool,
+
+    /// How pages are laid out in the text.
+    #[arg(long, value_enum, default_value_t = PageModeArg::Milestones)]
+    page_mode: PageModeArg,
+}
+
+/// Command-line names for [`PageMode`].
+#[derive(Clone, Copy, ValueEnum)]
+enum PageModeArg {
+    Milestones,
+    Parts,
+    Merged,
+}
+
+impl From<PageModeArg> for PageMode {
+    fn from(arg: PageModeArg) -> Self {
+        match arg {
+            PageModeArg::Milestones => PageMode::Milestones,
+            PageModeArg::Parts => PageMode::PartPerPage,
+            PageModeArg::Merged => PageMode::Merged,
+        }
+    }
 }
 
 pub async fn run(args: ImportArgs) -> Result<()> {
@@ -60,9 +82,12 @@ pub async fn run(args: ImportArgs) -> Result<()> {
     } else {
         OcrInput::Path(PathBuf::from(args.input))
     };
-    let options = OcrOptions {
-        pages: args.pages,
-        include_images: args.include_images,
+    let options = ImportOptions {
+        ocr: OcrOptions {
+            pages: args.pages,
+            include_images: args.include_images,
+        },
+        page_mode: args.page_mode.into(),
     };
 
     let doc = import(&folder, input, &*model, &options)

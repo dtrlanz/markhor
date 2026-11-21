@@ -40,9 +40,9 @@ Ctrl-C or end of input also ends the chat. Any other input, including unknown
 ### `import`
 
 Imports a visual document (PDF, image, or another format Mistral OCR accepts)
-into a folder of a Markhor workspace. The text is recognized with Mistral OCR,
-and each page becomes a part of the new document. The original file is copied
-into the folder.
+into a folder of a Markhor workspace. The text is recognized with Mistral OCR and
+stored as one part of the new document. The original file is copied into the
+folder.
 
 - `<INPUT>` is a local file or an `http(s)` URL. URLs are downloaded once and
   stored with the document.
@@ -50,6 +50,17 @@ into the folder.
   and must be inside a workspace.
 - `--pages` takes zero-based page numbers. It defaults to all pages.
 - `--include-images` also stores the images found in the document.
+- `--page-mode` chooses how pages are laid out in the text:
+  - `milestones` (default): each page starts with a
+    `<milestone unit="page" n="{index}" />` marker, where `n` is the zero-based
+    page index. The markers stay in the text, including what chunkers and
+    embedding models see.
+  - `part-per-page`: each page becomes its own part.
+  - `merged`: pages are joined by blank lines, with no markers. Page boundaries
+    are lost.
+
+  In every mode, a page break inside a paragraph, list, table, or code block is
+  kept, so that block may render differently from the original page.
 
 On success the path of the new document, relative to the workspace, is printed.
 An existing document or sidecar with the same name is an error, and nothing is
