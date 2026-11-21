@@ -26,7 +26,7 @@ pub use document::{
     chunks::{Chunk, ChunkMut},
 };
 pub use folder::{Folder, ReadEntry};
-pub use import::{ImportError, import};
+pub use import::{ImportError, ImportOptions, PageMode, import};
 pub use retriever::Retriever;
 pub use scope::{PrelimFilter, Scope};
 pub use tag::Tag;

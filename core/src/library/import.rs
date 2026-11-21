@@ -37,6 +37,35 @@ enum Original {
     Data(Vec<u8>),
 }
 
+/// How the pages returned by OCR are stored as the text of a document.
+///
+/// Pages are never reflowed. A page break inside a block (paragraph, list, table, or code block)
+/// is kept as a break, so the block may render differently from the original page. Running
+/// headers and footers, page numbers, hyphenated words split across pages, and multi-column
+/// reading order are kept as OCR returned them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PageMode {
+    /// Each page becomes its own part, identified by the page's zero-based index. Page boundaries
+    /// are recoverable from the part ids.
+    PartPerPage,
+    /// One part. Each page is preceded by a `<milestone unit="page" n="{index}" />` marker, so the
+    /// page boundaries are recoverable from the text. The markers remain in the text, including
+    /// the text given to chunkers and embedding models. Inside a code block, a marker is literal
+    /// text.
+    #[default]
+    Milestones,
+    /// One part with no markers. Pages are joined by blank lines, and page boundaries are lost.
+    /// A code block that spans a page break is left unclosed.
+    Merged,
+}
+
+/// Options for [`import`].
+#[derive(Debug, Clone, Default)]
+pub struct ImportOptions {
+    pub ocr: OcrOptions,
+    pub page_mode: PageMode,
+}
+
 /// Recognizes `input` and stores it in `folder` under the input's file name.
 ///
 /// The name is checked before any work is done, and recognition runs before anything is written,
@@ -45,7 +74,7 @@ pub async fn import(
     folder: &Folder,
     input: OcrInput,
     model: &dyn OcrModel,
-    options: &OcrOptions,
+    options: &ImportOptions,
 ) -> Result<Document, ImportError> {
     let name = document_name(&input)?;
     if name_is_taken(folder, &name).await? {
@@ -55,7 +84,7 @@ pub async fn import(
     let (output, original) = match input {
         OcrInput::Path(path) => {
             let output = model
-                .recognize(OcrInput::Path(path.clone()), options)
+                .recognize(OcrInput::Path(path.clone()), &options.ocr)
                 .await?;
             (output, Original::File(path))
         }
@@ -76,7 +105,7 @@ pub async fn import(
                         data: data.clone(),
                         mime,
                     },
-                    options,
+                    &options.ocr,
                 )
                 .await?;
             (output, Original::Data(data))
@@ -104,7 +133,7 @@ pub async fn import(
     })?;
 
     let mut attachments = Vec::new();
-    match store_text(&mut doc, output.pages, &mut attachments).await {
+    match store_text(&mut doc, output.pages, options.page_mode, &mut attachments).await {
         Ok(()) => Ok(doc),
         Err(e) => {
             discard(&doc, &attachments).await;
@@ -137,15 +166,18 @@ async fn name_is_taken(folder: &Folder, name: &str) -> Result<bool, AccessLibrar
         || fs::try_exists(path.with_added_extension(METADATA_EXTENSION)).await?)
 }
 
-/// Writes each page as a part of `doc`, stores its images as attachments, and saves the document.
+/// Writes the pages of `doc` as text laid out according to `mode`, stores their images as
+/// attachments, and saves the document.
 ///
 /// Every attachment written is pushed to `attachments`, so the caller can remove them on failure.
 async fn store_text(
     doc: &mut Document,
     pages: Vec<OcrPage>,
+    mode: PageMode,
     attachments: &mut Vec<PathBuf>,
 ) -> Result<(), ImportError> {
-    let mut parts = Vec::with_capacity(pages.len());
+    let mut parts = Vec::new();
+    let mut blocks = Vec::with_capacity(pages.len());
     for page in pages {
         let mut markdown = page.markdown;
         for image in page.images {
@@ -156,7 +188,24 @@ async fn store_text(
             markdown = rewrite_image_link(&markdown, &image.id, &link_to(&rel));
             attachments.push(rel);
         }
-        parts.push(Part::new(page.index.to_string(), markdown));
+        match mode {
+            PageMode::PartPerPage => parts.push(Part::new(page.index.to_string(), markdown)),
+            // The blank lines keep a page break from joining the blocks on either side of it.
+            PageMode::Milestones => blocks.push(format!(
+                "<milestone unit=\"page\" n=\"{}\" />\n\n{}",
+                page.index,
+                markdown.trim()
+            )),
+            PageMode::Merged => {
+                let trimmed = markdown.trim();
+                if !trimmed.is_empty() {
+                    blocks.push(trimmed.to_owned());
+                }
+            }
+        }
+    }
+    if !blocks.is_empty() {
+        parts.push(Part::new("", blocks.join("\n\n")));
     }
 
     let text = doc.text_mut().await?;
@@ -205,6 +254,7 @@ mod tests {
 
     use super::*;
     use crate::library::fs_test_utils::{TempTree, fs_tree};
+    use crate::markdown::{ToMarkdown, WITH_MILESTONES};
     use crate::{
         library::{Part, Workspace},
         ocr::{OcrImage, OcrOutput, OcrPage},
@@ -275,7 +325,10 @@ mod tests {
             &ws.root(),
             OcrInput::Path(src.join("scan.png")),
             &two_page_model(),
-            &OcrOptions::default(),
+            &ImportOptions {
+                page_mode: PageMode::PartPerPage,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -307,6 +360,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn default_import_marks_each_page_in_one_part() {
+        let ws_dir = TempTree::new(fs_tree! {}).await.unwrap();
+        let ws = Workspace::open(&ws_dir).await.unwrap();
+        let src = TempTree::new(fs_tree! {
+            "scan.png" => b"png-bytes",
+        })
+        .await
+        .unwrap();
+
+        import(
+            &ws.root(),
+            OcrInput::Path(src.join("scan.png")),
+            &two_page_model(),
+            &ImportOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        let reopened = ws.document("scan.png").await.unwrap();
+        let text = reopened.text().await.unwrap();
+        let parts = text.parts();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(
+            parts[0].content(),
+            "<milestone unit=\"page\" n=\"0\" />\n\npage one\n\n<milestone unit=\"page\" n=\"1\" />\n\npage two"
+        );
+    }
+
+    #[tokio::test]
+    async fn page_markers_do_not_join_blocks_across_pages() {
+        let ws_dir = TempTree::new(fs_tree! {}).await.unwrap();
+        let ws = Workspace::open(&ws_dir).await.unwrap();
+        let src = TempTree::new(fs_tree! {
+            "scan.png" => b"png-bytes",
+        })
+        .await
+        .unwrap();
+        let model = FixedOcr {
+            pages: vec![page(0, "First paragraph."), page(1, "Second paragraph.")],
+            fail: false,
+        };
+
+        import(
+            &ws.root(),
+            OcrInput::Path(src.join("scan.png")),
+            &model,
+            &ImportOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        let reopened = ws.document("scan.png").await.unwrap();
+        let text = reopened.text().await.unwrap();
+        let html = text.parts()[0]
+            .content()
+            .to_markdown(WITH_MILESTONES)
+            .to_html();
+        assert!(html.contains("<p>First paragraph.</p>"), "{html}");
+        assert!(html.contains("<p>Second paragraph.</p>"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn merged_pages_are_joined_by_blank_lines_and_empty_pages_are_skipped() {
+        let ws_dir = TempTree::new(fs_tree! {}).await.unwrap();
+        let ws = Workspace::open(&ws_dir).await.unwrap();
+        let src = TempTree::new(fs_tree! {
+            "scan.png" => b"png-bytes",
+        })
+        .await
+        .unwrap();
+        let model = FixedOcr {
+            pages: vec![page(0, "page one\n"), page(1, "  \n"), page(2, "page two")],
+            fail: false,
+        };
+        let options = ImportOptions {
+            page_mode: PageMode::Merged,
+            ..Default::default()
+        };
+
+        import(
+            &ws.root(),
+            OcrInput::Path(src.join("scan.png")),
+            &model,
+            &options,
+        )
+        .await
+        .unwrap();
+
+        let reopened = ws.document("scan.png").await.unwrap();
+        let text = reopened.text().await.unwrap();
+        let parts = text.parts();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].content(), "page one\n\npage two");
+    }
+
+    #[tokio::test]
     async fn image_links_resolve_to_stored_attachments() {
         let ws_dir = TempTree::new(fs_tree! {}).await.unwrap();
         let ws = Workspace::open(&ws_dir).await.unwrap();
@@ -327,8 +476,11 @@ mod tests {
             }],
             fail: false,
         };
-        let options = OcrOptions {
-            include_images: true,
+        let options = ImportOptions {
+            ocr: OcrOptions {
+                include_images: true,
+                ..Default::default()
+            },
             ..Default::default()
         };
 
@@ -377,7 +529,7 @@ mod tests {
             &ws.root(),
             OcrInput::Path(first),
             &two_page_model(),
-            &OcrOptions::default(),
+            &ImportOptions::default(),
         )
         .await
         .unwrap();
@@ -386,7 +538,7 @@ mod tests {
             &ws.root(),
             OcrInput::Path(second),
             &two_page_model(),
-            &OcrOptions::default(),
+            &ImportOptions::default(),
         )
         .await
         .unwrap_err();
@@ -412,7 +564,7 @@ mod tests {
             &ws.root(),
             OcrInput::Path(src.join("scan.png")),
             &model,
-            &OcrOptions::default(),
+            &ImportOptions::default(),
         )
         .await
         .unwrap_err();
@@ -454,8 +606,11 @@ mod tests {
             }],
             fail: false,
         };
-        let options = OcrOptions {
-            include_images: true,
+        let options = ImportOptions {
+            ocr: OcrOptions {
+                include_images: true,
+                ..Default::default()
+            },
             ..Default::default()
         };
 
@@ -498,9 +653,14 @@ mod tests {
             mime: None,
         };
 
-        import(&ws.root(), input, &two_page_model(), &OcrOptions::default())
-            .await
-            .unwrap();
+        import(
+            &ws.root(),
+            input,
+            &two_page_model(),
+            &ImportOptions::default(),
+        )
+        .await
+        .unwrap();
 
         // The mock enforces a single download when the server is dropped.
         assert_eq!(
