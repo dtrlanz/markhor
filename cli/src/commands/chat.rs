@@ -1,6 +1,6 @@
 //! Console chat with a model served by the Gemini API.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Args;
@@ -23,6 +23,10 @@ pub struct ChatArgs {
     /// Exact model id to use, e.g. `gemma-4-31b-it`. Defaults to `gemini-flash-lite-latest`.
     #[arg(long)]
     model: Option<String>,
+
+    /// Folder to chat in. Defaults to the current directory. `/read` paths are relative to it.
+    #[arg(long)]
+    folder: Option<PathBuf>,
 }
 
 /// Exposes the console chat UI as an extension, so that a `Session` can resolve it.
@@ -54,11 +58,15 @@ pub async fn run(args: ChatArgs) -> Result<()> {
         .model
         .unwrap_or_else(|| "gemini-flash-lite-latest".to_string());
 
-    // `/read` resolves its paths against the working directory, which is also the collection
+    // `/read` resolves its paths against this folder, which is also the collection
     // documents are read from (or the collection containing it).
-    let folder = Folder::open(std::env::current_dir()?)
+    let folder_path = std::path::absolute(match args.folder {
+        Some(folder) => folder,
+        None => std::env::current_dir()?,
+    })?;
+    let folder = Folder::open(&folder_path)
         .await
-        .context("cannot open the working directory")?;
+        .with_context(|| format!("cannot open {}", folder_path.display()))?;
     let mut session = Session::with_folder(folder);
     session
         .add_api_keys_from_env()

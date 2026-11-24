@@ -24,6 +24,7 @@ API key.
 cargo run -p markhor_cli -- --help
 cargo run -p markhor_cli -- chat
 cargo run -p markhor_cli -- chat --model gemma-4-31b-it
+cargo run -p markhor_cli -- chat --folder notes
 cargo run -p markhor_cli -- import scan.pdf
 cargo run -p markhor_cli -- import https://example.com/report.pdf --folder notes
 cargo run -p markhor_cli -- import scan.pdf --pages 0,1 --no-images
@@ -34,6 +35,8 @@ cargo run -p markhor_cli -- import scan.pdf --pages 0,1 --no-images
 A terminal chat with a model served by the Gemini API. Without `--model`,
 `gemini-flash-lite-latest` is used. With `--model`, that exact model id is used.
 
+- `--folder` is the folder to chat in. It defaults to the current directory. Paths
+  given to `/read` are relative to it.
 - `/help` lists the available commands.
 - `/exit` ends the chat.
 
