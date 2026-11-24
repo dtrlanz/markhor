@@ -10,10 +10,13 @@ the binary from. Only the keys for the commands you use are needed.
 
 ```
 GOOGLE_API_KEY=<your key>
-GOOGLE_API_KEY_PERMISSIONS=public     # for `chat`
+GOOGLE_API_KEY_PERMISSIONS=public                     # for `chat`
 MISTRAL_API_KEY=<your key>
-MISTRAL_API_KEY_PERMISSIONS=public    # for `import`
+MISTRAL_API_KEY_PERMISSIONS=not-used-for-training     # for `import`
 ```
+
+The `*_API_KEY_PERMISSIONS` variables indicate the permissions granted to the
+API key.
 
 ## Usage
 
@@ -60,6 +63,8 @@ folder.
   - `parts`: each page becomes its own part.
   - `merged`: pages are joined by blank lines, with no markers. Page boundaries
     are lost.
+- `--access` sets the access level of the new document in terms of permissions
+    required to access it.
 
   In every mode, a page break inside a paragraph, list, table, or code block is
   kept, so that block may render differently from the original page.
