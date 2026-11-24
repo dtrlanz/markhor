@@ -71,7 +71,8 @@ fn network_error(error: reqwest::Error) -> ChatError {
 /// - First-person `Agent` messages become `model` turns; everything else that carries
 ///   content (including other agents' messages) becomes a `user` turn.
 /// - Consecutive turns with the same role are merged, as Gemini expects alternating roles.
-/// - `Event` and `ControlSignal` messages are not meant for the model and are skipped.
+/// - `Event` messages with string content become `user` turns. Other events and `ControlSignal`
+///   messages are not meant for the model and are skipped.
 fn build_request(
     messages: &[Msg],
     options: &ChatOptions,
@@ -109,6 +110,10 @@ fn build_request(
                     "tool results are not yet supported for Google models".into(),
                 ));
             }
+            Msg::Event {
+                content: serde_json::Value::String(text),
+                ..
+            } => push_user_parts(&mut contents, &[ContentPart::Text(text.clone())]),
             Msg::Event { .. } | Msg::ControlSignal { .. } => {
                 tracing::debug!("skipping message not intended for the model");
             }
@@ -318,6 +323,28 @@ mod tests {
                     "systemInstruction": {"parts": [{"text": "be nice"}, {"text": "be brief"}]},
                     "generationConfig": {"temperature": 0.5, "maxOutputTokens": 10},
                 })
+            );
+        }
+
+        #[test]
+        fn string_events_are_sent_as_user_turns() {
+            let request = build_request(
+                &[
+                    user("a"),
+                    Msg::Event {
+                        recipients: Default::default(),
+                        timestamp: None,
+                        source: "user-command".into(),
+                        content: json!("b"),
+                    },
+                ],
+                &ChatOptions::default(),
+            )
+            .unwrap();
+
+            assert_eq!(
+                serde_json::to_value(&request.contents).unwrap(),
+                json!([{"role": "user", "parts": [{"text": "a"}, {"text": "b"}]}])
             );
         }
 

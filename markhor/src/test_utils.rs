@@ -17,6 +17,7 @@ use markhor_core::{
     dependencies::Session,
     event::Subscription,
     extension::Extension,
+    library::Folder,
 };
 use tokio::sync::{Notify, watch};
 
@@ -240,7 +241,23 @@ impl Extension for ScriptedExtension {
 
 /// Returns a session with `ui` and `model` registered.
 pub(crate) async fn session_with(ui: &ScriptedChatUi, model: &ScriptedChatModel) -> Session {
-    let mut session = Session::new();
+    add_scripted(Session::new(), ui, model).await
+}
+
+/// Like [`session_with`], but the session works in `folder`.
+pub(crate) async fn session_in_folder(
+    folder: Folder,
+    ui: &ScriptedChatUi,
+    model: &ScriptedChatModel,
+) -> Session {
+    add_scripted(Session::with_folder(folder), ui, model).await
+}
+
+async fn add_scripted(
+    mut session: Session,
+    ui: &ScriptedChatUi,
+    model: &ScriptedChatModel,
+) -> Session {
     let ext = ScriptedExtension {
         ui: ui.clone(),
         model: model.clone(),

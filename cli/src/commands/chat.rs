@@ -1,5 +1,7 @@
 //! Console chat with a model served by the Gemini API.
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use clap::Args;
 use markhor::chat::Simple;
@@ -8,10 +10,11 @@ use markhor_core::{
     chat::{ChatModel, ChatUi},
     dependencies::Session,
     extension::{Comp, Extension, ExtensionConfig},
+    library::Folder,
 };
 use markhor_extensions::google::{Client, ClientConfig};
 
-const COMMANDS: [&str; 2] = ["help", "exit"];
+const COMMANDS: [&str; 3] = ["help", "exit", "read"];
 
 /// Chat with a model served by the Gemini API in the terminal.
 #[derive(Args)]
@@ -50,7 +53,12 @@ pub async fn run(args: ChatArgs) -> Result<()> {
         .model
         .unwrap_or_else(|| "gemini-flash-lite-latest".to_string());
 
-    let mut session = Session::new();
+    // `/read` resolves its paths against the working directory, which is also the collection
+    // documents are read from (or the collection containing it).
+    let folder = Folder::open(std::env::current_dir()?)
+        .await
+        .context("cannot open the working directory")?;
+    let mut session = Session::with_folder(folder);
     session
         .add_api_keys_from_env()
         .context("invalid API key environment variables")?;
@@ -74,7 +82,7 @@ pub async fn run(args: ChatArgs) -> Result<()> {
         .resolve::<Comp<dyn ChatModel>>()
         .with_context(|| format!("no chat model matching {allow:?} is available"))?;
 
-    let chat = Simple::with_commands(
+    let mut chat = Simple::with_commands(
         session,
         "User",
         COMMANDS.iter().map(|c| c.to_string()).collect(),
@@ -82,17 +90,26 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     // Ctrl-C ends the chat even when no prompt is reading, which would otherwise
     // be killed by the default handler.
     tokio::select! {
-        _ = chat.run(|name, _args| {
-            if name == "exit" {
-                return false;
-            }
-            println!("Commands: {}", COMMANDS.map(|c| format!("/{c}")).join(", "));
-            true
-        }) => {}
+        _ = chat.run(handle_command) => {}
         _ = tokio::signal::ctrl_c() => {}
     }
 
     // A prompt may still be blocked reading the terminal, which would stall
     // runtime shutdown, so exit explicitly.
     std::process::exit(0)
+}
+
+/// Handles a slash command. Returns `false` when the chat should end.
+async fn handle_command(chat: &mut Simple, name: &str, args: &str) -> bool {
+    match name {
+        "exit" => return false,
+        "read" if args.is_empty() => println!("Usage: /read <path>"),
+        "read" => {
+            if let Err(err) = chat.read_document(Path::new(args)).await {
+                println!("Could not read {args}: {err}");
+            }
+        }
+        _ => println!("Commands: {}", COMMANDS.map(|c| format!("/{c}")).join(", ")),
+    }
+    true
 }

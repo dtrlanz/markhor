@@ -117,6 +117,12 @@ pub struct Agent {
     thread_sub: Subscription,
 }
 
+impl Agent {
+    pub fn id(&self) -> &MemberId {
+        self.inner.member.id()
+    }
+}
+
 struct AgentInner {
     member: Member,
     model: Comp<dyn ChatModel>,

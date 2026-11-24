@@ -95,7 +95,8 @@ fn network_error(error: reqwest::Error) -> ChatError {
 ///   content (including other agents' messages) becomes a `user` message.
 /// - Consecutive messages with the same role are merged, as the API expects alternating roles.
 /// - Blank text is dropped, since the API rejects it.
-/// - `Event` and `ControlSignal` messages are not meant for the model and are skipped.
+/// - `Event` messages with string content become `user` messages. Other events and
+///   `ControlSignal` messages are not meant for the model and are skipped.
 fn build_request(
     model: &str,
     default_max_tokens: u32,
@@ -140,6 +141,12 @@ fn build_request(
                 return Err(ChatError::NotSupported(
                     "tool results are not yet supported for Anthropic models".into(),
                 ));
+            }
+            Msg::Event {
+                content: serde_json::Value::String(text),
+                ..
+            } => {
+                push_user_blocks(&mut history, &[ContentPart::Text(text.clone())])?;
             }
             Msg::Event { .. } | Msg::ControlSignal { .. } => {
                 tracing::debug!("skipping message not intended for the model");
@@ -376,6 +383,30 @@ mod tests {
         fn max_tokens_defaults_when_unset() {
             let request = build(&[user("hi")], &ChatOptions::default()).unwrap();
             assert_eq!(request["max_tokens"], 4096);
+        }
+
+        #[test]
+        fn string_events_are_sent_as_user_messages() {
+            let request = build(
+                &[
+                    user("a"),
+                    Msg::Event {
+                        recipients: Default::default(),
+                        timestamp: None,
+                        source: "user-command".into(),
+                        content: json!("b"),
+                    },
+                ],
+                &ChatOptions::default(),
+            )
+            .unwrap();
+            assert_eq!(
+                request["messages"],
+                json!([{"role": "user", "content": [
+                    {"type": "text", "text": "a"},
+                    {"type": "text", "text": "b"},
+                ]}])
+            );
         }
 
         #[test]

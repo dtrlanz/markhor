@@ -306,7 +306,8 @@ where
 
 /// Applies prefix and suffix to the content of a message. Platform, developer,
 /// and control signal content is wrapped as a string; content parts are
-/// wrapped by inserting new text parts at the beginning and end.
+/// wrapped by inserting new text parts at the beginning and end. Event content
+/// is wrapped only when it is a string.
 fn circumfix_msg(msg: &mut Msg, prefix: &str, suffix: &str) {
     if prefix.is_empty() && suffix.is_empty() {
         return;
@@ -325,7 +326,11 @@ fn circumfix_msg(msg: &mut Msg, prefix: &str, suffix: &str) {
                 content.push(ContentPart::Text(suffix.into()));
             }
         }
-        Msg::Event { .. } => unimplemented!("circumfixing event messages"),
+        Msg::Event {
+            content: Value::String(s),
+            ..
+        } => *s = format!("{prefix}{s}{suffix}"),
+        Msg::Event { .. } => {}
     }
 }
 
@@ -503,6 +508,7 @@ mod tests {
         Member,
         group::{Group, Thread, thread_builder::ThreadBuilder},
     };
+    use serde_json::json;
     use std::sync::Arc;
 
     fn collect(builder: ThreadBuilder) -> Vec<Msg> {
@@ -722,6 +728,22 @@ mod tests {
                     .user("me", "u")
             )
         );
+    }
+
+    #[test]
+    fn circumfix_wraps_only_string_event_content() {
+        let event = |content: Value| Msg::Event {
+            recipients: Default::default(),
+            timestamp: None,
+            source: "user-command".into(),
+            content,
+        };
+        let output: Vec<Msg> = vec![event(json!("body")), event(json!(null))]
+            .into_iter()
+            .circumfix_content("<a>", "</a>")
+            .collect();
+        assert_eq!(output[0], event(json!("<a>body</a>")));
+        assert_eq!(output[1], event(json!(null)));
     }
 
     #[test]

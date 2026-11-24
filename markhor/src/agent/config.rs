@@ -18,9 +18,10 @@ impl Attentiveness {
             // @mentions)
             Msg::User { .. } => true,
             Msg::Agent { sender, .. } => sender != agent,
+            // Events inform the agent without prompting a reply.
+            Msg::Event { .. } => false,
             Msg::Direct { recipients, .. }
             | Msg::ToolResult { recipients, .. }
-            | Msg::Event { recipients, .. }
             | Msg::ControlSignal { recipients, .. } => recipients.contains(agent),
         }
     }
@@ -169,6 +170,18 @@ mod tests {
         let agent = member("assistant");
         assert!(Attentiveness.attends_to(&agent, &direct_msg("bob", &["carol", "assistant"])));
         assert!(!Attentiveness.attends_to(&agent, &direct_msg("bob", &["carol"])));
+    }
+
+    #[test]
+    fn events_inform_without_prompting_a_reply() {
+        let agent = member("assistant");
+        let event = Msg::Event {
+            recipients: std::iter::once(agent.clone()).collect(),
+            timestamp: None,
+            source: "user-command".into(),
+            content: "notes".into(),
+        };
+        assert!(!Attentiveness.attends_to(&agent, &event));
     }
 
     #[test]
