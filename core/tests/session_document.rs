@@ -56,14 +56,14 @@ async fn reports_missing_file() {
     ));
 }
 
-// Intended usage (see the comment on `Session::restrict_access`): elevate the session's
+// Intended usage (see the comment on `Session::require_permissions`): elevate the session's
 // requirements so that a document with matching permissions can be added.
 #[tokio::test]
-async fn restrict_access_allows_adding_restricted_document() {
+async fn require_permissions_allows_adding_restricted_document() {
     let (_dir, root) = setup().await;
     let mut session = Session::with_folder(root);
     session
-        .restrict_access(vec![markhor_core::permissions::ON_DEVICE])
+        .require_permissions(vec![markhor_core::permissions::ON_DEVICE])
         .unwrap();
 
     let doc = session.document("restricted.md").await.unwrap();
@@ -73,10 +73,10 @@ async fn restrict_access_allows_adding_restricted_document() {
 
 // Requirements that don't cover the document's permissions still reject it.
 #[tokio::test]
-async fn restrict_access_rejects_document_beyond_session_requirements() {
+async fn require_permissions_rejects_document_beyond_session_requirements() {
     let (_dir, root) = setup().await;
     let mut session = Session::with_folder(root);
-    session.restrict_access(vec![PUBLIC]).unwrap();
+    session.require_permissions(vec![PUBLIC]).unwrap();
 
     match session.document("restricted.md").await.unwrap_err() {
         AccessDocumentError::Permission(AddDocumentError::ElevationRequired(required)) => {

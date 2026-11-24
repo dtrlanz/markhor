@@ -23,15 +23,13 @@ pub struct Session {
     documents: BTreeMap<PathBuf, Document>,
     api_keys: Vec<DependencySlot<ApiKey>>,
     extensions: Vec<DependencySlot<Arc<dyn Extension>>>,
-    // Acts as an upper bound for what the session may access (imposed externally downstream, all
-    // permissions by default). Not totally sure yet if this is helpful or confusing (consider
-    // renaming field to avoid parallel with `permissions_required` and/or remove `Authorized`
-    // implementation).
+    // Upper bound for what the session may access. Imposed externally downstream; all
+    // permissions by default.
     permissions_granted: Vec<Permission>,
     // Represents the permissions required to access any documents (and other resources) used by
     // the session. Extensions used by the session must meet this threshold as well as any outside
     // actors with access to the session.
-    permissions_required: Vec<Permission>,
+    actor_permissions: Vec<Permission>,
 }
 
 impl Session {
@@ -42,7 +40,7 @@ impl Session {
             api_keys: vec![],
             extensions: vec![],
             permissions_granted: all_permissions(),
-            permissions_required: vec![],
+            actor_permissions: vec![],
         }
     }
 
@@ -226,7 +224,7 @@ impl Session {
 
         // Anything with access to this session must have permission to access the document
         // This includes the session's own extensions
-        if !Actor(&self.permissions_required).may_access(document) {
+        if !Actor(&self.actor_permissions).may_access(document) {
             return Err(AddDocumentError::ElevationRequired(
                 document.permissions_required().to_vec(),
             ));
@@ -259,33 +257,25 @@ impl Session {
         Ok(&self.documents[&key])
     }
 
-    // TODO: Bikeshed method name and error type
-    // The thing that's being restricted is access to documents (and any other `Restricted`
-    // resources) in the session. The things whose access is being restricted are extensions, API
-    // keys (and any other `Authorized` assets within the session or outside actors with accesss
-    // to the session).
-    // The use case is that you might want to add a protected document to a session (e.g., data
-    // that must not leave the device). To do that, you first have to remove any extensions etc.
-    // that lack the necessary permission, which is what this method is for. As a result, you're
-    // actually elevating the session's authorization in the sense that the restricted document
-    // can now be added. But you're also removing access from certain actors. So you're granting
-    // or restricting access depending on what you're talking about.
-    // The method name doesn't commnicate any of that very well, which could be confusing.
-    /// Raises the permissions required of the session's actors to include `permissions`.
+    /// Adds `permissions` to the permissions required of the session's actors.
     ///
-    /// Fails without changing the session if the resulting requirement exceeds what the session
-    /// was granted, or if an in-use API key or extension lacks the required permissions. Unused
-    /// API keys and extensions that lack them are removed.
-    pub fn restrict_access(
+    /// Requirements only grow, so this cannot lower them. Documents requiring the new permissions
+    /// can then be added, but actors lacking them are removed: unused API keys and extensions are
+    /// dropped. If an in-use one lacks them, the call fails and the session is unchanged. The call
+    /// also fails if the new requirements exceed the permissions granted to the session.
+    ///
+    /// Documents already cached by the session are not evicted. `document` re-checks them, so one
+    /// that no longer passes stays in memory but is refused.
+    pub fn require_permissions(
         &mut self,
         permissions: Vec<Permission>,
-    ) -> Result<(), RestrictAccessError> {
-        let target = Resource(Permission::union(&self.permissions_required, &permissions));
+    ) -> Result<(), RequirePermissionsError> {
+        let target = Resource(Permission::union(&self.actor_permissions, &permissions));
 
         if !self.may_access(&target) {
             // Would entail removing all extensions (& other actors), which is unlikely to be what
             // is desired
-            return Err(RestrictAccessError::PermissionDenied(
+            return Err(RequirePermissionsError::PermissionDenied(
                 self.permissions_granted.to_vec(),
             ));
         }
@@ -298,7 +288,7 @@ impl Session {
             .map(|slot| slot.item.provider().to_string())
             .collect();
         if !active_keys.is_empty() {
-            return Err(RestrictAccessError::ApiKeyNotAuthorized(active_keys));
+            return Err(RequirePermissionsError::ApiKeyNotAuthorized(active_keys));
         }
 
         let active_extensions: Vec<String> = self
@@ -308,7 +298,7 @@ impl Session {
             .map(|slot| slot.item.name().to_string())
             .collect();
         if !active_extensions.is_empty() {
-            return Err(RestrictAccessError::ExtensionNotAuthorized(
+            return Err(RequirePermissionsError::ExtensionNotAuthorized(
                 active_extensions,
             ));
         }
@@ -316,7 +306,7 @@ impl Session {
         // Only inactive actors lacking the permissions remain, so they can be removed
         self.api_keys.retain(|slot| slot.may_access(&target));
         self.extensions.retain(|slot| slot.may_access(&target));
-        self.permissions_required = target.0;
+        self.actor_permissions = target.0;
         Ok(())
     }
 }
@@ -329,7 +319,7 @@ impl Authorized for Session {
 
 impl Restricted for Session {
     fn permissions_required(&self) -> &[Permission] {
-        &self.permissions_required
+        &self.actor_permissions
     }
 }
 
@@ -483,14 +473,14 @@ pub enum AddApiKeysError {
 }
 
 #[derive(Debug, Error)]
-pub enum RestrictAccessError {
+pub enum RequirePermissionsError {
     #[error("API keys lack required permissions: {}", .0.join(", "))]
     ApiKeyNotAuthorized(Vec<String>),
 
     #[error("Extensions lack required permissions: {}", .0.join(", "))]
     ExtensionNotAuthorized(Vec<String>),
 
-    #[error("Target permissions exceed those granted to extension: {}",
+    #[error("Permissions exceed those granted to the session: {}",
         .0.iter().map(|p| p.name()).collect::<Vec<_>>().join(", "))]
     PermissionDenied(Vec<Permission>),
 }
@@ -1452,7 +1442,7 @@ mod tests {
         assert!(session.documents.is_empty());
 
         session.permissions_granted = vec![];
-        session.permissions_required = vec![ON_DEVICE];
+        session.actor_permissions = vec![ON_DEVICE];
         assert!(matches!(
             session.document("doc.md").await,
             Err(AccessDocumentError::Permission(
@@ -1478,14 +1468,14 @@ mod tests {
         .await
         .unwrap();
         let mut session = Session::with_folder(Folder::open(&dir).await.unwrap());
-        session.permissions_required = vec![ON_DEVICE];
+        session.actor_permissions = vec![ON_DEVICE];
 
         session.document("child/doc.md").await.unwrap();
         session.document("child/../child/./doc.md").await.unwrap();
         assert_eq!(session.documents.len(), 1);
 
         // Cached documents are still subject to the session's current permissions
-        session.permissions_required = vec![];
+        session.actor_permissions = vec![];
         assert!(matches!(
             session.document("child/doc.md").await,
             Err(AccessDocumentError::Permission(
@@ -1496,27 +1486,27 @@ mod tests {
     }
 
     #[test]
-    fn restrict_access_raises_requirements() {
+    fn require_permissions_raises_requirements() {
         let mut session = Session::new();
-        session.restrict_access(vec![ON_DEVICE]).unwrap();
+        session.require_permissions(vec![ON_DEVICE]).unwrap();
         // Lower permissions don't reduce the requirement
-        session.restrict_access(vec![PUBLIC]).unwrap();
-        assert_eq!(session.permissions_required, vec![ON_DEVICE]);
+        session.require_permissions(vec![PUBLIC]).unwrap();
+        assert_eq!(session.actor_permissions, vec![ON_DEVICE]);
     }
 
     #[test]
-    fn restrict_access_denied_beyond_granted_permissions() {
+    fn require_permissions_denied_beyond_granted_permissions() {
         let mut session = Session::new();
         session.permissions_granted = vec![PUBLIC];
         assert!(matches!(
-            session.restrict_access(vec![ON_DEVICE]),
-            Err(RestrictAccessError::PermissionDenied(_))
+            session.require_permissions(vec![ON_DEVICE]),
+            Err(RequirePermissionsError::PermissionDenied(_))
         ));
-        assert!(session.permissions_required.is_empty());
+        assert!(session.actor_permissions.is_empty());
     }
 
     #[test]
-    fn restrict_access_removes_inactive_api_keys_lacking_permissions() {
+    fn require_permissions_removes_inactive_api_keys_lacking_permissions() {
         let mut session = Session::new();
         session.add_api_key(
             ApiKey::new("key".into(), "Kept".into(), String::new()),
@@ -1527,13 +1517,13 @@ mod tests {
             vec![PUBLIC],
         );
 
-        session.restrict_access(vec![ON_DEVICE]).unwrap();
+        session.require_permissions(vec![ON_DEVICE]).unwrap();
         assert_eq!(session.api_keys.len(), 1);
         assert_eq!(session.api_keys[0].item.provider(), "Kept");
     }
 
     #[test]
-    fn restrict_access_rejects_active_api_key_without_changes() {
+    fn require_permissions_rejects_active_api_key_without_changes() {
         let mut session = Session::new();
         session.add_api_key(
             ApiKey::new("key".into(), "Active".into(), String::new()),
@@ -1545,23 +1535,23 @@ mod tests {
         );
         let guard = session.api_keys[0].track_one();
 
-        match session.restrict_access(vec![ON_DEVICE]).unwrap_err() {
-            RestrictAccessError::ApiKeyNotAuthorized(names) => {
+        match session.require_permissions(vec![ON_DEVICE]).unwrap_err() {
+            RequirePermissionsError::ApiKeyNotAuthorized(names) => {
                 assert_eq!(names, vec!["Active"]);
             }
             other => panic!("unexpected error: {other:?}"),
         }
         assert_eq!(session.api_keys.len(), 2);
-        assert!(session.permissions_required.is_empty());
+        assert!(session.actor_permissions.is_empty());
 
         // Once unused, both keys lack the permissions and are removed
         drop(guard);
-        session.restrict_access(vec![ON_DEVICE]).unwrap();
+        session.require_permissions(vec![ON_DEVICE]).unwrap();
         assert!(session.api_keys.is_empty());
     }
 
     #[tokio::test]
-    async fn restrict_access_removes_inactive_extensions_lacking_permissions() {
+    async fn require_permissions_removes_inactive_extensions_lacking_permissions() {
         struct TestExtension {
             uri: &'static str,
             name: &'static str,
@@ -1602,8 +1592,8 @@ mod tests {
         .unwrap();
         let guard = session.extensions[1].track_one();
 
-        match session.restrict_access(vec![ON_DEVICE]).unwrap_err() {
-            RestrictAccessError::ExtensionNotAuthorized(names) => {
+        match session.require_permissions(vec![ON_DEVICE]).unwrap_err() {
+            RequirePermissionsError::ExtensionNotAuthorized(names) => {
                 assert_eq!(names, vec!["Active"]);
             }
             other => panic!("unexpected error: {other:?}"),
@@ -1611,7 +1601,7 @@ mod tests {
         assert_eq!(session.extensions.len(), 2);
 
         drop(guard);
-        session.restrict_access(vec![ON_DEVICE]).unwrap();
+        session.require_permissions(vec![ON_DEVICE]).unwrap();
         assert_eq!(session.extensions.len(), 1);
         assert_eq!(session.extensions[0].item.name(), "Kept");
     }
