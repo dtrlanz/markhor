@@ -2,6 +2,7 @@ use std::fs;
 
 use markhor_core::dependencies::{AccessDocumentError, AddDocumentError, Session};
 use markhor_core::library::{AccessLibraryError, Folder, NewSource};
+use markhor_core::permissions::ON_DEVICE;
 use markhor_core::permissions::{PUBLIC, Restricted};
 
 /// Creates a collection containing an unrestricted `child/doc.md` and a restricted
@@ -77,9 +78,10 @@ async fn restrict_access_rejects_document_beyond_session_requirements() {
     let mut session = Session::with_folder(root);
     session.restrict_access(vec![PUBLIC]).unwrap();
 
-    let err = session.document("restricted.md").await.unwrap_err();
-    assert!(matches!(
-        err,
-        AccessDocumentError::Permission(AddDocumentError::ElevationRequired(_))
-    ));
+    match session.document("restricted.md").await.unwrap_err() {
+        AccessDocumentError::Permission(AddDocumentError::ElevationRequired(required)) => {
+            assert_eq!(required, vec![ON_DEVICE]);
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
 }

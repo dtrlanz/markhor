@@ -63,6 +63,14 @@ impl Permission {
         vec.push(permission);
     }
 
+    pub fn union(vec1: &[Permission], vec2: &[Permission]) -> Vec<Permission> {
+        let mut result = Vec::new();
+        for p in vec1.iter().chain(vec2) {
+            Permission::insert(&mut result, p.clone());
+        }
+        result
+    }
+
     pub fn intersection(vec1: &[Permission], vec2: &[Permission]) -> Vec<Permission> {
         // This is not the most efficient implementation, but it handles the complexity of
         // permission hierarchy in a way that's simple and easy to reason about. Optimize later
