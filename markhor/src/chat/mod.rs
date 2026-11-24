@@ -3,8 +3,12 @@ use thiserror::Error;
 
 use markhor_core::{
     chat::{ChatModel, ChatUi, Group, Msg},
-    dependencies::{AccessDocumentError, ResolveDependencyError, Session},
+    dependencies::{
+        AccessDocumentError, AddDocumentError, RequirePermissionsError, ResolveDependencyError,
+        Session,
+    },
     extension::Comp,
+    permissions::{Permission, Restricted},
 };
 
 use crate::{
@@ -69,13 +73,37 @@ impl Simple {
     /// `user-command` event, so that the assistant can answer questions about it.
     ///
     /// The event is not a message from the user, so it does not prompt a reply.
-    /// `path` is relative to the session's working folder, and the session must
-    /// be permitted to access the document.
-    pub async fn read_document(&mut self, path: &Path) -> Result<(), AccessDocumentError> {
+    /// `path` is relative to the session's working folder.
+    ///
+    /// If the document requires permissions the session does not yet have, they
+    /// are added to the session first. That fails if an active API key or
+    /// extension lacks them, since the document must not reach an actor that is
+    /// not permitted to see it.
+    ///
+    /// Returns the permissions newly added to the session, which is empty unless
+    /// the session had to be elevated.
+    pub async fn read_document(
+        &mut self,
+        path: &Path,
+    ) -> Result<Vec<Permission>, ReadDocumentError> {
+        let mut elevated = Vec::new();
+        match self.session.document(path).await.map(|_| ()) {
+            Err(AccessDocumentError::Permission(AddDocumentError::ElevationRequired(required))) => {
+                let held = self.session.permissions_required();
+                elevated = required
+                    .iter()
+                    .filter(|p| !held.iter().any(|h| h >= *p))
+                    .cloned()
+                    .collect();
+                self.session.require_permissions(required)?;
+            }
+            result => result?,
+        }
         let doc = self.session.document(path).await?;
         let text = doc
             .text()
-            .await?
+            .await
+            .map_err(AccessDocumentError::from)?
             .parts()
             .iter()
             .map(|part| part.content())
@@ -96,7 +124,7 @@ impl Simple {
                 content: content.into(),
             })
             .expect("the assistant is a member of the group");
-        Ok(())
+        Ok(elevated)
     }
 }
 
@@ -112,16 +140,27 @@ pub enum InitChatError {
     Dependency(#[from] ResolveDependencyError),
 }
 
+#[derive(Error, Debug)]
+pub enum ReadDocumentError {
+    #[error(transparent)]
+    Access(#[from] AccessDocumentError),
+
+    #[error("Could not elevate session permissions: {0}")]
+    Elevation(#[from] RequirePermissionsError),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_utils::{
-        ScriptedChatModel, ScriptedChatUi, eventually, session_in_folder, session_with_mocks,
-        session_with_ui,
+        MockExtension, ScriptedChatModel, ScriptedChatUi, eventually, session_in_folder,
+        session_with_mocks, session_with_ui,
     };
     use markhor_core::{
         chat::{AddMemberError, MemberId, UserInput, common::ContentPart},
+        extension::ExtensionConfig,
         library::{Collection, NewSource},
+        permissions::{ON_DEVICE, PUBLIC},
     };
 
     fn is_taken(group: &Arc<Group>, id: &str) -> bool {
@@ -243,6 +282,76 @@ mod tests {
         assert!(
             format!("{request:?}").contains("The sky is blue."),
             "document text missing from model context: {request:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_document_elevates_session_permissions_when_needed() {
+        let dir = tempfile::tempdir().unwrap();
+        let collection = Collection::open(dir.path()).await.unwrap();
+        // Created without explicit permissions, so it requires the collection default (on-device).
+        collection
+            .root()
+            .create_document("notes.md", NewSource::Bytes(b"The sky is blue."), None)
+            .await
+            .unwrap();
+        let ui = ScriptedChatUi::new(&[]);
+        let model = ScriptedChatModel::new(&[]);
+        let session = session_in_folder(collection.root(), &ui, &model).await;
+        let mut chat = Simple::with_user_id(session, "alice").unwrap();
+
+        let elevated = chat.read_document(Path::new("notes.md")).await.unwrap();
+        assert_eq!(elevated, vec![ON_DEVICE]);
+        // Already elevated, so reading again needs nothing new.
+        assert!(
+            chat.read_document(Path::new("notes.md"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        chat.group
+            .append(Msg::User {
+                sender: MemberId::new("alice", true),
+                timestamp: None,
+                content: vec![ContentPart::Text("What colour is the sky?".into())],
+            })
+            .unwrap();
+        let request = eventually(|| model.requests().first().cloned()).await;
+        assert!(
+            format!("{request:?}").contains("The sky is blue."),
+            "document text missing from model context: {request:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_document_fails_when_an_active_actor_lacks_the_permission() {
+        let dir = tempfile::tempdir().unwrap();
+        let collection = Collection::open(dir.path()).await.unwrap();
+        collection
+            .root()
+            .create_document("notes.md", NewSource::Bytes(b"The sky is blue."), None)
+            .await
+            .unwrap();
+        let mut session = Session::with_folder(collection.root());
+        session
+            .add_extension::<_, MockExtension>(
+                MockExtension,
+                ExtensionConfig {
+                    permissions: vec![PUBLIC],
+                },
+            )
+            .await
+            .unwrap();
+        let mut chat = Simple::with_user_id(session, "alice").unwrap();
+
+        let err = chat.read_document(Path::new("notes.md")).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ReadDocumentError::Elevation(RequirePermissionsError::ExtensionNotAuthorized(_))
+            ),
+            "unexpected error: {err}"
         );
     }
 

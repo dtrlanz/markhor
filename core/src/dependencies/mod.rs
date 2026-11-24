@@ -30,4 +30,7 @@ pub use api_key::ApiKey;
 pub use build_from::BuildFrom;
 pub(crate) use dependency_slot::TrackingGuard;
 pub use provide::{Provide, ResolveDependencyError};
-pub use session::{AccessDocumentError, AddApiKeysError, AddDocumentError, Assets, Session};
+pub use session::{
+    AccessDocumentError, AddApiKeysError, AddDocumentError, Assets, RequirePermissionsError,
+    Session,
+};

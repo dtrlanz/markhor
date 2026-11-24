@@ -11,6 +11,7 @@ use markhor_core::{
     dependencies::Session,
     extension::{Comp, Extension, ExtensionConfig},
     library::Folder,
+    permissions::Permission,
 };
 use markhor_extensions::google::{Client, ClientConfig};
 
@@ -104,11 +105,17 @@ async fn handle_command(chat: &mut Simple, name: &str, args: &str) -> bool {
     match name {
         "exit" => return false,
         "read" if args.is_empty() => println!("Usage: /read <path>"),
-        "read" => {
-            if let Err(err) = chat.read_document(Path::new(args)).await {
-                println!("Could not read {args}: {err}");
+        "read" => match chat.read_document(Path::new(args)).await {
+            Ok(elevated) if !elevated.is_empty() => {
+                let names: Vec<_> = elevated.iter().map(Permission::name).collect();
+                println!(
+                    "Note: raised this chat's permissions to include {}. They stay raised for the rest of the session.",
+                    names.join(", ")
+                );
             }
-        }
+            Ok(_) => {}
+            Err(err) => println!("Could not read {args}: {err}"),
+        },
         _ => println!("Commands: {}", COMMANDS.map(|c| format!("/{c}")).join(", ")),
     }
     true
