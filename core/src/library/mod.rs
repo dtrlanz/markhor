@@ -55,6 +55,9 @@ pub enum AccessLibraryError {
     #[error("Collections may not be nested. Outer collection: {0}")]
     InCollection(PathBuf),
 
+    #[error("Directory is already a collection: {0}")]
+    AlreadyCollection(PathBuf),
+
     #[error("Metadata serialization/deserialization error")]
     MetadataFormat(#[from] serde_yaml_ng::Error),
 

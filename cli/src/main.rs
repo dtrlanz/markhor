@@ -6,7 +6,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-use commands::{chat::ChatArgs, import::ImportArgs};
+use commands::{chat::ChatArgs, import::ImportArgs, init::InitArgs};
 
 /// Markhor: chat with AI models and import documents into collections.
 #[derive(Parser)]
@@ -22,6 +22,8 @@ enum Command {
     Chat(ChatArgs),
     /// Import a document, recognizing its text with OCR.
     Import(ImportArgs),
+    /// Create a collection in the current folder.
+    Init(InitArgs),
 }
 
 #[tokio::main]
@@ -37,5 +39,6 @@ async fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Chat(args) => commands::chat::run(args).await,
         Command::Import(args) => commands::import::run(args).await,
+        Command::Init(args) => commands::init::run(args).await,
     }
 }

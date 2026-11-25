@@ -36,6 +36,12 @@ impl Collection {
         if let Some(collection) = find_collection_descendant(&absolute_path).await? {
             return Err(AccessLibraryError::InCollection(collection));
         }
+        if fs::metadata(absolute_path.join(COLLECTION_CONFIG_DIR))
+            .await
+            .is_ok_and(|m| m.is_dir())
+        {
+            return Err(AccessLibraryError::AlreadyCollection(absolute_path));
+        }
         fs::create_dir_all(&absolute_path).await?;
         let collection = Self {
             inner: Arc::new(CollectionInner {
@@ -413,6 +419,20 @@ mod tests {
         let reopened = Collection::open(&path).await.unwrap();
         assert!(reopened.is_persistent().await);
         assert_eq!(reopened.metadata(), collection.metadata());
+    }
+
+    #[tokio::test]
+    async fn collection_create_rejects_existing_collection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("coll");
+        fs::create_dir(&path).await.unwrap();
+        Collection::create(&path).await.unwrap();
+
+        let result = Collection::create(&path).await;
+        assert!(matches!(
+            result,
+            Err(AccessLibraryError::AlreadyCollection(_))
+        ));
     }
 
     #[tokio::test]
