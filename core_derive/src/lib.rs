@@ -316,7 +316,6 @@ pub fn derive_provide(input: TokenStream) -> TokenStream {
     let g_v = quote::format_ident!("{}V", prefix);
     let g_k = quote::format_ident!("{}K", prefix);
     let g_f = quote::format_ident!("{}F", prefix);
-    let g_dst = quote::format_ident!("{}Dst", prefix);
 
     // Support generics
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
