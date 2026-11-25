@@ -9,9 +9,9 @@ name = "markhor"
 path = "src/main.rs"
 
 [dependencies]
-markhor = { path = "../markhor" }
-markhor_core = { path = "../core" }
-markhor_extensions = { path = "../extensions" }
+markhor = { path = "../markhor", version = "0.1.0-alpha.1" }
+markhor_core = { path = "../core", version = "0.1.0-alpha.1" }
+markhor_extensions = { path = "../extensions", version = "0.1.0-alpha.1" }
 anyhow = "1.0.97"
 async-trait = "0.1.88"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
