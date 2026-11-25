@@ -3,6 +3,9 @@ name = "markhor_cli"
 edition = "2024"
 default-run = "markhor"
 version.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Command-line interface for Markhor, a project connecting AI models, documents, and workflows for knowledge work"
+repository = "https://github.com/dtrlanz/markhor"
 
 [[bin]]
 name = "markhor"
