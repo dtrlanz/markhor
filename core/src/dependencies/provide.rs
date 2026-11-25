@@ -4,7 +4,7 @@ use tracing::warn;
 
 use crate::dependencies::{Session, session::Assets};
 
-pub use derive_provide::Provide;
+pub use markhor_core_derive::Provide;
 
 pub trait Provide {
     type Item;

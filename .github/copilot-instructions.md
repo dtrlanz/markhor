@@ -10,7 +10,7 @@ Markhor is a pre-alpha Rust workspace (edition 2024, resolver 3) for Markdown-ba
   - Import with OCR: `cargo run -p markhor_cli -- import <file-or-url>`
   - Chat simulator (dev only): `cargo run -p markhor_chat_sim` (binary `markhor-chat-sim`)
 - Test all: `cargo test --workspace`
-- Test one crate: `cargo test -p markhor_core` (package names: `markhor_core`, `markhor_extensions`, `markhor`, `derive_provide`, `markhor_cli`, `markhor_chat_sim`, `markhor_gui`, `markhor_util`)
+- Test one crate: `cargo test -p markhor_core` (package names: `markhor_core`, `markhor_extensions`, `markhor`, `derive_provide`, `markhor_cli`, `markhor_chat_sim`, `markhor_gui`, `markhor_util`, `markhor_core_derive`)
 - Test one test by name: `cargo test -p markhor_core dependencies::provide::tests::derive_provide -- --exact`
   - Without `--exact`, a plain substring filter works: `cargo test -p markhor_core provide`
 - Include ignored tests: append `-- --ignored`. Ignored tests in `markhor_extensions` and `markhor/tests` call live APIs and need `GOOGLE_API_KEY`, `MISTRAL_API_KEY`, or `ANTHROPIC_API_KEY`; don't run them without keys.
@@ -23,14 +23,14 @@ Package name differs from directory name:
 | Directory | Package | Role |
 |---|---|---|
 | `core/` | `markhor_core` | Domain logic: library (collections, documents, folders), chat/embedding traits, chunking, markdown, permissions, dependency injection, extension trait |
-| `core_derive_provide/` | `derive_provide` | Proc macro `#[derive(Provide)]` used by `markhor_core` |
+| `core_derive/` | `markhor_core_derive` | Proc macro `#[derive(Provide)]` used by `markhor_core` |
 | `extensions/` | `markhor_extensions` | Concrete extensions: `google` (Gemini API, serves Gemini/Gemma models), `anthropic`, `mistral` (OCR and files), `chunking::plaintext`, `plugin` |
 | `markhor/` | `markhor` | Library (no binary): `agent` (agent builder/config), `chat` (`Simple` chat orchestration), `user`. `cli.rs` holds clap definitions that no binary uses yet |
 | `cli/` | `markhor_cli` | The `markhor` binary (subcommands `chat`, `import`; sources in `cli/src/commands/`) and the terminal UI library (`convert`, `html`, `ui`) |
 | `cli/sim` | `markhor_chat_sim` | Unpublished dev simulator binary `markhor-chat-sim` |
 | `gui/`, `util/` | `markhor_gui`, `markhor_util` | Placeholders (`gui` is still hello-world) |
 
-Dependency direction: `cli` and `cli/sim` and `markhor` → `markhor_extensions` → `markhor_core` → `derive_provide`. Core must never depend on extensions.
+Dependency direction: `cli` and `cli/sim` and `markhor` → `markhor_extensions` → `markhor_core` → `markhor_core_derive`. Core must never depend on extensions.
 
 ## Architecture (big picture)
 
@@ -39,7 +39,7 @@ Dependency direction: `cli` and `cli/sim` and `markhor` → `markhor_extensions`
 **Dependency injection via `Session`.** `core/src/dependencies/` implements an IoC container:
 - `Session` (`session.rs`) holds registered extensions and API keys, enforces permissions, and tracks which components are used.
 - `Provide` (`provide.rs`) is implemented by types that can be resolved from a session. `Session::resolve::<T>()` and `Provide::first(&assets)` do the lookup. Blanket impls exist for `Vec`, `Option`, `Box`, `Arc`, `Mutex`, `HashMap`, and tuples.
-- `#[derive(Provide)]` (from `core_derive_provide`) generates impls from field attributes: `#[provide(each)]`, `filter = ...`, `map = ...`, `key = ...`, `sort_by = ...`. `sort_by_key` and `sort_by_field` are unimplemented. Always write `#[provide(crate = "crate")]` inside `markhor_core`.
+- `#[derive(Provide)]` (from `markhor_core_derive`) generates impls from field attributes: `#[provide(each)]`, `filter = ...`, `map = ...`, `key = ...`, `sort_by = ...`. `sort_by_key` and `sort_by_field` are unimplemented. Always write `#[provide(crate = "crate")]` inside `markhor_core`.
 - `Comp<T>` (`extension/comp.rs`) derefs to the component and wraps it with its owning extension (`extension()`, an `Arc<dyn Extension>`) and a `TrackingGuard`. Use `Comp<dyn ChatModel>` etc. as the resolved type. `metadata_id()` gives a stable identifier string.
 
 **Permissions.** `core/src/permissions/` uses `Restricted` (resources declare `permissions_required()`) and `Authorized` (actors declare `permissions_granted()`). An actor may access a resource only if it holds all required permissions. Built-in permissions: `ON_DEVICE`, `NOT_USED_FOR_TRAINING`, `PUBLIC`. `Session::restrict_access` narrows what a session may do.
