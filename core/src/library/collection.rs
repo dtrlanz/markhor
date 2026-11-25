@@ -4,9 +4,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use std::time::SystemTime;
-
 use serde::{Deserialize, Deserializer, Serialize};
+use time::OffsetDateTime;
 use tokio::fs;
 
 use crate::{
@@ -189,7 +188,8 @@ pub(crate) async fn find_collection_descendant(
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CollectionMetadata {
     /// When the collection was created.
-    pub created: SystemTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created: OffsetDateTime,
     /// Optional description. If present, it is never empty.
     #[serde(
         default,
@@ -202,7 +202,7 @@ pub struct CollectionMetadata {
 impl Default for CollectionMetadata {
     fn default() -> Self {
         Self {
-            created: SystemTime::now(),
+            created: OffsetDateTime::now_utc(),
             description: None,
         }
     }
@@ -218,7 +218,7 @@ fn deserialize_non_empty<'de, D: Deserializer<'de>>(
 mod tests {
     use super::*;
     use crate::library::fs_test_utils::{TempTree, fs_tree};
-    use std::time::Duration;
+    use time::macros::datetime;
 
     #[tokio::test]
     async fn collection_open() {
@@ -249,7 +249,7 @@ mod tests {
         // Create metadata file
         dir.add(fs_tree! {
             COLLECTION_CONFIG_DIR => {
-                COLLECTION_METADATA_FILENAME => "created: {secs_since_epoch: 1000, nanos_since_epoch: 0}\ndescription: bar",
+                COLLECTION_METADATA_FILENAME => "created: 2024-01-02T03:04:05Z\ndescription: bar",
             },
         })
         .await
@@ -261,7 +261,7 @@ mod tests {
         assert_eq!(
             collection.inner.metadata,
             CollectionMetadata {
-                created: SystemTime::UNIX_EPOCH + Duration::from_secs(1000),
+                created: datetime!(2024-01-02 03:04:05 UTC),
                 description: Some("bar".to_string()),
             }
         );
@@ -269,7 +269,7 @@ mod tests {
         // Empty description is treated as absent
         dir.add(fs_tree! {
             COLLECTION_CONFIG_DIR => {
-                COLLECTION_METADATA_FILENAME => "created: {secs_since_epoch: 1000, nanos_since_epoch: 0}\ndescription: ''",
+                COLLECTION_METADATA_FILENAME => "created: 2024-01-02T03:04:05Z\ndescription: ''",
             },
         })
         .await
