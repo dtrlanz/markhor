@@ -227,7 +227,11 @@ fn sender_of(msg: &Msg) -> Option<&MemberId> {
         Msg::User { sender, .. } | Msg::Agent { sender, .. } | Msg::Direct { sender, .. } => {
             Some(sender)
         }
-        Msg::Platform(_) | Msg::Developer(_) | Msg::ToolResult { .. } | Msg::Event { .. } | Msg::ControlSignal { .. } => None,
+        Msg::Platform(_)
+        | Msg::Developer(_)
+        | Msg::ToolResult { .. }
+        | Msg::Event { .. }
+        | Msg::ControlSignal { .. } => None,
     }
 }
 
@@ -271,7 +275,9 @@ impl Thread {
     /// `Full`, `Log`) on this thread. Mirrors `ChatUi::handle_message`.
     /// `Part` is not yet emitted, since model responses are not streamed.
     pub fn on_message(&self, callback: impl Fn(&MsgEvent) + Send + Sync + 'static) -> Subscription {
-        self.events.message.add_listener(move |e: &MsgEvent| callback(e))
+        self.events
+            .message
+            .add_listener(move |e: &MsgEvent| callback(e))
     }
 
     /// Registers a listener for reasoning events. Mirrors
@@ -303,8 +309,13 @@ impl Thread {
     /// Registers a listener for worker events. Mirrors `ChatUi::handle_worker`.
     ///
     /// Not yet emitted: core has no worker concept yet.
-    pub fn on_worker(&self, callback: impl Fn(&WorkerEvent) + Send + Sync + 'static) -> Subscription {
-        self.events.worker.add_listener(move |e: &WorkerEvent| callback(e))
+    pub fn on_worker(
+        &self,
+        callback: impl Fn(&WorkerEvent) + Send + Sync + 'static,
+    ) -> Subscription {
+        self.events
+            .worker
+            .add_listener(move |e: &WorkerEvent| callback(e))
     }
 
     /// The unique identifier of this thread. Threads compare equal iff their
@@ -349,7 +360,6 @@ impl Thread {
     fn dispatch_msg(&self, event: MsgEvent) {
         self.events.message.dispatch(&(event,));
     }
-
 
     /// Iterates over messages with indices less than `end`, including
     /// messages inherited from previous segments.
@@ -945,7 +955,10 @@ mod tests {
 
         let seen = events.lock().unwrap();
         match &seen[..] {
-            [MsgEvent::Begin(b, sender), MsgEvent::Full(f, Msg::User { .. })] => {
+            [
+                MsgEvent::Begin(b, sender),
+                MsgEvent::Full(f, Msg::User { .. }),
+            ] => {
                 assert_eq!(*b, id);
                 assert_eq!(*f, id);
                 assert_eq!(sender, alice.id());

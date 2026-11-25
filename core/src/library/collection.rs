@@ -96,7 +96,10 @@ impl Collection {
         let wd_md_path = config_dir.join(COLLECTION_METADATA_FILENAME);
         let metadata: CollectionMetadata = match fs::read_to_string(wd_md_path).await {
             Ok(content) => serde_yaml_ng::from_str(&content)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => CollectionMetadata::default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => CollectionMetadata {
+                created: dir_created_time(&path_metadata),
+                description: None,
+            },
             Err(e) => {
                 return Err(AccessLibraryError::Io(e));
             }
@@ -208,6 +211,15 @@ impl Default for CollectionMetadata {
     }
 }
 
+/// Returns the directory's creation time, or the current time if the platform or filesystem
+/// does not record it.
+fn dir_created_time(metadata: &std::fs::Metadata) -> OffsetDateTime {
+    metadata
+        .created()
+        .map(OffsetDateTime::from)
+        .unwrap_or_else(|_| OffsetDateTime::now_utc())
+}
+
 fn deserialize_non_empty<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<String>, D::Error> {
@@ -233,6 +245,13 @@ mod tests {
         let collection = Collection::open(&dir).await.unwrap();
         assert_eq!(collection.path(), fs::canonicalize(&dir).await.unwrap());
         assert_eq!(collection.inner.metadata.description, None);
+
+        // Without a metadata file, `created` is stable across opens
+        let reopened = Collection::open(&dir).await.unwrap();
+        assert_eq!(
+            collection.inner.metadata.created,
+            reopened.inner.metadata.created
+        );
 
         // Create config directory
         dir.add(fs_tree! {
