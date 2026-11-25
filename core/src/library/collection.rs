@@ -48,6 +48,21 @@ impl Collection {
         })
     }
 
+    /// Returns `true` if the collection has a config directory on disk, so its metadata persists.
+    pub fn is_persistent(&self) -> bool {
+        todo!()
+    }
+
+    /// Returns the metadata of the collection.
+    pub fn metadata(&self) -> &CollectionMetadata {
+        todo!()
+    }
+
+    /// Writes the collection metadata to disk, creating the config directory if needed.
+    pub async fn save(&self) -> Result<(), AccessLibraryError> {
+        todo!()
+    }
+
     /// Returns the root path of the collection.
     pub fn path(&self) -> &Path {
         self.inner.absolute_path.as_path()
@@ -361,5 +376,92 @@ mod tests {
             doc.text().await.unwrap().export(&mut None).as_deref(),
             Some("nested")
         );
+    }
+
+    #[tokio::test]
+    async fn collection_create_is_persistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("coll");
+        fs::create_dir(&path).await.unwrap();
+
+        let collection = Collection::create(&path).await.unwrap();
+        assert!(collection.is_persistent());
+
+        let md_path = path
+            .join(COLLECTION_CONFIG_DIR)
+            .join(COLLECTION_METADATA_FILENAME);
+        assert!(fs::try_exists(&md_path).await.unwrap());
+
+        let reopened = Collection::open(&path).await.unwrap();
+        assert!(reopened.is_persistent());
+        assert_eq!(reopened.metadata(), collection.metadata());
+    }
+
+    #[tokio::test]
+    async fn collection_open_without_config_is_transient() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let collection = Collection::open(dir.path()).await.unwrap();
+        assert!(!collection.is_persistent());
+        assert!(
+            !fs::try_exists(dir.path().join(COLLECTION_CONFIG_DIR))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn collection_save_promotes_transient() {
+        let dir = tempfile::tempdir().unwrap();
+        let collection = Collection::open(dir.path()).await.unwrap();
+        assert!(!collection.is_persistent());
+
+        collection.save().await.unwrap();
+        assert!(collection.is_persistent());
+
+        let reopened = Collection::open(dir.path()).await.unwrap();
+        assert!(reopened.is_persistent());
+        assert_eq!(reopened.metadata(), collection.metadata());
+    }
+
+    #[tokio::test]
+    async fn collection_save_keeps_description() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join(COLLECTION_CONFIG_DIR);
+        fs::create_dir(&config_dir).await.unwrap();
+        let md_path = config_dir.join(COLLECTION_METADATA_FILENAME);
+        fs::write(
+            &md_path,
+            "created: 2024-01-02T03:04:05Z\ndescription: bar\n",
+        )
+        .await
+        .unwrap();
+
+        let collection = Collection::open(dir.path()).await.unwrap();
+        collection.save().await.unwrap();
+
+        let reopened = Collection::open(dir.path()).await.unwrap();
+        assert_eq!(reopened.metadata().description.as_deref(), Some("bar"));
+        assert_eq!(
+            reopened.metadata().created,
+            datetime!(2024-01-02 03:04:05 UTC)
+        );
+    }
+
+    #[tokio::test]
+    async fn collection_save_omits_empty_description() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join(COLLECTION_CONFIG_DIR);
+        fs::create_dir(&config_dir).await.unwrap();
+        let md_path = config_dir.join(COLLECTION_METADATA_FILENAME);
+        fs::write(&md_path, "created: 2024-01-02T03:04:05Z\ndescription: ''\n")
+            .await
+            .unwrap();
+
+        let collection = Collection::open(dir.path()).await.unwrap();
+        collection.save().await.unwrap();
+
+        let content = fs::read_to_string(&md_path).await.unwrap();
+        assert!(!content.contains("description"), "saved: {content}");
     }
 }
