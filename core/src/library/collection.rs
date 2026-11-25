@@ -93,8 +93,8 @@ impl Collection {
         }
 
         let config_dir = absolute_path.join(COLLECTION_CONFIG_DIR);
-        let wd_md_path = config_dir.join(COLLECTION_METADATA_FILENAME);
-        let metadata: CollectionMetadata = match fs::read_to_string(wd_md_path).await {
+        let coll_md_path = config_dir.join(COLLECTION_METADATA_FILENAME);
+        let metadata: CollectionMetadata = match fs::read_to_string(coll_md_path).await {
             Ok(content) => serde_yaml_ng::from_str(&content)?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => CollectionMetadata {
                 created: dir_created_time(&path_metadata),
