@@ -1,5 +1,16 @@
-pub mod chat;
-pub mod error;
-pub mod prompter;
+mod chat;
+mod chat_ui;
+pub mod common;
+mod error;
+mod group;
+mod member;
+mod msg;
 
+pub use chat::{ChatModel, ChatOptions, ChatResponse, FinishReason, UsageInfo};
+pub use chat_ui::{
+    ChatUi, MsgEvent, MsgId, ReasoningEvent, ToolCallEvent, ToolCallId, UserInput, WorkerEvent,
+};
 pub use error::ChatError;
+pub use group::{AddMemberError, AppendMessageError, Group, InitContext, PendingMsg};
+pub use member::{Member, MemberId};
+pub use msg::{IterMsg, Msg, ReasoningContent};

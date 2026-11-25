@@ -1,6 +1,7 @@
-pub mod cli;
-pub mod commands;
-pub mod app;
-// pub mod config;   // Add later
-// pub mod error;    // Add later if needed
-// pub mod workspace; // Add later
+pub mod agent;
+pub mod chat;
+pub mod import;
+pub mod user;
+
+#[cfg(test)]
+mod test_utils;

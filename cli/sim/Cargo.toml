@@ -1,0 +1,16 @@
+[package]
+name = "markhor_chat_sim"
+edition = "2024"
+version.workspace = true
+publish = false
+
+[[bin]]
+name = "markhor-chat-sim"
+path = "src/main.rs"
+
+[dependencies]
+markhor_core = { path = "../../core" }
+markhor_cli = { path = ".." }
+fastrand = "2"
+serde_json = "1.0.140"
+tokio = { version = "1.44.1", features = ["rt-multi-thread", "macros", "time", "sync"] }

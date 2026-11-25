@@ -1,0 +1,447 @@
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use markhor_core::chat::common::ContentPart;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+
+use super::is_false;
+
+/// One entry in the conversation history. The API only knows two roles; system prompts go in
+/// the top-level `system` field of the request.
+///
+/// Content is always serialized as an array of blocks, never the string shorthand.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "role", rename_all = "snake_case")]
+pub(crate) enum Message {
+    User { content: Vec<UserBlock> },
+    Assistant { content: Vec<AssistantBlock> },
+}
+
+/// A content block the user (or the application on their behalf) can send.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum UserBlock {
+    Text(TextBlock),
+    Image(ImageBlock),
+    Document(DocumentBlock),
+    /// The outcome of a [`ToolUse`] from the preceding assistant message.
+    ToolResult(ToolResult),
+}
+
+/// A content block produced by the model, as received in a response or sent back as history.
+///
+/// Thinking blocks carry a signature and must be passed back unmodified and in their original
+/// order when continuing a tool-use turn.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum AssistantBlock {
+    Text(TextBlock),
+    Thinking(Thinking),
+    RedactedThinking(RedactedThinking),
+    ToolUse(ToolUse),
+    /// A block of a kind that isn't modelled here (e.g. server tool use), kept verbatim.
+    #[serde(untagged)]
+    Opaque(Value),
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub(crate) struct TextBlock {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+}
+
+impl TextBlock {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            cache_control: None,
+        }
+    }
+}
+
+/// Marks a cache breakpoint at the block it is attached to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum CacheControl {
+    Ephemeral {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl: Option<CacheTtl>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum CacheTtl {
+    #[serde(rename = "5m")]
+    FiveMinutes,
+    #[serde(rename = "1h")]
+    OneHour,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ImageBlock {
+    pub source: ImageSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum ImageSource {
+    /// Base64-encoded image bytes.
+    Base64 {
+        media_type: ImageMediaType,
+        data: String,
+    },
+    Url {
+        url: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ImageMediaType {
+    #[serde(rename = "image/jpeg")]
+    Jpeg,
+    #[serde(rename = "image/png")]
+    Png,
+    #[serde(rename = "image/gif")]
+    Gif,
+    #[serde(rename = "image/webp")]
+    Webp,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct DocumentBlock {
+    pub source: DocumentSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Free-form context about the document that isn't part of its content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub citations: Option<CitationsConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CitationsConfig {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum DocumentSource {
+    /// Base64-encoded PDF.
+    Base64 {
+        media_type: PdfMediaType,
+        data: String,
+    },
+    Text {
+        media_type: PlainTextMediaType,
+        data: String,
+    },
+    Url {
+        url: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum PdfMediaType {
+    #[serde(rename = "application/pdf")]
+    Pdf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum PlainTextMediaType {
+    #[serde(rename = "text/plain")]
+    Plain,
+}
+
+/// The model's reasoning, with the signature that proves it was generated by Claude.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Thinking {
+    /// Empty if the request asked for thinking to be omitted.
+    #[serde(default)]
+    pub thinking: String,
+    pub signature: String,
+}
+
+/// Reasoning that was withheld; `data` is opaque and must be passed back unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RedactedThinking {
+    pub data: String,
+}
+
+/// The model asks the application to run a (client-side) tool.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ToolUse {
+    pub id: String,
+    pub name: String,
+    pub input: Map<String, Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ToolResult {
+    pub tool_use_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content: Vec<ToolResultContent>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_error: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+}
+
+/// Blocks permitted inside a [`ToolResult`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum ToolResultContent {
+    Text(TextBlock),
+    Image(ImageBlock),
+    Document(DocumentBlock),
+}
+
+impl ImageMediaType {
+    /// Parses a MIME type, ignoring case and any parameters.
+    pub fn from_mime(mime: &str) -> Option<Self> {
+        let essence = mime.split(';').next().unwrap_or_default().trim();
+        match essence.to_ascii_lowercase().as_str() {
+            "image/jpeg" | "image/jpg" => Some(Self::Jpeg),
+            "image/png" => Some(Self::Png),
+            "image/gif" => Some(Self::Gif),
+            "image/webp" => Some(Self::Webp),
+            _ => None,
+        }
+    }
+}
+
+impl From<String> for TextBlock {
+    fn from(text: String) -> Self {
+        Self::new(text)
+    }
+}
+
+/// Error for content the API can't accept in a user message.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unsupported image type `{0}` (supported: JPEG, PNG, GIF, WebP)")]
+pub(crate) struct UnsupportedImageType(pub String);
+
+impl TryFrom<ContentPart> for UserBlock {
+    type Error = UnsupportedImageType;
+
+    fn try_from(part: ContentPart) -> Result<Self, Self::Error> {
+        match part {
+            ContentPart::Text(text) => Ok(UserBlock::Text(text.into())),
+            ContentPart::Image { mime_type, data } => {
+                let media_type = ImageMediaType::from_mime(&mime_type)
+                    .ok_or_else(|| UnsupportedImageType(mime_type))?;
+                Ok(UserBlock::Image(ImageBlock {
+                    source: ImageSource::Base64 {
+                        media_type,
+                        data: STANDARD.encode(data),
+                    },
+                    cache_control: None,
+                }))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn content_parts_convert_to_user_blocks() {
+        assert_eq!(
+            UserBlock::try_from(ContentPart::Text("hi".into())),
+            Ok(UserBlock::Text(TextBlock::new("hi")))
+        );
+        assert_eq!(
+            UserBlock::try_from(ContentPart::Image {
+                mime_type: "image/PNG; charset=binary".into(),
+                data: vec![1, 2, 3],
+            }),
+            Ok(UserBlock::Image(ImageBlock {
+                source: ImageSource::Base64 {
+                    media_type: ImageMediaType::Png,
+                    data: "AQID".into(),
+                },
+                cache_control: None,
+            }))
+        );
+        assert_eq!(
+            UserBlock::try_from(ContentPart::Image {
+                mime_type: "image/tiff".into(),
+                data: vec![],
+            }),
+            Err(UnsupportedImageType("image/tiff".into()))
+        );
+    }
+
+    #[test]
+    fn user_message_serializes_as_block_array() {
+        let message = Message::User {
+            content: vec![
+                UserBlock::Text(TextBlock::new("hi")),
+                UserBlock::Image(ImageBlock {
+                    source: ImageSource::Base64 {
+                        media_type: ImageMediaType::Png,
+                        data: "AAAA".into(),
+                    },
+                    cache_control: Some(CacheControl::Ephemeral {
+                        ttl: Some(CacheTtl::OneHour),
+                    }),
+                }),
+            ],
+        };
+        assert_eq!(
+            serde_json::to_value(&message).unwrap(),
+            json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hi"},
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"},
+                        "cache_control": {"type": "ephemeral", "ttl": "1h"},
+                    },
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn cache_control_ttl_is_optional() {
+        let cc = CacheControl::Ephemeral { ttl: None };
+        assert_eq!(
+            serde_json::to_value(cc).unwrap(),
+            json!({"type": "ephemeral"})
+        );
+        let parsed: CacheControl = serde_json::from_value(json!({"type": "ephemeral"})).unwrap();
+        assert_eq!(parsed, cc);
+    }
+
+    #[test]
+    fn document_sources_serialize() {
+        let pdf = DocumentBlock {
+            source: DocumentSource::Base64 {
+                media_type: PdfMediaType::Pdf,
+                data: "JVBER".into(),
+            },
+            title: Some("Paper".into()),
+            context: None,
+            citations: Some(CitationsConfig { enabled: true }),
+            cache_control: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&pdf).unwrap(),
+            json!({
+                "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBER"},
+                "title": "Paper",
+                "citations": {"enabled": true},
+            })
+        );
+
+        let text = DocumentSource::Text {
+            media_type: PlainTextMediaType::Plain,
+            data: "hello".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&text).unwrap(),
+            json!({"type": "text", "media_type": "text/plain", "data": "hello"})
+        );
+        let url = DocumentSource::Url {
+            url: "https://example.com/a.pdf".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&url).unwrap(),
+            json!({"type": "url", "url": "https://example.com/a.pdf"})
+        );
+    }
+
+    #[test]
+    fn tool_result_omits_empty_fields() {
+        let ok = UserBlock::ToolResult(ToolResult {
+            tool_use_id: "toolu_1".into(),
+            content: vec![ToolResultContent::Text(TextBlock::new("259.75 USD"))],
+            is_error: false,
+            cache_control: None,
+        });
+        assert_eq!(
+            serde_json::to_value(&ok).unwrap(),
+            json!({
+                "type": "tool_result",
+                "tool_use_id": "toolu_1",
+                "content": [{"type": "text", "text": "259.75 USD"}],
+            })
+        );
+
+        let failed = UserBlock::ToolResult(ToolResult {
+            tool_use_id: "toolu_2".into(),
+            content: vec![],
+            is_error: true,
+            cache_control: None,
+        });
+        assert_eq!(
+            serde_json::to_value(&failed).unwrap(),
+            json!({"type": "tool_result", "tool_use_id": "toolu_2", "is_error": true})
+        );
+    }
+
+    #[test]
+    fn assistant_blocks_round_trip() {
+        let raw = json!([
+            {"type": "thinking", "thinking": "hmm", "signature": "sig=="},
+            {"type": "redacted_thinking", "data": "opaque"},
+            {"type": "text", "text": "Let me check."},
+            {"type": "tool_use", "id": "toolu_1", "name": "get_stock_price", "input": {"ticker": "^GSPC"}},
+        ]);
+        let blocks: Vec<AssistantBlock> = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(
+            blocks[0],
+            AssistantBlock::Thinking(Thinking {
+                thinking: "hmm".into(),
+                signature: "sig==".into()
+            })
+        );
+        assert_eq!(
+            blocks[1],
+            AssistantBlock::RedactedThinking(RedactedThinking {
+                data: "opaque".into()
+            })
+        );
+        assert!(matches!(&blocks[3], AssistantBlock::ToolUse(t) if t.input["ticker"] == "^GSPC"));
+        assert_eq!(serde_json::to_value(&blocks).unwrap(), raw);
+    }
+
+    #[test]
+    fn unmodelled_assistant_blocks_are_kept_verbatim() {
+        let raw = json!({
+            "type": "server_tool_use",
+            "id": "srvtoolu_1",
+            "name": "web_search",
+            "input": {"query": "rust"},
+        });
+        let block: AssistantBlock = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(block, AssistantBlock::Opaque(raw.clone()));
+        assert_eq!(serde_json::to_value(&block).unwrap(), raw);
+    }
+
+    #[test]
+    fn assistant_message_deserializes() {
+        let message: Message = serde_json::from_value(json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hi"}],
+        }))
+        .unwrap();
+        assert_eq!(
+            message,
+            Message::Assistant {
+                content: vec![AssistantBlock::Text(TextBlock::new("Hi"))]
+            }
+        );
+    }
+}

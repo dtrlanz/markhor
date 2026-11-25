@@ -1,8 +1,16 @@
-use std::{collections::HashMap, sync::{atomic::{AtomicUsize, Ordering}, Arc}};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use async_trait::async_trait;
-use markhor_core::{chat::{chat::{ChatApi, ChatOptions, ChatResponse, ChatStream, ContentPart, Message, ModelInfo}, ChatError}, extension::Extension};
-
+use markhor_core::{
+    chat::{ChatError, ChatModel, ChatOptions, ChatResponse, MemberId, Msg, common::ContentPart},
+    extension::{Extension, ModelId},
+};
 
 const SONNET_18: [&str; 14] = [
     "Shall I compare thee to a summer’s day?",
@@ -18,8 +26,8 @@ const SONNET_18: [&str; 14] = [
     "Nor shall Death brag thou wand’rest in his shade,",
     "When in eternal lines to time thou grow’st.",
     "So long as men can breathe or eyes can see,",
-    "So long lives this, and this gives life to thee."];
-
+    "So long lives this, and this gives life to thee.",
+];
 
 struct ShakespeareChatModel {
     idx: AtomicUsize,
@@ -27,22 +35,23 @@ struct ShakespeareChatModel {
 
 impl ShakespeareChatModel {
     fn new() -> Self {
-        Self { idx: AtomicUsize::new(0) }
+        Self {
+            idx: AtomicUsize::new(0),
+        }
     }
 }
 
 #[async_trait]
-impl ChatApi for ShakespeareChatModel {
-    async fn list_models(&self) -> Result<Vec<ModelInfo>, ChatError> {
-        Ok(vec![ModelInfo {
-            id: "shakespeare".to_string(),
-            description: Some("Chat with Shakespeare".to_string()),
-            context_window: None,
-            max_output_tokens: None,
-        }])
+impl ChatModel for ShakespeareChatModel {
+    fn model_name(&self) -> &str {
+        "shakespeare"
     }
 
-    async fn generate(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatResponse, ChatError> {
+    async fn generate(
+        &self,
+        messages: &[Msg],
+        options: &ChatOptions,
+    ) -> Result<ChatResponse, ChatError> {
         if self.idx.load(Ordering::SeqCst) >= SONNET_18.len() {
             return Err(ChatError::RateLimited);
         }
@@ -55,12 +64,7 @@ impl ChatApi for ShakespeareChatModel {
             model_id: Some("shakespeare".to_string()),
         })
     }
-
-    async fn generate_stream(&self, messages: &[Message], options: &ChatOptions) -> Result<ChatStream, ChatError> {
-        unimplemented!()
-    }
 }
-
 
 struct ShakespeareChatExtension;
 
@@ -80,8 +84,8 @@ impl Extension for ShakespeareChatExtension {
     fn description(&self) -> &str {
         "Chat with Shakespeare"
     }
-    fn chat_model(&self) -> Option<Box<dyn ChatApi>> {
-        Some(Box::new(ShakespeareChatModel::new()))
+    fn chat_models(&self) -> Vec<Box<dyn ChatModel>> {
+        vec![Box::new(ShakespeareChatModel::new())]
     }
 }
 
@@ -89,11 +93,33 @@ impl Extension for ShakespeareChatExtension {
 async fn shakespeare_chat_model() {
     let model = ShakespeareChatModel::new();
     let messages = vec![
-        Message::user("Tell me a sonnet"),
-        Message::assistant("Sure, here is one:"),
+        Msg::User {
+            sender: MemberId::new("user", true),
+            timestamp: None,
+            content: vec![ContentPart::Text("Tell me a sonnet".into())],
+        },
+        Msg::Agent {
+            sender: MemberId::new("ai", false),
+            timestamp: None,
+            content: vec![ContentPart::Text("Sure, here is one:".into())],
+            tool_calls: vec![],
+            model: ModelId::new("will-s", "globe"),
+            reasoning_content: Default::default(),
+            metadata: Default::default(),
+        },
     ];
-    let response = ChatApi::generate(&model,&messages, &Default::default()).await.unwrap();
-    assert_eq!(response.content.join(""), "Shall I compare thee to a summer’s day?");
-    let response = ChatApi::generate(&model, &messages, &Default::default()).await.unwrap();
-    assert_eq!(response.content.join(""), "Thou art more lovely and more temperate.");
+    let response = ChatModel::generate(&model, &messages, &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        response.content.join(""),
+        "Shall I compare thee to a summer’s day?"
+    );
+    let response = ChatModel::generate(&model, &messages, &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        response.content.join(""),
+        "Thou art more lovely and more temperate."
+    );
 }

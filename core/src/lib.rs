@@ -1,16 +1,18 @@
-pub mod extension;
 pub mod chat;
+pub mod chunking;
+pub mod dependencies;
 pub mod embedding;
 pub mod event;
-pub mod storage;
-pub mod job;
-pub mod convert;
+pub mod extension;
+pub mod library;
+pub mod markdown;
+pub mod ocr;
+pub mod permissions;
 pub mod tool;
-pub mod chunking;
+pub mod vector_store;
 
 pub mod error {
     use thiserror::Error;
-    
 
     #[derive(Error, Debug)]
     pub enum MarkhorError {
@@ -20,8 +22,8 @@ pub mod error {
         ModelError(String),
         #[error("Plugin Error: {0}")]
         PluginError(String),
-        #[error("Workspace Error: {0}")]
-        WorkspaceError(String),
+        #[error("Collection Error: {0}")]
+        CollectionError(String),
         #[error("Event Error: {0}")]
         EventError(String),
         #[error("IO Error: {0}")]
@@ -32,7 +34,6 @@ pub mod error {
 
     pub type Result<T> = std::result::Result<T, MarkhorError>;
 }
-
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right

@@ -1,0 +1,321 @@
+use crate::{
+    chat::{ChatModel, ChatUi},
+    chunking::Chunker,
+    dependencies::{Provide, ResolveDependencyError, Session, TrackingGuard},
+    embedding::EmbeddingModel,
+    extension::Extension,
+    ocr::OcrModel,
+    tool::Tool,
+};
+
+use serde::{Deserialize, Serialize};
+use std::{
+    any::TypeId,
+    fmt::Display,
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
+
+/// A boxed extension component along with metadata.
+///
+/// Extension components are the trait objects returned by the `Extension` trait methods.
+///
+// Name: This is the successor to `F11y`. The name is less obviously temporary than that was but
+// not necessarily final yet.
+pub struct Comp<T: ?Sized> {
+    extension: Arc<dyn Extension>,
+    component: Box<T>,
+    tracking_guard: TrackingGuard,
+}
+
+impl<T: ?Sized> Deref for Comp<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.component
+    }
+}
+
+impl<T: ?Sized> DerefMut for Comp<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.component
+    }
+}
+
+impl<T: ?Sized + 'static> Comp<T> {
+    pub fn extension(&self) -> &Arc<dyn Extension> {
+        &self.extension
+    }
+
+    pub fn component_type(&self) -> ComponentType {
+        let t_id = TypeId::of::<T>();
+        match TypeId::of::<T>() {
+            x if x == const { TypeId::of::<dyn ChatModel>() } => ComponentType::ChatModel,
+            x if x == const { TypeId::of::<dyn ChatUi>() } => ComponentType::ChatUi,
+            x if x == const { TypeId::of::<dyn EmbeddingModel>() } => ComponentType::EmbeddingModel,
+            x if x == const { TypeId::of::<dyn Chunker>() } => ComponentType::Chunker,
+            x if x == const { TypeId::of::<dyn OcrModel>() } => ComponentType::OcrModel,
+            x if x == const { TypeId::of::<dyn Tool>() } => ComponentType::Tool,
+
+            // `Comp` is never constructed with anything other than extension components. If we
+            // end up here, we've made a mistake somewhere in the code that constructs `Comp`s,
+            // or we need to update the above matches to include a new component type.
+            _ => unreachable!("Non-existent component type: {:?}", t_id),
+        }
+    }
+
+    pub fn metadata_id(&self) -> String {
+        let suffix = match self.component_type() {
+            _ => "",
+        };
+        format!(
+            "{} {}{}",
+            sanitize_filename::sanitize(self.extension.uri()),
+            self.component_type(),
+            suffix
+        )
+    }
+}
+
+macro_rules! impl_provide_comp {
+    ($($trait:ident => $method:ident),*  $(,)? ) => {
+        $(
+            impl Provide for Comp<dyn $trait> {
+                type Item = Self;
+
+                fn iter(assets: &crate::dependencies::Assets) -> Result<impl Iterator<Item = Self>, ResolveDependencyError> {
+                    let comps = assets.extensions().into_iter()
+                        .flat_map(|slot| slot.item.$method().into_iter().map(|comp| Self {
+                            extension: slot.item.clone(),
+                            component: comp,
+                            tracking_guard: slot.track_one(),
+                        }));
+                    Ok(comps)
+                }
+
+                fn iter_from_items<I>(items: I) -> Result<impl Iterator<Item = Self>, ResolveDependencyError>
+                where
+                    I: Iterator<Item = Self::Item>
+                {
+                    Ok(items)
+                }
+            }
+        )*
+    };
+}
+
+impl_provide_comp! {
+    ChatModel => chat_models,
+    ChatUi => chat_uis,
+    EmbeddingModel => embedding_models,
+    Chunker => chunkers,
+    OcrModel => ocr_models,
+    Tool => tools,
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ComponentType {
+    ChatModel,
+    ChatUi,
+    EmbeddingModel,
+    Chunker,
+    OcrModel,
+    Tool,
+}
+
+impl Display for ComponentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ComponentType::ChatModel => "chat-model",
+            ComponentType::ChatUi => "chat-ui",
+            ComponentType::EmbeddingModel => "embedding-model",
+            ComponentType::Chunker => "chunker",
+            ComponentType::OcrModel => "ocr-model",
+            ComponentType::Tool => "tool",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+/// Utility for constructing `Comp<dyn ___>` directly without a `Session`.
+///
+/// Useful when you need `Comp`s for unit tests.
+#[cfg(test)]
+pub(crate) struct TryIntoComp<E>(pub E);
+
+#[cfg(test)]
+impl<E: Extension + 'static> TryFrom<TryIntoComp<E>> for Comp<dyn ChatModel> {
+    type Error = ResolveDependencyError;
+
+    fn try_from(value: TryIntoComp<E>) -> Result<Self, Self::Error> {
+        let item = value.0.chat_models().into_iter().next().ok_or(
+            ResolveDependencyError::DependencyNotAvailable("chat model".into()),
+        )?;
+        Ok(Self {
+            extension: Arc::new(value.0),
+            component: item,
+            tracking_guard: Default::default(),
+        })
+    }
+}
+
+#[cfg(test)]
+impl<E: Extension + 'static> TryFrom<TryIntoComp<E>> for Comp<dyn EmbeddingModel> {
+    type Error = ResolveDependencyError;
+
+    fn try_from(value: TryIntoComp<E>) -> Result<Self, Self::Error> {
+        let item = value.0.embedding_models().into_iter().next().ok_or(
+            ResolveDependencyError::DependencyNotAvailable("chat model".into()),
+        )?;
+        Ok(Self {
+            extension: Arc::new(value.0),
+            component: item,
+            tracking_guard: Default::default(),
+        })
+    }
+}
+
+#[cfg(test)]
+impl<E: Extension + 'static> TryFrom<TryIntoComp<E>> for Comp<dyn Chunker> {
+    type Error = ResolveDependencyError;
+
+    fn try_from(value: TryIntoComp<E>) -> Result<Self, Self::Error> {
+        let item = value.0.chunkers().into_iter().next().ok_or(
+            ResolveDependencyError::DependencyNotAvailable("chat model".into()),
+        )?;
+        Ok(Self {
+            extension: Arc::new(value.0),
+            component: item,
+            tracking_guard: Default::default(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        chunking::test_chunker::FixedSizeChunkerExtension, dependencies::Assets,
+        embedding::test_utils::MockEmbedderExtension,
+    };
+    use async_trait::async_trait;
+    use mime::Mime;
+
+    #[test]
+    fn comp() {
+        let extension = FixedSizeChunkerExtension::new(10);
+        let chunker = extension.chunkers().into_iter().next().unwrap();
+
+        let comp = Comp {
+            extension: Arc::new(extension),
+            component: chunker,
+            tracking_guard: Default::default(),
+        };
+
+        assert_eq!(comp.component_type(), ComponentType::Chunker);
+        assert_eq!(comp.extension().uri(), "markhor://chunker/fixed-size");
+        assert_eq!(comp.metadata_id(), "markhorchunkerfixed-size chunker");
+    }
+
+    struct TestOcrModel;
+
+    #[async_trait]
+    impl OcrModel for TestOcrModel {
+        fn model_id(&self) -> &str {
+            "test-ocr"
+        }
+
+        fn supports(&self, _mime: &Mime) -> bool {
+            false
+        }
+    }
+
+    #[derive(Clone)]
+    struct OcrExtension;
+
+    #[async_trait]
+    impl Extension for OcrExtension {
+        fn uri(&self) -> &str {
+            "markhor://test-ocr"
+        }
+
+        fn name(&self) -> &str {
+            "OCR test"
+        }
+
+        fn description(&self) -> &str {
+            "Provides an OCR model for tests"
+        }
+
+        fn ocr_models(&self) -> Vec<Box<dyn OcrModel>> {
+            vec![Box::new(TestOcrModel)]
+        }
+    }
+
+    #[tokio::test]
+    async fn provide_ocr_model() {
+        let mut session = Session::new();
+        session
+            .add_extension::<_, OcrExtension>(OcrExtension, Default::default())
+            .await
+            .unwrap();
+        let assets = Assets::new_for_resolve_call(&session);
+
+        let ocr: Comp<dyn OcrModel> = Provide::first(&assets).unwrap();
+        assert_eq!(ocr.component_type(), ComponentType::OcrModel);
+        assert_eq!(ocr.metadata_id(), "markhortest-ocr ocr-model");
+    }
+
+    #[tokio::test]
+    async fn provide() {
+        let mut session = Session::new();
+        session
+            .add_extension::<_, FixedSizeChunkerExtension>(
+                FixedSizeChunkerExtension::new(5),
+                Default::default(),
+            )
+            .await
+            .unwrap();
+        session
+            .add_extension::<_, FixedSizeChunkerExtension>(
+                FixedSizeChunkerExtension::new(10),
+                Default::default(),
+            )
+            .await
+            .unwrap();
+        session
+            .add_extension::<_, MockEmbedderExtension>(
+                MockEmbedderExtension::new(vec!["the", "cat", "sat", "on", "mat"]),
+                Default::default(),
+            )
+            .await
+            .unwrap();
+        let assets = Assets::new_for_resolve_call(&session);
+
+        // Test providing single components
+        let chunker: Comp<dyn Chunker> = Provide::first(&assets).unwrap();
+        assert_eq!(chunker.component_type(), ComponentType::Chunker);
+        assert_eq!(chunker.metadata_id(), "markhorchunkerfixed-size chunker");
+
+        let embedder: Comp<dyn EmbeddingModel> = Provide::first(&assets).unwrap();
+        assert_eq!(embedder.component_type(), ComponentType::EmbeddingModel);
+        assert_eq!(
+            embedder.metadata_id(),
+            "markhorembeddermock embedding-model"
+        );
+
+        // Test resolving multiple components of the same type
+        let chunkers: Vec<Comp<dyn Chunker>> = Provide::first(&assets).unwrap();
+        assert_eq!(chunkers.len(), 2);
+        assert_eq!(chunkers[0].component_type(), ComponentType::Chunker);
+        assert_eq!(chunkers[1].component_type(), ComponentType::Chunker);
+
+        // Make sure we're getting two different chunkers
+        let chunked = chunkers
+            .iter()
+            .map(|comp| comp.chunk("0123456789").unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(chunked[0].len(), 2); // 2 chunks of size 5
+        assert_eq!(chunked[1].len(), 1); // 1 chunk of size 10
+    }
+}

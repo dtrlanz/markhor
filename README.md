@@ -4,68 +4,76 @@
 
 Markhor is a platform connecting AI models, documents, and workflows for knowledge work.
 
-## Project Status
+## Project status
 
-This project is still pre-alpha. Assume all APIs are experimental. Every version has breaking changes.
+**This project is in alpha.** Every version has breaking changes.
 
-**Version:** 0.1.0-alpha.0
+## Project structure
 
-## Packages
+The project currently consists of four packages as outlined below.
 
--   `markhor`: App context and command-line interface
--   `markhor_core`: Core functionalities for AI (models, embeddings, etc.) and file management (workspaces, documents, metadata)
--   `markhor_extensions`: Various extensions (incl. clients for several APIs)
+If you want a binary, you'll find that in `markhor_cli`.
 
-## Getting Started
+If you want libraries to use for your own projects, start with `markhor` and add any extensions from `markhor_extensions` that you want to include. Switch to `markhor_core` if you want fewer dependencies or more control over agent experience. If you're writing your own extensions, import the relevant traits from `markhor_core`.
 
-1.  Clone the repository.
-2.  Navigate to the project directory.
-3.  Build the project using `cargo build`.
-4.  Run the CLI application using `cargo run --package markhor`.
+### `markhor_core`
 
-## Project Goals
+Contains the basic building blocks with which the platform is built.
 
--   Simplify the use of AI for interacting with documents.
--   Integrate various AI models for personal, local knowledge management.
--   Enable user-driven automation for common tasks using workflows and prompt templates.
--   Facilitate portability, future-proof access, and compatibility with other software (e.g., backup, sync) by privileging plain text.
--   Give users control over their own data and its privacy.
--   Foster extensibility and customizability.
+- Core types/abstractions for AI (models, messages, etc.)
+- Extension system
+- Permission & session management
+- File management (collections, documents, metadata)
 
-## Non-Goals
+A long-term goal is to make at least `markhor_core` runtime-agnostic, but this is not an immediate priority. Currently, the entire project uses `tokio`.
 
--   Create an entire AI application framework (like LangChain): Instead, focus on core use cases related to local knowledge management, integrate with existing frameworks, and avoid excessive abstraction while maintaining extensibility.
--   Create a general-purpose AI agent: Instead, offer a system that facilitates integration of various agents or agentic workflows.
--   Offer a fully integrated, feature-rich document editor or IDE: Instead, follow a road map that would allow for some of this functionality to be implemented via extensions.
--   Offer synchronization and collaboration features: Instead, aim for enough compatibility and extensibility that would allow other software (e.g., file sync) and extensions to meet this need.
--   Support non-text media types as first-class citizens: Instead support them via conversion to/from plain text and for specific use cases (e.g., multimodal chat, image generation).
+### `markhor`
 
-In terms of implementation strategy, the following items are currently non-goals. That may change when this project or the Rust/AI ecosystem is more mature. The point is simply to avoid premature optimization and abstraction.
+Adds abstractions over core types and model context to facilitate app/agent development.
 
--   Runtime-agnostic libraries: We're unapologetically relying on `tokio` for now and awaiting further developments in the world of `async` Rust.
--   Prefer native Rust implementations: For now, we're happy to use APIs via Python or JavaScript when that's easiest.
+- Agent experience
+- Workflows & orchestration
+- Re-exports of relevant core types
 
-## Roadmap
+### `markhor_cli`
 
-### Alpha
+Contains the CLI app.
 
-- [x] RAG
-- [ ] File output
-- [ ] Workflows
-- [ ] Privacy metadata
-- [ ] App & workspace configuration
-- [ ] Tools
-- [ ] ...
+- Command-line interface
+- App configuration
+- Extensions exclusive to the CLI app
 
-### Beta
+### `markhor_extensions`
 
-- [ ] Plugins
-- [ ] MCP client
-- [ ] ...
+Contains standard extensions.
+
+- Clients for model providers (Anthropic, Google, etc.)
+- Other extensions such as chunkers
+
+## Project goals
+
+### Goals
+
+- Simplify the use of AI for interacting with documents.
+- Integrate various AI models for personal, local knowledge management.
+- Make agentic AI more affordable by designing with low-cost and local models in mind.
+- Enable user-driven automation with easily customizable workflows and agents.
+- Facilitate portability, future-proof access, and compatibility with other software (e.g., backup, sync) by privileging plain text.
+- Give users control over their own data and its privacy.
+- Foster extensibility and customizability.
+
+### Non-Goals
+
+- Create an entire AI application framework (like LangChain): Instead, focus on core use cases related to local knowledge management, integrate with existing frameworks, and avoid excessive abstraction while maintaining extensibility.
+- Create a general-purpose AI agent (like OpenClaw): Instead, simplify design and maintenance of agents or agentic workflows for specific use cases.
+- Offer a coding agent or harness for software development: Instead, prioritize knowledge management and channel AI models' coding capabilities toward this goal.
+- Offer a feature-rich document editor: Instead, prioritize offering highly customizable ways of viewing data over a general-purpose editing experience.
+- Support non-text media types as first-class citizens: Instead, maximize the effectiveness of plain text in its various forms (Markdown, HTML, YAML, etc.), support text-related media (e.g., inline images, speech), and facilitate conversion to/from plain text.
+- Provide synchronization and backup: Instead, prioritize compatibility with other software (e.g., file sync, git) and allow for extensions that may meet this need.
 
 ## License
 
 Licensed under either of <a href="LICENSE-APACHE">Apache License, Version
 2.0</a> or <a href="LICENSE-MIT">MIT license</a> at your option.
 
-Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this crate by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions. 
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this repository by you shall be licensed as MIT or Apache-2, without any additional terms or conditions.

@@ -1,5 +1,5 @@
-use thiserror::Error;
 use std::error::Error as StdError;
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum EmbeddingError {
@@ -14,7 +14,8 @@ pub enum EmbeddingError {
     /// Error reported by the API backend (e.g., bad request, server error).
     /// Check status for standard HTTP codes if available.
     #[error("API error: status={status:?}, message={message}")]
-    Api { // Common (Standardized structure)
+    Api {
+        // Common (Standardized structure)
         /// Optional HTTP status code from the API response.
         status: Option<u16>,
         /// Error message provided by the API or synthesized by the client.
@@ -42,7 +43,8 @@ pub enum EmbeddingError {
 
     /// An input text chunk exceeds the model's length limit.
     #[error("Input text too long (limit: {limit:?}, unit: {unit}, index: {index:?})")]
-    InputTooLong { // Specific
+    InputTooLong {
+        // Specific
         /// The maximum allowed length, if known.
         limit: Option<usize>,
         /// The unit of the limit (e.g., "tokens", "characters").
@@ -53,7 +55,8 @@ pub enum EmbeddingError {
 
     /// The number of input chunks exceeds the batch size limit.
     #[error("Input batch size too large (limit: {limit:?}, actual: {actual})")]
-    BatchTooLarge { // Specific
+    BatchTooLarge {
+        // Specific
         /// The maximum allowed batch size, if known.
         limit: Option<usize>,
         /// The actual batch size provided.
@@ -77,7 +80,6 @@ pub enum EmbeddingError {
     #[error("Provider-specific error: {0}")]
     Provider(#[source] Box<dyn StdError + Send + Sync>), // Common (Catch-all)
 }
-
 
 // // Helper conversions (can add more as needed)
 
@@ -133,5 +135,3 @@ pub enum EmbeddingError {
 //         EmbeddingError::ModelError(Box::new(err))
 //     }
 // }
-
-

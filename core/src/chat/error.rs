@@ -1,5 +1,5 @@
-use thiserror::Error;
 use std::error::Error as StdError;
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum ChatError {

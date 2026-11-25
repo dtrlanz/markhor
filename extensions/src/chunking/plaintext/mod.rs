@@ -1,10 +1,8 @@
 use std::ops::Range;
-use std::vec::Vec;
 use std::result::Result;
+use std::vec::Vec;
 
 use markhor_core::chunking::{ChunkData, Chunker, ChunkerError};
-
-
 
 /// A simple chunker that splits text into chunks based on a maximum character count,
 /// with optional character overlap between consecutive chunks.
@@ -97,7 +95,7 @@ impl Chunker for PlainTextChunker {
             chunks.push(ChunkData {
                 text_range: current_byte_start..chunk_end_byte_exclusive,
                 heading_path: None, // Simple plain text doesn't have headings
-                token_count: None,   // No tokenization done here
+                token_count: None,  // No tokenization done here
             });
 
             // Calculate the start of the *next* chunk. This is `stride` characters from current_byte_start.
@@ -155,15 +153,24 @@ mod tests {
     fn test_new_invalid_config() {
         let err1 = PlainTextChunker::new(0, 0).unwrap_err();
         assert!(matches!(err1, ChunkerError::Configuration(_)));
-        assert_eq!(err1.to_string(), "Invalid chunker configuration: Chunk size must be greater than 0");
+        assert_eq!(
+            err1.to_string(),
+            "Invalid chunker configuration: Chunk size must be greater than 0"
+        );
 
         let err2 = PlainTextChunker::new(100, 100).unwrap_err();
         assert!(matches!(err2, ChunkerError::Configuration(_)));
-        assert_eq!(err2.to_string(), "Invalid chunker configuration: Overlap size (100) must be less than chunk size (100)");
+        assert_eq!(
+            err2.to_string(),
+            "Invalid chunker configuration: Overlap size (100) must be less than chunk size (100)"
+        );
 
-         let err3 = PlainTextChunker::new(100, 101).unwrap_err();
+        let err3 = PlainTextChunker::new(100, 101).unwrap_err();
         assert!(matches!(err3, ChunkerError::Configuration(_)));
-        assert_eq!(err3.to_string(), "Invalid chunker configuration: Overlap size (101) must be less than chunk size (100)");
+        assert_eq!(
+            err3.to_string(),
+            "Invalid chunker configuration: Overlap size (101) must be less than chunk size (100)"
+        );
     }
 
     #[test]
@@ -184,7 +191,7 @@ mod tests {
         assert_eq!(chunks[0].get_text(text), "Short text.");
     }
 
-     #[test]
+    #[test]
     fn test_text_shorter_than_chunk_size_with_overlap() {
         // With overlap, if text is shorter than chunk size, there's still just one chunk
         let chunker = PlainTextChunker::new(100, 10).unwrap();
@@ -194,7 +201,6 @@ mod tests {
         assert_eq!(chunks[0].text_range, 0..11);
         assert_eq!(chunks[0].get_text(text), "Short text.");
     }
-
 
     #[test]
     fn test_text_exactly_chunk_size_no_overlap() {
@@ -208,14 +214,13 @@ mod tests {
 
     #[test]
     fn test_text_exactly_chunk_size_with_overlap() {
-         let chunker = PlainTextChunker::new(11, 5).unwrap();
+        let chunker = PlainTextChunker::new(11, 5).unwrap();
         let text = "Hello world"; // 11 chars, 11 bytes
         let chunks = chunker.chunk(text).unwrap();
         assert_eq!(chunks.len(), 1); // Still one chunk
         assert_eq!(chunks[0].text_range, 0..11);
         assert_eq!(chunks[0].get_text(text), "Hello world");
     }
-
 
     #[test]
     fn test_multiple_chunks_no_overlap() {
@@ -263,20 +268,47 @@ mod tests {
         assert_eq!(chunks[4].get_text(text), "34567890");
 
         // Verify specific byte boundaries using char_indices
-         assert_eq!(text.char_indices().nth(0).unwrap().0, chunks[0].text_range.start); // start of 1st char
-         assert_eq!(text.char_indices().nth(10).unwrap().0, chunks[0].text_range.end); // start of 11th char
+        assert_eq!(
+            text.char_indices().nth(0).unwrap().0,
+            chunks[0].text_range.start
+        ); // start of 1st char
+        assert_eq!(
+            text.char_indices().nth(10).unwrap().0,
+            chunks[0].text_range.end
+        ); // start of 11th char
 
-         assert_eq!(text.char_indices().nth(7).unwrap().0, chunks[1].text_range.start); // start of 8th char (stride 7 from 0)
-         assert_eq!(text.char_indices().nth(17).unwrap().0, chunks[1].text_range.end); // start of 18th char (10 chars from 8th char)
+        assert_eq!(
+            text.char_indices().nth(7).unwrap().0,
+            chunks[1].text_range.start
+        ); // start of 8th char (stride 7 from 0)
+        assert_eq!(
+            text.char_indices().nth(17).unwrap().0,
+            chunks[1].text_range.end
+        ); // start of 18th char (10 chars from 8th char)
 
-         assert_eq!(text.char_indices().nth(14).unwrap().0, chunks[2].text_range.start); // start of 15th char (stride 7 from 7)
-         assert_eq!(text.char_indices().nth(24).unwrap().0, chunks[2].text_range.end); // start of 25th char (10 chars from 15th char)
+        assert_eq!(
+            text.char_indices().nth(14).unwrap().0,
+            chunks[2].text_range.start
+        ); // start of 15th char (stride 7 from 7)
+        assert_eq!(
+            text.char_indices().nth(24).unwrap().0,
+            chunks[2].text_range.end
+        ); // start of 25th char (10 chars from 15th char)
 
-         assert_eq!(text.char_indices().nth(21).unwrap().0, chunks[3].text_range.start); // start of 22nd char (stride 7 from 14)
-         assert_eq!(text.char_indices().nth(31).unwrap().0, chunks[3].text_range.end); // start of 32nd char (10 chars from 22nd char)
+        assert_eq!(
+            text.char_indices().nth(21).unwrap().0,
+            chunks[3].text_range.start
+        ); // start of 22nd char (stride 7 from 14)
+        assert_eq!(
+            text.char_indices().nth(31).unwrap().0,
+            chunks[3].text_range.end
+        ); // start of 32nd char (10 chars from 22nd char)
 
-         assert_eq!(text.char_indices().nth(28).unwrap().0, chunks[4].text_range.start); // start of 29th char (stride 7 from 21)
-         assert_eq!(chunks[4].text_range.end, text.len()); // last chunk ends at string end
+        assert_eq!(
+            text.char_indices().nth(28).unwrap().0,
+            chunks[4].text_range.start
+        ); // start of 29th char (stride 7 from 21)
+        assert_eq!(chunks[4].text_range.end, text.len()); // last chunk ends at string end
     }
 
     #[test]
@@ -296,7 +328,7 @@ mod tests {
         assert_eq!(chunks[1].get_text(text), "界👋🌍");
     }
 
-     #[test]
+    #[test]
     fn test_text_with_multibyte_chars_with_overlap() {
         let chunker = PlainTextChunker::new(4, 2).unwrap(); // Chunk size 4 chars, Overlap 2 chars. Stride = 2 chars.
         let text = "🍎🍐🍊🍋🍉🍇"; // 6 characters. Each emoji is 4 bytes. Total 24 bytes.
@@ -323,6 +355,5 @@ mod tests {
         assert_eq!(text.char_indices().nth(4).unwrap().0, 16); // start of 5th char (end of 1st chunk)
 
         assert_eq!(text.char_indices().nth(2).unwrap().0, 8); // start of 3rd char (stride 2 from 0)
-
     }
 }
