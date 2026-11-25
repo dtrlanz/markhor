@@ -67,7 +67,7 @@ async fn resolved_chat_model_can_generate() {
     println!("using model: {}", model.model_name());
 
     let messages = [
-        Msg::Platform("Answer with a single word.".into()),
+        Msg::Developer("Answer with a single word.".into()),
         Msg::User {
             sender: MemberId::new("tester", true),
             timestamp: None,
@@ -116,7 +116,7 @@ async fn gemini_model_can_generate() {
         .unwrap_or_else(|| panic!("model {wanted} should be listed"));
 
     let messages = [
-        Msg::Platform("Answer with a single word.".into()),
+        Msg::Developer("Answer with a single word.".into()),
         Msg::User {
             sender: MemberId::new("tester", true),
             timestamp: None,

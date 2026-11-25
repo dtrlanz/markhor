@@ -734,7 +734,7 @@ mod tests {
                 model_name: model,
             };
             let messages = [
-                Msg::Platform("Answer in one word.".into()),
+                Msg::Developer("Answer in one word.".into()),
                 user("What is the capital of France?"),
             ];
 
