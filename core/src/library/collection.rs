@@ -4,7 +4,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use serde::{Deserialize, Serialize};
+use std::time::SystemTime;
+
+use serde::{Deserialize, Deserializer, Serialize};
 use tokio::fs;
 
 use crate::{
@@ -184,15 +186,39 @@ pub(crate) async fn find_collection_descendant(
     Ok(None)
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CollectionMetadata {
-    foo: String,
+    /// When the collection was created.
+    pub created: SystemTime,
+    /// Optional description. If present, it is never empty.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_empty",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub description: Option<String>,
+}
+
+impl Default for CollectionMetadata {
+    fn default() -> Self {
+        Self {
+            created: SystemTime::now(),
+            description: None,
+        }
+    }
+}
+
+fn deserialize_non_empty<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    Ok(Option::<String>::deserialize(deserializer)?.filter(|s| !s.is_empty()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::library::fs_test_utils::{TempTree, fs_tree};
+    use std::time::Duration;
 
     #[tokio::test]
     async fn collection_open() {
@@ -206,7 +232,7 @@ mod tests {
         // Open empty directory as collection
         let collection = Collection::open(&dir).await.unwrap();
         assert_eq!(collection.path(), fs::canonicalize(&dir).await.unwrap());
-        assert_eq!(collection.inner.metadata, CollectionMetadata::default());
+        assert_eq!(collection.inner.metadata.description, None);
 
         // Create config directory
         dir.add(fs_tree! {
@@ -218,12 +244,12 @@ mod tests {
         // Open collection with empty config directory
         let collection = Collection::open(&dir).await.unwrap();
         assert_eq!(collection.path(), fs::canonicalize(&dir).await.unwrap());
-        assert_eq!(collection.inner.metadata, CollectionMetadata::default());
+        assert_eq!(collection.inner.metadata.description, None);
 
         // Create metadata file
         dir.add(fs_tree! {
             COLLECTION_CONFIG_DIR => {
-                COLLECTION_METADATA_FILENAME => "foo: bar",
+                COLLECTION_METADATA_FILENAME => "created: {secs_since_epoch: 1000, nanos_since_epoch: 0}\ndescription: bar",
             },
         })
         .await
@@ -235,9 +261,21 @@ mod tests {
         assert_eq!(
             collection.inner.metadata,
             CollectionMetadata {
-                foo: "bar".to_string(),
+                created: SystemTime::UNIX_EPOCH + Duration::from_secs(1000),
+                description: Some("bar".to_string()),
             }
         );
+
+        // Empty description is treated as absent
+        dir.add(fs_tree! {
+            COLLECTION_CONFIG_DIR => {
+                COLLECTION_METADATA_FILENAME => "created: {secs_since_epoch: 1000, nanos_since_epoch: 0}\ndescription: ''",
+            },
+        })
+        .await
+        .unwrap();
+        let collection = Collection::open(&dir).await.unwrap();
+        assert_eq!(collection.inner.metadata.description, None);
 
         // Try opening collection descendant as collection
         let result = Collection::open(&dir.join("child")).await;
