@@ -24,10 +24,8 @@ pub struct Collection {
 }
 
 impl Collection {
+    /// Creates a directory as a persistent collection, writing its config directory and metadata.
     pub async fn create(path: impl AsRef<Path>) -> Result<Self, AccessLibraryError> {
-        // TODO: consider creating collection config directory and files directly, or add options
-        // to control this behavior
-        // TODO: add unit tests
         let absolute_path = fs::canonicalize(path.as_ref()).await.map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 AccessLibraryError::DirectoryNotFound(path.as_ref().to_path_buf())
@@ -39,28 +37,45 @@ impl Collection {
             return Err(AccessLibraryError::InCollection(collection));
         }
         fs::create_dir_all(&absolute_path).await?;
-        Ok(Self {
+        let collection = Self {
             inner: Arc::new(CollectionInner {
                 absolute_path,
                 metadata: CollectionMetadata::default(),
                 embeddings: Default::default(),
             }),
-        })
+        };
+        collection.save().await?;
+        Ok(collection)
     }
 
     /// Returns `true` if the collection has a config directory on disk, so its metadata persists.
-    pub fn is_persistent(&self) -> bool {
-        todo!()
+    ///
+    /// A transient collection has no config directory. Its metadata is only held in memory until
+    /// [`Collection::save`] is called.
+    pub async fn is_persistent(&self) -> bool {
+        fs::metadata(self.inner.absolute_path.join(COLLECTION_CONFIG_DIR))
+            .await
+            .is_ok_and(|m| m.is_dir())
     }
 
     /// Returns the metadata of the collection.
     pub fn metadata(&self) -> &CollectionMetadata {
-        todo!()
+        &self.inner.metadata
     }
 
     /// Writes the collection metadata to disk, creating the config directory if needed.
+    ///
+    /// Saving a transient collection makes it persistent.
     pub async fn save(&self) -> Result<(), AccessLibraryError> {
-        todo!()
+        let config_dir = self.inner.absolute_path.join(COLLECTION_CONFIG_DIR);
+        fs::create_dir_all(&config_dir).await?;
+        let content = serde_yaml_ng::to_string(&self.inner.metadata)?;
+        // Write to a temporary file first so an interrupted save cannot leave a partial file.
+        let md_path = config_dir.join(COLLECTION_METADATA_FILENAME);
+        let tmp_path = config_dir.join(format!("{COLLECTION_METADATA_FILENAME}.tmp"));
+        fs::write(&tmp_path, content).await?;
+        fs::rename(&tmp_path, &md_path).await?;
+        Ok(())
     }
 
     /// Returns the root path of the collection.
@@ -90,7 +105,10 @@ impl Collection {
 
     /// Opens an existing directory as a collection.
     ///
-    /// Loads collection metadata from the config subdirectory if it exists.
+    /// If the directory has a config subdirectory with metadata, the collection is persistent and
+    /// its metadata is loaded from it. Otherwise the collection is transient: nothing is written
+    /// to disk, and `created` is the directory's creation time. Use [`Collection::save`] to make it
+    /// persistent.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, AccessLibraryError> {
         let absolute_path = fs::canonicalize(path.as_ref()).await.map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -385,7 +403,7 @@ mod tests {
         fs::create_dir(&path).await.unwrap();
 
         let collection = Collection::create(&path).await.unwrap();
-        assert!(collection.is_persistent());
+        assert!(collection.is_persistent().await);
 
         let md_path = path
             .join(COLLECTION_CONFIG_DIR)
@@ -393,7 +411,7 @@ mod tests {
         assert!(fs::try_exists(&md_path).await.unwrap());
 
         let reopened = Collection::open(&path).await.unwrap();
-        assert!(reopened.is_persistent());
+        assert!(reopened.is_persistent().await);
         assert_eq!(reopened.metadata(), collection.metadata());
     }
 
@@ -402,7 +420,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let collection = Collection::open(dir.path()).await.unwrap();
-        assert!(!collection.is_persistent());
+        assert!(!collection.is_persistent().await);
         assert!(
             !fs::try_exists(dir.path().join(COLLECTION_CONFIG_DIR))
                 .await
@@ -414,13 +432,13 @@ mod tests {
     async fn collection_save_promotes_transient() {
         let dir = tempfile::tempdir().unwrap();
         let collection = Collection::open(dir.path()).await.unwrap();
-        assert!(!collection.is_persistent());
+        assert!(!collection.is_persistent().await);
 
         collection.save().await.unwrap();
-        assert!(collection.is_persistent());
+        assert!(collection.is_persistent().await);
 
         let reopened = Collection::open(dir.path()).await.unwrap();
-        assert!(reopened.is_persistent());
+        assert!(reopened.is_persistent().await);
         assert_eq!(reopened.metadata(), collection.metadata());
     }
 

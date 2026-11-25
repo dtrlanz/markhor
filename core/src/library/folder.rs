@@ -66,9 +66,10 @@ impl Folder {
 
     /// Opens the specified directory as a collection folder.
     ///
-    /// If the directory is located inside of an explicit collection (with a collection config
+    /// If the directory is located inside of a persistent collection (one with a collection config
     /// directory), the directory is opened as a folder of that collection. If no such collection
-    /// exists, the directory is opened as the root folder of an implicit collection.
+    /// exists, the directory is opened as the root folder of a transient collection. See
+    /// [`Collection::is_persistent`].
     ///
     /// # Errors
     ///
@@ -309,7 +310,7 @@ mod tests {
         .await
         .unwrap();
 
-        // Open path in implicit collection
+        // Open path in transient collection
         let folder = Folder::open(&dir).await.unwrap();
         let collection_path = folder.collection().path();
         assert_eq!(folder.path(), "");
@@ -318,7 +319,7 @@ mod tests {
             fs::canonicalize(&dir).await.unwrap()
         );
 
-        // Open path as root of explict collection
+        // Open path as root of persistent collection
         dir.add(fs_tree! {
             COLLECTION_CONFIG_DIR => {},
         })
@@ -331,7 +332,7 @@ mod tests {
             fs::canonicalize(&dir).await.unwrap()
         );
 
-        // Open path as child of explicit collection
+        // Open path as child of persistent collection
         let child_path = dir.join("child");
         let folder = Folder::open(&child_path).await.unwrap();
         assert_eq!(folder.path(), "child");
