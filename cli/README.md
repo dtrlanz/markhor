@@ -22,6 +22,7 @@ API key.
 
 ```
 cargo run -p markhor_cli -- --help
+cargo run -p markhor_cli -- init
 cargo run -p markhor_cli -- chat
 cargo run -p markhor_cli -- chat --model gemma-4-31b-it
 cargo run -p markhor_cli -- chat --folder notes
@@ -29,6 +30,12 @@ cargo run -p markhor_cli -- import scan.pdf
 cargo run -p markhor_cli -- import https://example.com/report.pdf --folder notes
 cargo run -p markhor_cli -- import scan.pdf --pages 0,1 --no-images
 ```
+
+### `init`
+
+Creates a collection in the current folder, with its `.markhor` config directory.
+It is an error if the folder is already a collection, or is inside one. Nothing is
+changed in that case.
 
 ### `chat`
 
