@@ -20,7 +20,7 @@ pub struct ImportArgs {
     /// A local file, or an http(s) URL that Markhor downloads.
     input: String,
 
-    /// Folder to import into. Defaults to the current directory. It must be inside a collection.
+    /// Folder to import into. Defaults to the current directory.
     #[arg(long)]
     folder: Option<PathBuf>,
 

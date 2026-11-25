@@ -52,8 +52,7 @@ folder.
 
 - `<INPUT>` is a local file or an `http(s)` URL. URLs are downloaded once and
   stored with the document.
-- `--folder` is the folder to import into. It defaults to the current directory
-  and must be inside a collection.
+- `--folder` is the folder to import into. It defaults to the current directory.
 - `--pages` takes zero-based page numbers. It defaults to all pages.
 - `--no-images` does not store the images found in the document. By default they
   are stored as attachments. Without them, image links in the text are left as
