@@ -1,10 +1,10 @@
 [package]
 name = "markhor"
 license = "MIT OR Apache-2.0"
-description = "CLI application for interacting with Markhor, a platform for agentic knowledge work."
+description = "Markhor is a platform connecting AI models, documents, and workflows for knowledge work."
 repository = "https://github.com/dtrlanz/markhor"
 edition = "2024"
-version.workspace = true
+version = "0.1.0-alpha.1.1"
 
 [dependencies]
 markhor_core.workspace = true
