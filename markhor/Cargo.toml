@@ -1,14 +1,14 @@
 [package]
 name = "markhor"
 license = "MIT OR Apache-2.0"
-description = "CLI application for interacting with Markhor, a platform for agentic knowledge work."
+description = "Markhor is a platform connecting AI models, documents, and workflows for knowledge work."
 repository = "https://github.com/dtrlanz/markhor"
 edition = "2024"
-version.workspace = true
+version = "0.1.0-alpha.1.1"
 
 [dependencies]
-markhor_core = { path = "../core", version = "0.1.0-alpha.1" }
-markhor_extensions = { path = "../extensions", version = "0.1.0-alpha.1" }
+markhor_core.workspace = true
+markhor_extensions.workspace = true
 tokio = { version = "1.44.2", features = ["full"] }
 dotenv = "0.15.0"
 reqwest = { version = "0.12.15", features = ["json", "multipart", "stream"] }

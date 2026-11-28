@@ -12,3 +12,9 @@ resolver = "3" # Use the edition 2024 resolver
 
 [workspace.package]
 version = "0.1.0-alpha.1"
+
+[workspace.dependencies]
+markhor = { path = "markhor", version = ">=0.1.0-alpha.1, <0.1.0-alpha.2" }
+markhor_core = { path = "core", version = "=0.1.0-alpha.1" }
+markhor_core_derive = { path = "core_derive", version = "=0.1.0-alpha.1" }
+markhor_extensions = { path = "extensions", version = "=0.1.0-alpha.1" }
