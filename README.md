@@ -16,17 +16,6 @@ If you want a binary, you'll find that in `markhor_cli`.
 
 If you want libraries to use for your own projects, start with `markhor` and add any extensions from `markhor_extensions` that you want to include. Switch to `markhor_core` if you want fewer dependencies or more control over agent experience. If you're writing your own extensions, import the relevant traits from `markhor_core`.
 
-### `markhor_core`
-
-Contains the basic building blocks with which the platform is built.
-
-- Core types/abstractions for AI (models, messages, etc.)
-- Extension system
-- Permission & session management
-- File management (collections, documents, metadata)
-
-A long-term goal is to make at least `markhor_core` runtime-agnostic, but this is not an immediate priority. Currently, the entire project uses `tokio`.
-
 ### `markhor`
 
 Adds abstractions over core types and model context to facilitate app/agent development.
@@ -42,6 +31,21 @@ Contains the CLI app.
 - Command-line interface
 - App configuration
 - Extensions exclusive to the CLI app
+
+### `markhor_core`
+
+Contains the basic building blocks with which the platform is built.
+
+- Core types/abstractions for AI (models, messages, etc.)
+- Extension system
+- Permission & session management
+- File management (collections, documents, metadata)
+
+A long-term goal is to make at least `markhor_core` runtime-agnostic, but this is not an immediate priority. Currently, the entire project uses `tokio`.
+
+### `markhor_core_derive`
+
+Contains the derive macro for the trait `Provide` (defined in `markhor_core`).
 
 ### `markhor_extensions`
 
