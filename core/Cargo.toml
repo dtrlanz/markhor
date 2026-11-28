@@ -7,7 +7,7 @@ repository = "https://github.com/dtrlanz/markhor"
 version.workspace = true
 
 [dependencies]
-markhor_core_derive = { path = "../core_derive", version = "=0.1.0-alpha.1" }
+markhor_core_derive.workspace = true
 async-trait = "0.1.88"
 mime = "0.3.17"
 reqwest = "0.12.15"
